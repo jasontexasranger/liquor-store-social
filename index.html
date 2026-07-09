@@ -276,6 +276,67 @@ function useBrandImageLibrary(storeId) {
 }
 
 // ─────────────────────────────────────────────
+// LOGO COMPOSITOR
+// ─────────────────────────────────────────────
+function compositeLogoOnImage(imageDataUrl, logoDataUrl, logoSizePct=0.18) {
+  return new Promise(resolve => {
+    const canvas = document.createElement('canvas');
+    const ctx    = canvas.getContext('2d');
+    const img    = new Image();
+    img.onload = () => {
+      canvas.width  = img.width;
+      canvas.height = img.height;
+      ctx.drawImage(img, 0, 0);
+      if (!logoDataUrl) { resolve(canvas.toDataURL('image/png')); return; }
+      const logo = new Image();
+      logo.onload = () => {
+        const logoW  = Math.round(img.width * logoSizePct);
+        const logoH  = Math.round(logoW * (logo.height / logo.width));
+        const pad    = Math.round(img.width * 0.03);
+        const x      = img.width  - logoW - pad;
+        const y      = img.height - logoH - pad;
+        const bgPad  = 10;
+        const radius = 10;
+        // White pill background
+        ctx.globalAlpha = 0.88;
+        ctx.fillStyle   = '#ffffff';
+        ctx.beginPath();
+        ctx.roundRect(x-bgPad, y-bgPad, logoW+bgPad*2, logoH+bgPad*2, radius);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.drawImage(logo, x, y, logoW, logoH);
+        resolve(canvas.toDataURL('image/png'));
+      };
+      logo.onerror = () => resolve(canvas.toDataURL('image/png'));
+      logo.src = logoDataUrl;
+    };
+    img.onerror = () => resolve(imageDataUrl);
+    img.src = imageDataUrl;
+  });
+}
+
+// ─────────────────────────────────────────────
+// LIGHTBOX
+// ─────────────────────────────────────────────
+function Lightbox({ src, onClose }) {
+  useEffect(()=>{
+    const esc = e => { if(e.key==='Escape') onClose(); };
+    document.addEventListener('keydown', esc);
+    return () => document.removeEventListener('keydown', esc);
+  },[onClose]);
+  if (!src) return null;
+  return (
+    <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="relative" onClick={e=>e.stopPropagation()}>
+        <button onClick={onClose} className="absolute -top-9 right-0 text-white text-sm font-semibold hover:text-gray-300 flex items-center gap-1">✕ Close</button>
+        <img src={src} alt="Generated" className="max-w-[90vw] max-h-[88vh] rounded-2xl shadow-2xl object-contain"/>
+        <a href={src} download="generated.png" onClick={e=>e.stopPropagation()} className="absolute -bottom-9 right-0 text-white text-xs font-semibold hover:text-gray-300">⬇ Download</a>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
 // GRAPH API HELPERS
 // ─────────────────────────────────────────────
 async function gFetch(path, opts={}) {
@@ -648,7 +709,9 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
   const [prodPrev,   setProdPrev]   = useState(null);
   const [genStep,    setGenStep]    = useState('idle');
   const [brand,      setBrand]      = useState({ ...BRAND_DEFAULTS });
+  const [logo,       setLogo]       = useState(null);
   const [showLib,    setShowLib]    = useState(false);
+  const [lightbox,   setLightbox]   = useState(null);
   const { images:libImages, remove:removeFromLib } = useBrandImageLibrary(storeId);
   const { save:saveToQuickLib } = useProductLibrary(storeId);
   const prodRef = useRef();
@@ -656,7 +719,10 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
   useEffect(()=>{
     const sb=getSB(); if(!sb) return;
     sb.from('brand_profiles').select('*').eq('store_id',storeId).maybeSingle()
-      .then(({data})=>{ if(data){ const {logo_data,...p}=data; setBrand({...BRAND_DEFAULTS,...p}); } else setBrand({...BRAND_DEFAULTS}); });
+      .then(({data})=>{
+        if(data){ const {logo_data,...p}=data; setBrand({...BRAND_DEFAULTS,...p}); setLogo(logo_data||null); }
+        else { setBrand({...BRAND_DEFAULTS}); setLogo(null); }
+      });
   },[storeId]);
 
   const handleProd = file => {
@@ -696,7 +762,10 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
       parts.push('High-quality commercial photography. No text or words in the image.');
       const dalleSize = IMAGE_SIZES.find(s=>s.value===size)?.dalleSize||'1024x1024';
       const img = await openAIGenerateImage(parts.join(' '), dalleSize, apiKey);
-      onGenerated(img.url);
+      // Composite logo onto image
+      setGenStep('compositing');
+      const finalUrl = logo ? await compositeLogoOnImage(img.url, logo) : img.url;
+      onGenerated(finalUrl);
       toast.success('Image generated — ready to post!');
       setGenStep('idle');
       // Save to history
@@ -706,9 +775,11 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
   };
 
   const isBusy = genStep !== 'idle';
-  const stepLabel = { analyzing:'🔍 Analysing product…', building:'⚙️ Building prompt…', generating:'🎨 Generating…' };
+  const stepLabel = { analyzing:'🔍 Analysing product…', building:'⚙️ Building prompt…', generating:'🎨 Generating…', compositing:'🏷 Adding logo…' };
 
   return (
+    <>
+    {lightbox && <Lightbox src={lightbox} onClose={()=>setLightbox(null)}/>}
     <div className="rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/30 p-4 space-y-3">
       <p className="text-xs font-bold text-indigo-700 dark:text-indigo-300 uppercase tracking-widest">🎨 Generate Image with AI</p>
       <div>
@@ -762,6 +833,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
         {isBusy?(stepLabel[genStep]||'Working…'):'🎨 Generate & Add to Post'}
       </Button>
     </div>
+    </>
   );
 }
 
@@ -779,6 +851,7 @@ function PostComposer({ settings, pendingImage, onClearPending }) {
   const [loading,    setLoading]    = useState(false);
   const [showAI,     setShowAI]     = useState(false);
   const [showImgGen, setShowImgGen] = useState(false);
+  const [lightbox,   setLightbox]   = useState(null);
   const [results,    setResults]    = useState([]);
 
   useEffect(()=>{
@@ -860,6 +933,8 @@ function PostComposer({ settings, pendingImage, onClearPending }) {
   const activeStore   = STORES.find(s=>s.id===activeStoreId)?.name || 'our store';
 
   return (
+    <>
+    {lightbox && <Lightbox src={lightbox} onClose={()=>setLightbox(null)}/>}
     <Card>
       <h2 className="text-base font-bold text-gray-900 dark:text-white mb-4">📝 Compose Post</h2>
       <div className="mb-4">
@@ -897,11 +972,15 @@ function PostComposer({ settings, pendingImage, onClearPending }) {
         {/* Generated image preview */}
         {(genImgUrl||(pendingImage&&!imgFile)) && (
           <div className="mb-3">
-            <div className="relative inline-block">
-              <img src={genImgUrl||pendingImage} alt="" className="h-32 rounded-xl object-cover border border-indigo-300 dark:border-indigo-600 shadow-sm"/>
+            <div className="relative inline-block group">
+              <img src={genImgUrl||pendingImage} alt="" onClick={()=>setLightbox(genImgUrl||pendingImage)}
+                className="h-36 rounded-xl object-cover border border-indigo-300 dark:border-indigo-600 shadow-sm cursor-zoom-in hover:opacity-90 transition-opacity"/>
               <button onClick={clearImage} className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full w-5 h-5 text-xs flex items-center justify-center hover:bg-red-600">✕</button>
+              <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                <span className="bg-black/50 text-white text-xs px-2 py-1 rounded-lg">Click to enlarge</span>
+              </div>
             </div>
-            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">⚠ Generated URLs expire in ~1 hour — post soon.</p>
+            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">⚠ Post soon — image may expire.</p>
           </div>
         )}
 
@@ -937,6 +1016,7 @@ function PostComposer({ settings, pendingImage, onClearPending }) {
         </div>
       )}
     </Card>
+    </>
   );
 }
 

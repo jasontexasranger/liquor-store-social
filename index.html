@@ -316,6 +316,69 @@ function compositeLogoOnImage(imageDataUrl, logoDataUrl, logoSizePct=0.18) {
 }
 
 // ─────────────────────────────────────────────
+// PRODUCT + LOGO COMPOSITOR
+// Composites real product photo onto AI background, then logo
+// ─────────────────────────────────────────────
+function compositeProductAndLogo(bgDataUrl, productDataUrl, logoDataUrl) {
+  return new Promise(resolve => {
+    const canvas = document.createElement('canvas');
+    const ctx    = canvas.getContext('2d');
+    const bg     = new Image();
+    bg.onload = () => {
+      canvas.width  = bg.width;
+      canvas.height = bg.height;
+      ctx.drawImage(bg, 0, 0);
+
+      const addLogo = () => {
+        if (!logoDataUrl) { resolve(canvas.toDataURL('image/png')); return; }
+        const logo = new Image();
+        logo.onload = () => {
+          const logoW = Math.round(bg.width * 0.18);
+          const logoH = Math.round(logoW * (logo.height / logo.width));
+          const pad   = Math.round(bg.width * 0.03);
+          const x     = bg.width  - logoW - pad;
+          const y     = bg.height - logoH - pad;
+          const bgPad = 10;
+          ctx.globalAlpha = 0.88; ctx.fillStyle = '#ffffff';
+          ctx.beginPath(); ctx.roundRect(x-bgPad, y-bgPad, logoW+bgPad*2, logoH+bgPad*2, 10); ctx.fill();
+          ctx.globalAlpha = 1;
+          ctx.drawImage(logo, x, y, logoW, logoH);
+          resolve(canvas.toDataURL('image/png'));
+        };
+        logo.onerror = () => resolve(canvas.toDataURL('image/png'));
+        logo.src = logoDataUrl;
+      };
+
+      if (!productDataUrl) { addLogo(); return; }
+      const prod = new Image();
+      prod.onload = () => {
+        // Product centered horizontally, sitting in lower 60% of image
+        const prodH  = Math.round(bg.height * 0.62);
+        const prodW  = Math.round(prodH * (prod.width / prod.height));
+        const clampW = Math.min(prodW, Math.round(bg.width * 0.65));
+        const prodWf = clampW;
+        const prodHf = Math.round(prodWf * (prod.height / prod.width));
+        const px     = Math.round((bg.width - prodWf) / 2);
+        const py     = bg.height - prodHf - Math.round(bg.height * 0.04);
+        // Soft drop shadow
+        ctx.save();
+        ctx.shadowColor   = 'rgba(0,0,0,0.35)';
+        ctx.shadowBlur    = Math.round(bg.width * 0.04);
+        ctx.shadowOffsetX = 0;
+        ctx.shadowOffsetY = Math.round(bg.height * 0.02);
+        ctx.drawImage(prod, px, py, prodWf, prodHf);
+        ctx.restore();
+        addLogo();
+      };
+      prod.onerror = addLogo;
+      prod.src = productDataUrl;
+    };
+    bg.onerror = () => resolve(bgDataUrl);
+    bg.src = bgDataUrl;
+  });
+}
+
+// ─────────────────────────────────────────────
 // LIGHTBOX
 // ─────────────────────────────────────────────
 function Lightbox({ src, onClose }) {
@@ -744,38 +807,56 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
     if (!apiKey) { toast.error('Add your OpenAI API key in Settings'); return; }
     setGenStep('building');
     try {
-      let productDesc = '';
-      if (prodFile) {
-        setGenStep('analyzing');
-        const b64 = await fileToBase64(prodFile);
-        productDesc = await openAIDescribeImage(b64, prodFile.type||'image/jpeg', apiKey);
+      const hasProduct = !!prodPrev;
+      const storeName  = STORES.find(s=>s.id===storeId)?.name || 'the store';
+      const dalleSize  = IMAGE_SIZES.find(s=>s.value===size)?.dalleSize || '1024x1024';
+
+      let prompt;
+      if (hasProduct) {
+        // Background-only scene — real product will be composited in afterwards
+        const parts = [`Photorealistic promotional background scene for "${storeName}", a retail liquor store in BC, Canada.`];
+        if (brand.visual_style)   parts.push(`Visual style: ${brand.visual_style}.`);
+        if (brand.mood)           parts.push(`Mood: ${brand.mood}.`);
+        if (brand.style_keywords) parts.push(`Keywords: ${brand.style_keywords}.`);
+        if (brand.primary_color)  parts.push(`Accent colour: ${brand.primary_color}.`);
+        if (brand.avoid_visually) parts.push(`Avoid: ${brand.avoid_visually}.`);
+        if (brief.trim())         parts.push(`Direction: ${brief.trim()}.`);
+        parts.push('IMPORTANT: No bottles, no cans, no products of any kind in this image. Pure atmospheric background only — elegant surface, lighting, and environment ready for a product photo to be placed on top. No text or words.');
+        prompt = parts.join(' ');
+      } else {
+        const parts = [`Professional social media image for "${storeName}", a retail liquor store in BC, Canada.`];
+        if (brand.visual_style)   parts.push(`Visual style: ${brand.visual_style}.`);
+        if (brand.mood)           parts.push(`Mood: ${brand.mood}.`);
+        if (brand.style_keywords) parts.push(`Style keywords: ${brand.style_keywords}.`);
+        if (brand.primary_color)  parts.push(`Brand colour: ${brand.primary_color}.`);
+        if (brand.avoid_visually) parts.push(`Do NOT include: ${brand.avoid_visually}.`);
+        if (brief.trim())         parts.push(`Creative direction: ${brief.trim()}.`);
+        parts.push('High-quality commercial photography. No text or words in the image.');
+        prompt = parts.join(' ');
       }
+
       setGenStep('generating');
-      const parts = [`Professional social media image for "${STORES.find(s=>s.id===storeId)?.name}", a retail liquor store in BC, Canada.`];
-      if (brand.visual_style)   parts.push(`Visual style: ${brand.visual_style}.`);
-      if (brand.mood)           parts.push(`Mood: ${brand.mood}.`);
-      if (brand.style_keywords) parts.push(`Style keywords: ${brand.style_keywords}.`);
-      if (brand.primary_color)  parts.push(`Brand colour: ${brand.primary_color}.`);
-      if (brand.avoid_visually) parts.push(`Do NOT include: ${brand.avoid_visually}.`);
-      if (productDesc)          parts.push(`Feature this product: ${productDesc}`);
-      if (brief.trim())         parts.push(`Creative direction: ${brief.trim()}.`);
-      parts.push('High-quality commercial photography. No text or words in the image.');
-      const dalleSize = IMAGE_SIZES.find(s=>s.value===size)?.dalleSize||'1024x1024';
-      const img = await openAIGenerateImage(parts.join(' '), dalleSize, apiKey);
-      // Composite logo onto image
+      const img = await openAIGenerateImage(prompt, dalleSize, apiKey);
+
+      // Composite product (if any) + logo
       setGenStep('compositing');
-      const finalUrl = logo ? await compositeLogoOnImage(img.url, logo) : img.url;
+      let finalUrl;
+      if (hasProduct) {
+        finalUrl = await compositeProductAndLogo(img.url, prodPrev, logo);
+      } else {
+        finalUrl = logo ? await compositeLogoOnImage(img.url, logo) : img.url;
+      }
+
       onGenerated(finalUrl);
       toast.success('Image generated — ready to post!');
       setGenStep('idle');
-      // Save to history
       const sb=getSB();
-      if(sb) await sb.from('generation_history').insert({ store_id:storeId, store_name:STORES.find(s=>s.id===storeId)?.name, image_url:img.url, revised_prompt:img.revised, brief, size_label:size, prompt:parts.join(' ') });
-    } catch(e) { toast.error(`Generation failed: ${e.message}`); setGenStep('idle'); }
+      if(sb) await sb.from('generation_history').insert({ store_id:storeId, store_name:storeName, image_url:finalUrl, revised_prompt:img.revised, brief, size_label:size, prompt });
+    } catch(e) { toast.error(`✗ Generation failed: ${e.message}`); setGenStep('idle'); }
   };
 
   const isBusy = genStep !== 'idle';
-  const stepLabel = { analyzing:'🔍 Analysing product…', building:'⚙️ Building prompt…', generating:'🎨 Generating…', compositing:'🏷 Adding logo…' };
+  const stepLabel = { building:'⚙️ Building prompt…', generating:'🎨 Generating background…', compositing:'📦 Placing product & logo…' };
 
   return (
     <>

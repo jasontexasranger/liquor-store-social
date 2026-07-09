@@ -276,6 +276,67 @@ function useBrandImageLibrary(storeId) {
 }
 
 // ─────────────────────────────────────────────
+// BACKGROUND REMOVER
+// Flood-fills from all 4 edges to cut out near-white/near-cream backgrounds.
+// Returns a transparent-background PNG data URL.
+// ─────────────────────────────────────────────
+function removeProductBackground(dataUrl, threshold=228) {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width  = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const { data, width, height } = imgData;
+      const visited = new Uint8Array(width * height);
+
+      const isBg = i =>
+        data[i] >= threshold && data[i+1] >= threshold && data[i+2] >= threshold && data[i+3] > 0;
+
+      // Iterative flood fill seeded from all 4 edges (avoids recursion stack overflow)
+      const stack = [];
+      for (let x = 0; x < width; x++)  { stack.push(x, 0); stack.push(x, height - 1); }
+      for (let y = 1; y < height - 1; y++) { stack.push(0, y); stack.push(width - 1, y); }
+
+      while (stack.length) {
+        const y = stack.pop(), x = stack.pop();
+        if (x < 0 || x >= width || y < 0 || y >= height) continue;
+        const idx = y * width + x;
+        if (visited[idx]) continue;
+        visited[idx] = 1;
+        const i = idx * 4;
+        if (!isBg(i)) continue;
+        data[i + 3] = 0; // punch out pixel
+        stack.push(x+1, y, x-1, y, x, y+1, x, y-1);
+      }
+
+      // Feather: slightly soften opaque pixels that border a transparent one
+      for (let y = 1; y < height - 1; y++) {
+        for (let x = 1; x < width - 1; x++) {
+          const idx = y * width + x;
+          const i   = idx * 4;
+          if (data[i+3] !== 255) continue; // skip transparent & already-soft
+          const neighbors = [
+            ((y-1)*width+x)*4, ((y+1)*width+x)*4,
+            (y*width+x-1)*4,   (y*width+x+1)*4
+          ];
+          const nearTransp = neighbors.some(ni => data[ni+3] === 0);
+          if (nearTransp) data[i+3] = 180; // anti-alias edge pixel
+        }
+      }
+
+      ctx.putImageData(imgData, 0, 0);
+      resolve(canvas.toDataURL('image/png'));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+// ─────────────────────────────────────────────
 // LOGO COMPOSITOR
 // ─────────────────────────────────────────────
 function compositeLogoOnImage(imageDataUrl, logoDataUrl, logoSizePct=0.18) {
@@ -354,46 +415,85 @@ function compositeProductAndLogo(bgDataUrl, productDataUrl, logoDataUrl, priceOp
         const { saveText, priceText, primaryColor='#1e3a5f', accentColor='#c4a35a' } = priceOpts;
         if (!saveText && !priceText) { addLogo(); return; }
 
-        const pad      = Math.round(bg.width * 0.04);
-        const lineH    = Math.round(bg.height * 0.054);
+        const W   = bg.width, H = bg.height;
+        const pad = Math.round(W * 0.042);
+        const bx  = pad; // left margin
+
         ctx.textBaseline = 'middle';
         ctx.textAlign    = 'left';
-        let ty = bg.height - Math.round(bg.height * 0.06);
 
-        // Sale price pill (bottom)
+        // ── PRICE BLOCK (main) ──
+        // Positioned at vertical center-ish of the left zone, anchored from bottom
+        let blockBottom = Math.round(H * 0.80);
+
         if (priceText) {
-          const fs = Math.round(lineH * 1.35);
-          ctx.font = `bold ${fs}px -apple-system,Arial,sans-serif`;
-          const tw   = ctx.measureText(priceText).width;
-          const bw   = tw + pad * 1.4;
-          const bh   = Math.round(lineH * 1.7);
-          const bx   = pad;
-          const by   = ty - bh;
-          ctx.globalAlpha = 0.92;
-          ctx.fillStyle   = primaryColor;
-          ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 8); ctx.fill();
-          ctx.globalAlpha = 1;
-          ctx.fillStyle   = '#ffffff';
-          ctx.fillText(priceText, bx + pad * 0.7, by + bh / 2);
-          ty = by - Math.round(bg.height * 0.012);
+          const priceVal  = priceText.startsWith('$') ? priceText : `$${priceText}`;
+          const priceFs   = Math.round(H * 0.115); // large price number
+          const justFs    = Math.round(H * 0.040); // "JUST" label
+          const innerPadV = Math.round(H * 0.018);
+          const innerPadH = Math.round(W * 0.030);
+
+          ctx.font = `bold ${justFs}px -apple-system,Arial,sans-serif`;
+          const justW = ctx.measureText('JUST').width;
+
+          ctx.font = `900 ${priceFs}px -apple-system,Arial Black,sans-serif`;
+          const priceW = ctx.measureText(priceVal).width;
+
+          const blockW = Math.max(justW, priceW) + innerPadH * 2;
+          const blockH = justFs * 1.6 + priceFs * 1.3 + innerPadV * 2;
+          const by     = blockBottom - blockH;
+
+          // Drop shadow under block
+          ctx.save();
+          ctx.shadowColor   = 'rgba(0,0,0,0.4)';
+          ctx.shadowBlur    = Math.round(W * 0.025);
+          ctx.shadowOffsetX = Math.round(W * 0.006);
+          ctx.shadowOffsetY = Math.round(H * 0.008);
+          ctx.globalAlpha   = 0.93;
+          ctx.fillStyle     = primaryColor;
+          ctx.beginPath(); ctx.roundRect(bx, by, blockW, blockH, 14); ctx.fill();
+          ctx.restore();
+
+          // "JUST" label in accent colour
+          ctx.globalAlpha  = 1;
+          ctx.font         = `bold ${justFs}px -apple-system,Arial,sans-serif`;
+          ctx.fillStyle    = accentColor;
+          ctx.fillText('JUST', bx + innerPadH, by + innerPadV + justFs * 0.75);
+
+          // Price in white
+          ctx.font      = `900 ${priceFs}px -apple-system,Arial Black,sans-serif`;
+          ctx.fillStyle = '#ffffff';
+          ctx.fillText(priceVal, bx + innerPadH, by + innerPadV + justFs * 1.6 + priceFs * 0.62);
+
+          blockBottom = by - Math.round(H * 0.018);
         }
 
-        // Save pill (above price)
+        // ── SAVE BADGE (above price block) ──
         if (saveText) {
-          const label = `SAVE ${saveText}`;
-          const fs    = Math.round(lineH * 0.95);
-          ctx.font    = `bold ${fs}px -apple-system,Arial,sans-serif`;
-          const tw    = ctx.measureText(label).width;
-          const bw    = tw + pad * 1.4;
-          const bh    = Math.round(lineH * 1.4);
-          const bx    = pad;
-          const by    = ty - bh;
-          ctx.globalAlpha = 0.92;
-          ctx.fillStyle   = accentColor;
-          ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 8); ctx.fill();
-          ctx.globalAlpha = 1;
-          ctx.fillStyle   = primaryColor;
-          ctx.fillText(label, bx + pad * 0.7, by + bh / 2);
+          const saveVal  = saveText.startsWith('$') ? `SAVE ${saveText}` : `SAVE $${saveText}`;
+          const saveFs   = Math.round(H * 0.052);
+          const innerPad = Math.round(W * 0.025);
+
+          ctx.font = `bold ${saveFs}px -apple-system,Arial,sans-serif`;
+          const tw  = ctx.measureText(saveVal).width;
+          const bw  = tw + innerPad * 2;
+          const bh  = Math.round(saveFs * 1.65);
+          const by  = blockBottom - bh;
+
+          ctx.save();
+          ctx.shadowColor   = 'rgba(0,0,0,0.3)';
+          ctx.shadowBlur    = Math.round(W * 0.018);
+          ctx.shadowOffsetX = Math.round(W * 0.004);
+          ctx.shadowOffsetY = Math.round(H * 0.005);
+          ctx.globalAlpha   = 0.95;
+          ctx.fillStyle     = accentColor;
+          ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 10); ctx.fill();
+          ctx.restore();
+
+          ctx.globalAlpha  = 1;
+          ctx.font         = `bold ${saveFs}px -apple-system,Arial,sans-serif`;
+          ctx.fillStyle    = primaryColor;
+          ctx.fillText(saveVal, bx + innerPad, by + bh / 2);
         }
 
         addLogo();
@@ -893,12 +993,19 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
       setGenStep('generating');
       const img = await openAIGenerateImage(prompt, dalleSize, apiKey);
 
-      // Composite product (if any) + price labels + logo
+      // Step 1: remove white/cream background from product photo
+      let cleanProd = prodPrev;
+      if (hasProduct) {
+        setGenStep('removing');
+        try { cleanProd = await removeProductBackground(prodPrev); } catch(e) { cleanProd = prodPrev; }
+      }
+
+      // Step 2: composite product + price labels + logo onto AI background
       setGenStep('compositing');
       let finalUrl;
       if (hasProduct) {
         const priceOpts = { saveText: saveText.trim(), priceText: priceText.trim(), primaryColor: brand.primary_color, accentColor: brand.secondary_color };
-        finalUrl = await compositeProductAndLogo(img.url, prodPrev, logo, priceOpts);
+        finalUrl = await compositeProductAndLogo(img.url, cleanProd, logo, priceOpts);
       } else {
         finalUrl = logo ? await compositeLogoOnImage(img.url, logo) : img.url;
       }
@@ -912,7 +1019,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
   };
 
   const isBusy = genStep !== 'idle';
-  const stepLabel = { building:'⚙️ Building prompt…', generating:'🎨 Generating background…', compositing:'📦 Placing product & logo…' };
+  const stepLabel = { building:'⚙️ Building prompt…', generating:'🎨 Generating background…', removing:'✂️ Removing background…', compositing:'📦 Compositing final image…' };
 
   return (
     <>

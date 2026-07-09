@@ -286,6 +286,42 @@ function useBrandImageLibrary(storeId) {
 }
 
 // ─────────────────────────────────────────────
+// BRAND TEMPLATES HOOK
+// ─────────────────────────────────────────────
+const TEMPLATE_SIZES = [
+  { label:'1:1 Square',   w:1080, h:1080,  desc:'FB & IG Feed' },
+  { label:'4:5 Portrait', w:1080, h:1350,  desc:'IG Feed Portrait' },
+  { label:'9:16 Story',   w:1080, h:1920,  desc:'Stories & Reels' },
+  { label:'16:9 Banner',  w:1200, h:628,   desc:'FB Cover / Banner' },
+];
+
+function useBrandTemplates(storeId) {
+  const [templates, setTemplates] = useState([]);
+
+  const load = useCallback(async () => {
+    const sb=getSB(); if(!sb) return;
+    const {data}=await sb.from('brand_templates').select('*').eq('store_id',storeId).order('created_at',{ascending:false});
+    setTemplates(data||[]);
+  },[storeId]);
+
+  useEffect(()=>{ load(); },[load]);
+
+  const add = async (tpl) => {
+    const sb=getSB(); if(!sb) throw new Error('Not connected');
+    await sb.from('brand_templates').insert({ store_id:storeId, ...tpl });
+    await load();
+  };
+
+  const remove = async (id) => {
+    const sb=getSB(); if(!sb) return;
+    await sb.from('brand_templates').delete().eq('id',id);
+    setTemplates(p=>p.filter(t=>t.id!==id));
+  };
+
+  return { templates, load, add, remove };
+}
+
+// ─────────────────────────────────────────────
 // BACKGROUND REMOVER
 // Flood-fills from all 4 edges to cut out near-white/near-cream backgrounds.
 // Returns a transparent-background PNG data URL.
@@ -549,149 +585,176 @@ function compositeProductAndLogo(bgDataUrl, productDataUrl, logoDataUrl, priceOp
 // brandColors: { primary, accent }
 // data: { saveText, priceText, productName, productSize, storeName }
 // ─────────────────────────────────────────────
-async function renderRetailTemplate(tplId, { productDataUrl, logoDataUrl, brandPrimary='#1e3a5f', brandAccent='#c4a35a' }, { saveText='', priceText='', productName='', productSize='', storeName='' }) {
-  const W = 1080, H = 1080;
+// bgDataUrl: optional uploaded template image (replaces flat-colour background + top bar)
+// canvasW/canvasH: from the template metadata (defaults to 1080x1080)
+async function renderRetailTemplate(tplId, { productDataUrl, logoDataUrl, brandPrimary='#1e3a5f', brandAccent='#c4a35a', bgDataUrl=null, canvasW=1080, canvasH=1080 }, { saveText='', priceText='', productName='', productSize='', storeName='' }) {
+  const W = canvasW, H = canvasH;
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
 
   const isDark  = tplId === 'dark';
-  const BG      = isDark ? '#0D1B2A' : tplId === 'bold' ? '#FFFFFF' : '#F5EDDA';
   const txtMain = isDark ? '#FFFFFF' : brandPrimary;
 
-  // ── Background ──
-  ctx.fillStyle = BG;
-  ctx.fillRect(0, 0, W, H);
+  // ── Layer 1: background (uploaded template or flat colour) ──
+  let BAR_H = 0; // when using a custom bg, no bar needed — it's in the design
+  if (bgDataUrl) {
+    await new Promise(res => {
+      const bg = new Image();
+      bg.onload = () => { ctx.drawImage(bg, 0, 0, W, H); res(); };
+      bg.onerror = res;
+      bg.src = bgDataUrl;
+    });
+  } else {
+    // Built-in flat-colour template
+    BAR_H = Math.round(H * 0.139); // ~150px at 1080
+    const BG = isDark ? '#0D1B2A' : tplId === 'bold' ? '#FFFFFF' : '#F5EDDA';
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = brandPrimary;
+    ctx.fillRect(0, 0, W, BAR_H);
+    ctx.fillStyle = brandAccent;
+    ctx.fillRect(0, BAR_H, W, Math.round(H * 0.006));
 
-  // ── Top bar ──
-  const BAR_H = 150;
-  ctx.fillStyle = brandPrimary;
-  ctx.fillRect(0, 0, W, BAR_H);
+    // Logo or store name in top bar
+    await new Promise(res => {
+      if (!logoDataUrl) {
+        ctx.fillStyle = '#ffffff';
+        ctx.font = `bold ${Math.round(BAR_H * 0.35)}px -apple-system,Arial,sans-serif`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText((storeName || '').toUpperCase(), W/2, BAR_H/2);
+        return res();
+      }
+      const logo = new Image();
+      logo.onload = () => {
+        const lh = BAR_H * 0.68, lw = lh * (logo.width / logo.height);
+        ctx.drawImage(logo, (W - lw)/2, (BAR_H - lh)/2, lw, lh);
+        res();
+      };
+      logo.onerror = res;
+      logo.src = logoDataUrl;
+    });
 
-  // ── Accent stripe ──
-  ctx.fillStyle = brandAccent;
-  ctx.fillRect(0, BAR_H, W, 7);
+    // Subtle vertical divider
+    ctx.strokeStyle = txtMain + '28';
+    ctx.lineWidth   = 1.5;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(Math.round(W * 0.477), BAR_H + Math.round(H * 0.046));
+    ctx.lineTo(Math.round(W * 0.477), H - Math.round(H * 0.051));
+    ctx.stroke();
+  }
 
-  // ── Logo or store name ──
-  await new Promise(res => {
-    if (!logoDataUrl) {
-      ctx.fillStyle = '#ffffff';
-      ctx.font      = `bold 52px -apple-system,Arial,sans-serif`;
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText((storeName || '').toUpperCase(), W/2, BAR_H/2);
-      return res();
+  // ── LEFT ZONE: measure total height first, then vertically center ──
+  // All sizes scale proportionally to canvas dimensions
+  const LX          = Math.round(W * 0.057);
+  const MAX_TXT_W   = Math.round(W * 0.388);
+  const CONTENT_TOP = BAR_H + Math.round(H * 0.013);
+  const CONTENT_BOT = H - Math.round(H * 0.051);
+  const CONTENT_H   = CONTENT_BOT - CONTENT_TOP;
+  const FS_SAVE  = Math.round(H * 0.041);
+  const IPV_SAVE = Math.round(H * 0.009);
+  const IPH_SAVE = Math.round(W * 0.013);
+  const FS_NAME  = Math.round(H * 0.031);
+  const FS_SIZE  = Math.round(H * 0.025);
+  const FS_JUST  = Math.round(H * 0.030);
+  const FS_PRICE = Math.round(H * 0.109);
+
+  // Pre-measure product name lines
+  let nameLines = [];
+  if (productName) {
+    ctx.font = `bold ${FS_NAME}px -apple-system,Arial,sans-serif`;
+    const words = productName.toUpperCase().split(' ');
+    let line = '';
+    for (const w of words) {
+      const test = line ? `${line} ${w}` : w;
+      if (ctx.measureText(test).width > MAX_TXT_W && line) { nameLines.push(line); line = w; }
+      else line = test;
     }
-    const logo = new Image();
-    logo.onload = () => {
-      const lh = BAR_H * 0.68, lw = lh * (logo.width / logo.height);
-      ctx.drawImage(logo, (W - lw)/2, (BAR_H - lh)/2, lw, lh);
-      res();
-    };
-    logo.onerror = res;
-    logo.src = logoDataUrl;
-  });
+    if (line) nameLines.push(line);
+  }
 
-  // ── Subtle vertical divider ──
-  ctx.strokeStyle = txtMain + '28';
-  ctx.lineWidth   = 1.5;
-  ctx.setLineDash([]);
-  ctx.beginPath();
-  ctx.moveTo(515, BAR_H + 50);
-  ctx.lineTo(515, H - 55);
-  ctx.stroke();
+  // Calculate total block height
+  const saveBlockH  = saveText    ? (FS_SAVE + IPV_SAVE * 2) + 28 : 0;
+  const nameBlockH  = nameLines.length > 0 ? nameLines.length * FS_NAME * 1.35 + 10 : 0;
+  const sizeBlockH  = productSize ? FS_SIZE * 1.7 + 4 : 0;
+  const priceBlockH = priceText   ? 22 + FS_JUST * 1.45 + FS_PRICE * 1.15 : 0;
+  const totalH      = saveBlockH + nameBlockH + sizeBlockH + priceBlockH;
 
-  // ── LEFT ZONE: price content ──
-  const LX = 62;
-  let ly = BAR_H + 55;
-  ctx.textAlign    = 'left';
-  ctx.textBaseline = 'top';
+  // Center the block vertically
+  let ly = CONTENT_TOP + Math.round(Math.max(30, (CONTENT_H - totalH) / 2));
+
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
 
   // SAVE badge
   if (saveText) {
     const label = saveText.startsWith('$') ? `SAVE ${saveText}` : `SAVE $${saveText}`;
-    const fs = 44, iph = 14, ipv = 10;
-    ctx.font = `bold ${fs}px -apple-system,Arial,sans-serif`;
+    ctx.font = `bold ${FS_SAVE}px -apple-system,Arial,sans-serif`;
     const tw = ctx.measureText(label).width;
-    const bw = tw + iph*2, bh = fs*1.0 + ipv*2;
+    const bw = tw + IPH_SAVE * 2, bh = FS_SAVE + IPV_SAVE * 2;
     ctx.save();
-    ctx.shadowColor='rgba(0,0,0,0.18)'; ctx.shadowBlur=12; ctx.shadowOffsetY=4;
+    ctx.shadowColor = 'rgba(0,0,0,0.18)'; ctx.shadowBlur = 12; ctx.shadowOffsetY = 4;
     ctx.fillStyle = brandAccent;
     ctx.beginPath(); ctx.roundRect(LX, ly, bw, bh, 10); ctx.fill();
     ctx.restore();
     ctx.fillStyle = brandPrimary;
     ctx.textBaseline = 'middle';
-    ctx.fillText(label, LX + iph, ly + bh/2);
+    ctx.fillText(label, LX + IPH_SAVE, ly + bh / 2);
     ctx.textBaseline = 'top';
-    ly += bh + 26;
+    ly += bh + 28;
   }
 
-  // Product name (ALL CAPS, word-wrapped ~430px)
-  if (productName) {
-    const fs = 34;
-    ctx.font = `bold ${fs}px -apple-system,Arial,sans-serif`;
+  // Product name
+  if (nameLines.length > 0) {
+    ctx.font = `bold ${FS_NAME}px -apple-system,Arial,sans-serif`;
     ctx.fillStyle = txtMain;
-    const maxW = 430, words = productName.toUpperCase().split(' ');
-    let line = '';
-    for (const w of words) {
-      const test = line ? `${line} ${w}` : w;
-      if (ctx.measureText(test).width > maxW && line) {
-        ctx.fillText(line, LX, ly); ly += fs * 1.35; line = w;
-      } else { line = test; }
-    }
-    if (line) { ctx.fillText(line, LX, ly); ly += fs * 1.35; }
-    ly += 4;
+    for (const line of nameLines) { ctx.fillText(line, LX, ly); ly += FS_NAME * 1.35; }
+    ly += 10;
   }
 
   // Product size
   if (productSize) {
-    const fs = 27;
-    ctx.font = `${fs}px -apple-system,Arial,sans-serif`;
-    ctx.fillStyle = txtMain + (isDark ? 'aa' : '99');
+    ctx.font = `${FS_SIZE}px -apple-system,Arial,sans-serif`;
+    ctx.fillStyle = txtMain + (isDark ? 'aa' : '88');
     ctx.fillText(productSize, LX, ly);
-    ly += fs * 1.7;
+    ly += FS_SIZE * 1.7 + 4;
   }
-
-  ly += 18;
 
   // JUST + Price
   if (priceText) {
     const priceVal = priceText.startsWith('$') ? priceText : `$${priceText}`;
-    const justFs = 32, priceFs = 118;
-
-    // "JUST" label in accent colour
-    ctx.font = `bold ${justFs}px -apple-system,Arial,sans-serif`;
+    ly += 22;
+    ctx.font = `bold ${FS_JUST}px -apple-system,Arial,sans-serif`;
     ctx.fillStyle = brandAccent;
     ctx.fillText('JUST', LX, ly);
-    ly += justFs * 1.45;
-
-    // Big price
+    ly += FS_JUST * 1.45;
     ctx.save();
-    ctx.shadowColor='rgba(0,0,0,0.12)'; ctx.shadowBlur=8; ctx.shadowOffsetY=4;
-    ctx.font = `900 ${priceFs}px -apple-system,Arial Black,sans-serif`;
+    ctx.shadowColor = 'rgba(0,0,0,0.12)'; ctx.shadowBlur = 8; ctx.shadowOffsetY = 4;
+    ctx.font = `900 ${FS_PRICE}px -apple-system,Arial Black,sans-serif`;
     ctx.fillStyle = txtMain;
     ctx.fillText(priceVal, LX, ly);
     ctx.restore();
   }
 
-  // Footer
+  // Footer — pinned to bottom
   ctx.font = `22px -apple-system,Arial,sans-serif`;
   ctx.fillStyle = txtMain + (isDark ? '66' : '55');
   ctx.textBaseline = 'bottom';
   ctx.fillText('Plus tax & deposit. While supplies last.', LX, H - 24);
 
-  // ── RIGHT ZONE: product photo ──
+  // ── RIGHT ZONE: product photo — vertically centered ──
   if (productDataUrl) {
     await new Promise(res => {
       const prod = new Image();
       prod.onload = () => {
-        const PX=530, PY=BAR_H+20, PW=490, PH=H-BAR_H-60;
-        const scale = Math.min(PW/prod.width, PH/prod.height);
-        const dw = prod.width*scale, dh = prod.height*scale;
-        const dx = PX + (PW-dw)/2;
-        const dy = PY + PH - dh; // bottom-align
+        const PX = Math.round(W * 0.49), PY = BAR_H + Math.round(H * 0.018), PW = Math.round(W * 0.454), PH = H - BAR_H - Math.round(H * 0.055);
+        const scale = Math.min(PW / prod.width, PH / prod.height);
+        const dw = prod.width * scale, dh = prod.height * scale;
+        const dx = PX + (PW - dw) / 2;
+        const dy = PY + (PH - dh) / 2; // vertically centered
         ctx.save();
-        ctx.shadowColor='rgba(0,0,0,0.20)';
-        ctx.shadowBlur=32; ctx.shadowOffsetX=5; ctx.shadowOffsetY=18;
+        ctx.shadowColor = 'rgba(0,0,0,0.20)';
+        ctx.shadowBlur = 32; ctx.shadowOffsetX = 5; ctx.shadowOffsetY = 18;
         ctx.drawImage(prod, dx, dy, dw, dh);
         ctx.restore();
         res();
@@ -1107,7 +1170,9 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
   const [logo,        setLogo]       = useState(null);
   const [showLib,     setShowLib]    = useState(false);
   const [lightbox,    setLightbox]   = useState(null);
+  const [selectedTpl, setSelectedTpl]= useState(null); // uploaded template object
   const { images:libImages, remove:removeFromLib } = useBrandImageLibrary(storeId);
+  const { templates: uploadedTpls }  = useBrandTemplates(storeId);
   const { save:saveToQuickLib } = useProductLibrary(storeId);
   const prodRef = useRef();
 
@@ -1146,16 +1211,22 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
       try { cleanProd = await removeProductBackground(prodPrev); } catch(e) {}
 
       setGenStep('compositing');
+      // Use uploaded template if selected, otherwise fall back to built-in
+      const bgDataUrl  = selectedTpl ? selectedTpl.data  : null;
+      const canvasW    = selectedTpl ? selectedTpl.canvas_w : 1080;
+      const canvasH    = selectedTpl ? selectedTpl.canvas_h : 1080;
+      const sizeLabel  = selectedTpl ? selectedTpl.size_label : '1:1 Square';
+
       const finalUrl = await renderRetailTemplate(
         template,
-        { productDataUrl: cleanProd, logoDataUrl: logo, brandPrimary: brand.primary_color||'#1e3a5f', brandAccent: brand.secondary_color||'#c4a35a' },
+        { productDataUrl: cleanProd, logoDataUrl: logo, brandPrimary: brand.primary_color||'#1e3a5f', brandAccent: brand.secondary_color||'#c4a35a', bgDataUrl, canvasW, canvasH },
         { saveText: saveText.trim(), priceText: priceText.trim(), productName: productName.trim(), productSize: productSize.trim(), storeName: store?.name||'' }
       );
       onGenerated(finalUrl);
       toast.success('Ad created!');
       setGenStep('idle');
       const sb=getSB();
-      if(sb) sb.from('generation_history').insert({ store_id:storeId, store_name:store?.name, image_url:finalUrl, brief:`Template: ${template}`, size_label:'1080x1080' });
+      if(sb) sb.from('generation_history').insert({ store_id:storeId, store_name:store?.name, image_url:finalUrl, brief:`Template: ${selectedTpl?.name||template}`, size_label: sizeLabel });
     } catch(e) { toast.error(`Failed: ${e.message}`); setGenStep('idle'); }
   };
 
@@ -1227,21 +1298,67 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
 
       {/* ── TEMPLATE MODE ── */}
       {mode==='template' && (<>
-        {/* Template picker */}
+        {/* Template picker — uploaded first, built-in as fallback */}
         <div>
-          <Label>Template</Label>
-          <div className="grid grid-cols-3 gap-2">
-            {RETAIL_TEMPLATES.map(t=>(
-              <button key={t.id} onClick={()=>setTemplate(t.id)}
-                className={`rounded-lg border-2 p-1.5 text-center transition-all ${template===t.id?'border-indigo-500':'border-gray-200 dark:border-gray-700'}`}>
-                <div className="w-full h-8 rounded mb-1 overflow-hidden flex flex-col">
-                  <div className="flex-none h-2.5" style={{background:t.previewBar}}/>
-                  <div className="flex-1" style={{background:t.previewBg}}/>
+          <Label>{uploadedTpls.length>0 ? 'Your Templates' : 'Template Style'}</Label>
+          {uploadedTpls.length>0 ? (
+            <>
+              <div className="grid grid-cols-2 gap-2 mb-2">
+                {uploadedTpls.map(t=>(
+                  <button key={t.id} onClick={()=>setSelectedTpl(t)}
+                    className={`rounded-xl border-2 overflow-hidden text-left transition-all ${selectedTpl?.id===t.id?'border-indigo-500 ring-2 ring-indigo-200 dark:ring-indigo-900':'border-gray-200 dark:border-gray-700'}`}>
+                    <img src={t.data} alt={t.name} className="w-full aspect-video object-cover"/>
+                    <div className="px-2 py-1.5">
+                      <p className="text-xs font-semibold text-gray-800 dark:text-gray-200 truncate">{t.name}</p>
+                      <p className="text-xs text-gray-400">{t.size_label}</p>
+                    </div>
+                  </button>
+                ))}
+                {/* Option to use built-in */}
+                <button onClick={()=>setSelectedTpl(null)}
+                  className={`rounded-xl border-2 p-2 text-center transition-all ${!selectedTpl?'border-indigo-500 ring-2 ring-indigo-200 dark:ring-indigo-900':'border-gray-200 dark:border-gray-700'}`}>
+                  <div className="w-full h-10 rounded mb-1 overflow-hidden flex flex-col">
+                    <div className="flex-none h-3" style={{background:'#1e3a5f'}}/>
+                    <div className="flex-1 bg-amber-50"/>
+                  </div>
+                  <span className="text-xs font-semibold text-gray-600 dark:text-gray-400">Built-in Style</span>
+                </button>
+              </div>
+              {!selectedTpl && (
+                <div className="grid grid-cols-3 gap-1.5">
+                  {RETAIL_TEMPLATES.map(t=>(
+                    <button key={t.id} onClick={()=>setTemplate(t.id)}
+                      className={`rounded-lg border-2 p-1.5 text-center transition-all ${template===t.id?'border-indigo-400':'border-gray-200 dark:border-gray-700'}`}>
+                      <div className="w-full h-6 rounded mb-1 overflow-hidden flex flex-col">
+                        <div className="flex-none h-2" style={{background:t.previewBar}}/>
+                        <div className="flex-1" style={{background:t.previewBg}}/>
+                      </div>
+                      <span className="text-xs text-gray-600 dark:text-gray-400">{t.name}</span>
+                    </button>
+                  ))}
                 </div>
-                <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">{t.name}</span>
-              </button>
-            ))}
-          </div>
+              )}
+              <p className="text-xs text-gray-400 mt-1.5 italic">
+                {selectedTpl ? `Using: ${selectedTpl.name} (${selectedTpl.canvas_w}×${selectedTpl.canvas_h})` : 'Upload templates in Brand → Ad Templates'}
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="grid grid-cols-3 gap-2">
+                {RETAIL_TEMPLATES.map(t=>(
+                  <button key={t.id} onClick={()=>setTemplate(t.id)}
+                    className={`rounded-lg border-2 p-1.5 text-center transition-all ${template===t.id?'border-indigo-500':'border-gray-200 dark:border-gray-700'}`}>
+                    <div className="w-full h-8 rounded mb-1 overflow-hidden flex flex-col">
+                      <div className="flex-none h-2.5" style={{background:t.previewBar}}/>
+                      <div className="flex-1" style={{background:t.previewBg}}/>
+                    </div>
+                    <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">{t.name}</span>
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-indigo-500 dark:text-indigo-400 mt-1.5">💡 Upload your own brand templates under Brand → Ad Templates</p>
+            </>
+          )}
         </div>
 
         {/* Product upload */}
@@ -2426,21 +2543,148 @@ function AdsPage({ settings }) {
   );
 }
 
+// ─────────────────────────────────────────────
+// TEMPLATE MANAGER
+// ─────────────────────────────────────────────
+function TemplateManager({ storeId }) {
+  const toast = useToast();
+  const { templates, add, remove } = useBrandTemplates(storeId);
+  const [name,      setName]     = useState('');
+  const [sizeLabel, setSizeLabel]= useState('1:1 Square');
+  const [preview,   setPreview]  = useState(null);
+  const [saving,    setSaving]   = useState(false);
+  const [filterSz,  setFilterSz] = useState('all');
+  const fileRef = useRef();
+
+  const handleFile = file => {
+    if (!file) return;
+    const r = new FileReader();
+    r.onload = () => setPreview(r.result);
+    r.readAsDataURL(file);
+  };
+
+  const save = async () => {
+    if (!preview)      { toast.error('Upload a template image first'); return; }
+    if (!name.trim())  { toast.error('Give the template a name'); return; }
+    setSaving(true);
+    try {
+      const sz = TEMPLATE_SIZES.find(s=>s.label===sizeLabel) || TEMPLATE_SIZES[0];
+      // Compress to reasonable size
+      const compressed = await compressImage(preview, Math.max(sz.w, sz.h), 0.88);
+      await add({ name: name.trim(), size_label: sizeLabel, canvas_w: sz.w, canvas_h: sz.h, data: compressed });
+      toast.success('Template saved!');
+      setName(''); setPreview(null);
+      if (fileRef.current) fileRef.current.value = '';
+    } catch(e) { toast.error(e.message); }
+    finally { setSaving(false); }
+  };
+
+  const grouped = TEMPLATE_SIZES.reduce((acc, sz) => {
+    acc[sz.label] = templates.filter(t=>t.size_label===sz.label);
+    return acc;
+  }, {});
+  const allSizes = TEMPLATE_SIZES.filter(sz => templates.some(t=>t.size_label===sz.label));
+
+  return (
+    <div className="space-y-5">
+      {/* Upload new template */}
+      <Card>
+        <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4 uppercase tracking-wide">Upload Template Background</h3>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+          Design your ad background in Canva, Photoshop, etc. — include your logo and brand elements, but <strong>leave the right side open</strong> for the product and <strong>left side open</strong> for price text. Export as PNG and upload here.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-3">
+            <div><Label>Template Name</Label><Input value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Weekly Deal — Navy"/></div>
+            <div>
+              <Label>Canvas Size</Label>
+              <Select value={sizeLabel} onChange={e=>setSizeLabel(e.target.value)}>
+                {TEMPLATE_SIZES.map(s=><option key={s.label} value={s.label}>{s.label} — {s.w}×{s.h} ({s.desc})</option>)}
+              </Select>
+            </div>
+            <div>
+              <Label>Template Image</Label>
+              <Button variant="secondary" size="sm" onClick={()=>fileRef.current?.click()}>📂 Choose File</Button>
+              <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={e=>handleFile(e.target.files[0])}/>
+            </div>
+            <Button onClick={save} loading={saving} className="w-full">Save Template</Button>
+          </div>
+          <div className="flex items-center justify-center">
+            {preview
+              ? <img src={preview} alt="" className="max-h-48 rounded-xl border border-gray-200 dark:border-gray-600 object-contain shadow"/>
+              : <div className="w-full h-40 rounded-xl border-2 border-dashed border-gray-200 dark:border-gray-700 flex items-center justify-center text-gray-400 text-sm">Preview appears here</div>
+            }
+          </div>
+        </div>
+      </Card>
+
+      {/* Template gallery */}
+      {templates.length > 0 && (
+        <Card>
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-wide">Saved Templates ({templates.length})</h3>
+            <Select value={filterSz} onChange={e=>setFilterSz(e.target.value)} className="w-auto text-xs">
+              <option value="all">All sizes</option>
+              {allSizes.map(s=><option key={s.label} value={s.label}>{s.label}</option>)}
+            </Select>
+          </div>
+          {(filterSz==='all' ? TEMPLATE_SIZES : TEMPLATE_SIZES.filter(s=>s.label===filterSz)).map(sz=>{
+            const grp = grouped[sz.label];
+            if (!grp || grp.length===0) return null;
+            return (
+              <div key={sz.label} className="mb-5">
+                <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-2 uppercase tracking-wide">{sz.label} — {sz.w}×{sz.h}</p>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+                  {grp.map(t=>(
+                    <div key={t.id} className="relative group rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 shadow-sm">
+                      <img src={t.data} alt={t.name} className="w-full aspect-video object-cover"/>
+                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-all flex items-end">
+                        <div className="w-full p-2 translate-y-full group-hover:translate-y-0 transition-transform">
+                          <button onClick={()=>remove(t.id)} className="w-full text-xs bg-red-500 hover:bg-red-600 text-white rounded-lg py-1 font-semibold">🗑 Delete</button>
+                        </div>
+                      </div>
+                      <div className="absolute top-1.5 left-1.5 bg-black/60 text-white text-xs rounded px-2 py-0.5 font-medium">{t.name}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </Card>
+      )}
+
+      {templates.length === 0 && (
+        <div className="text-center py-12 text-gray-400 dark:text-gray-500">
+          <p className="text-3xl mb-2">🖼</p>
+          <p className="text-sm font-medium">No templates uploaded yet</p>
+          <p className="text-xs mt-1">Upload your first brand template above</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function BrandPage({ settings }) {
   const [tab,     setTab]     = useState('profile');
   const [storeId, setStoreId] = useState(STORES[0].id);
+  const tabs = [
+    {id:'profile',   label:'🎨 Brand Profile'},
+    {id:'templates', label:'🖼 Ad Templates'},
+    {id:'library',   label:'📦 Product Library'},
+  ];
   return (
     <div>
       <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 mb-5 flex-wrap gap-2">
         <div className="flex">
-          {[{id:'profile',label:'🎨 Brand Profile'},{id:'library',label:'📦 Product Library'}].map(t=>(
+          {tabs.map(t=>(
             <button key={t.id} onClick={()=>setTab(t.id)} className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}>{t.label}</button>
           ))}
         </div>
-        {tab==='profile' && <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs mb-1">{STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</Select>}
+        {(tab==='profile'||tab==='templates') && <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs mb-1">{STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</Select>}
       </div>
-      {tab==='profile' && <BrandProfileEditor storeId={storeId}/>}
-      {tab==='library' && <ProductLibrary/>}
+      {tab==='profile'   && <BrandProfileEditor storeId={storeId}/>}
+      {tab==='templates' && <TemplateManager storeId={storeId}/>}
+      {tab==='library'   && <ProductLibrary/>}
     </div>
   );
 }

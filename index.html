@@ -1,0 +1,1477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Liquor Store Social Media Manager</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>tailwind.config = { darkMode: 'class' };</script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <style>
+    ::-webkit-scrollbar { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #9ca3af; border-radius: 4px; }
+    .dark ::-webkit-scrollbar-thumb { background: #4b5563; }
+    .line-clamp-3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  </style>
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 transition-colors">
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef, createContext, useContext } = React;
+
+// ─────────────────────────────────────────────
+// CONSTANTS
+// ─────────────────────────────────────────────
+const STORES = [
+  { id: 'hideaway',    name: 'Hideaway Liquor Store',           pageId: '470483222987070',  lat: 50.6745, lng: -120.3273 },
+  { id: 'downtown',   name: 'Downtown Liquor Store',            pageId: '1240518919373546', lat: 50.6733, lng: -120.3267 },
+  { id: 'cobblestone',name: 'Cobblestone Liquor Store',         pageId: '195479573844075',  lat: 50.6721, lng: -120.3255 },
+  { id: 'brothers',   name: 'Brothers Liquor Store - Sicamous', pageId: '58258641073',      lat: 50.8449, lng: -118.9742 },
+];
+
+const AD_ACCOUNT_ID = 'act_813974741538881';
+const GRAPH_API     = 'https://graph.facebook.com/v21.0';
+
+const AD_OBJECTIVES = [
+  { value: 'OUTCOME_AWARENESS', label: 'Awareness',  optGoal: 'REACH' },
+  { value: 'OUTCOME_TRAFFIC',   label: 'Traffic',    optGoal: 'LINK_CLICKS' },
+  { value: 'OUTCOME_SALES',     label: 'Sales',      optGoal: 'OFFSITE_CONVERSIONS' },
+];
+const AD_PLACEMENTS = [
+  { value: 'facebook_feed',     label: 'FB Feed' },
+  { value: 'instagram_stories', label: 'IG Stories' },
+  { value: 'facebook_reels',    label: 'FB Reels' },
+];
+const CTA_OPTIONS = ['LEARN_MORE','SHOP_NOW','GET_DIRECTIONS','CALL_NOW','MESSAGE_PAGE','SIGN_UP'];
+const TONES       = ['Friendly','Promotional','Informational'];
+
+const BRAND_DEFAULTS = {
+  personality:'', tone:'', do_say:'', dont_say:'', audience:'',
+  primary_color:'#1e3a5f', secondary_color:'#c4a35a', accent_color:'#f8f4ef',
+  visual_style:'', mood:'', style_keywords:'', avoid_visually:'',
+};
+
+const IMAGE_SIZES = [
+  { value:'1024x1024', label:'1:1 Square',    desc:'FB & IG feed',     dalleSize:'1024x1024' },
+  { value:'1792x1024', label:'16:9 Landscape', desc:'Banners / cover', dalleSize:'1792x1024' },
+  { value:'1024x1792', label:'9:16 Portrait',  desc:'Stories & Reels', dalleSize:'1024x1792' },
+  { value:'1080x1350', label:'4:5 Portrait',   desc:'IG feed portrait', dalleSize:'1024x1792' },
+];
+
+const POST_SUFFIX = '\n\nPrices exclude tax & deposit - while supplies last';
+
+// ─────────────────────────────────────────────
+// LOCAL STORAGE (dark mode + Supabase config only)
+// ─────────────────────────────────────────────
+const ls = {
+  get: (k, d=null) => { try { const v=localStorage.getItem(k); return v!==null?JSON.parse(v):d; } catch { return d; } },
+  set: (k, v)      => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+
+// ─────────────────────────────────────────────
+// SUPABASE CLIENT (lazy init)
+// ─────────────────────────────────────────────
+let _sb = null;
+const getSB = () => _sb;
+
+function initSB(url, key) {
+  _sb = window.supabase.createClient(url, key, { auth: { persistSession: true } });
+  return _sb;
+}
+
+// Auto-init from localStorage on page load
+;(function() {
+  const url = ls.get('smm_sb_url','');
+  const key = ls.get('smm_sb_key','');
+  if (url && key) initSB(url, key);
+})();
+
+// ─────────────────────────────────────────────
+// TOAST CONTEXT
+// ─────────────────────────────────────────────
+const ToastCtx = createContext(null);
+
+function ToastProvider({ children }) {
+  const [toasts, setToasts] = useState([]);
+  const add = useCallback((msg, type='info') => {
+    const id = Date.now() + Math.random();
+    setToasts(t => [...t, { id, msg, type }]);
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 5000);
+  }, []);
+  const toast = { success:m=>add(m,'success'), error:m=>add(m,'error'), info:m=>add(m,'info') };
+  return (
+    <ToastCtx.Provider value={toast}>
+      {children}
+      <div className="fixed bottom-4 right-4 space-y-2 z-50 pointer-events-none">
+        {toasts.map(t => (
+          <div key={t.id} className={`px-4 py-3 rounded-xl shadow-lg text-white text-sm max-w-sm pointer-events-auto
+            ${t.type==='success'?'bg-emerald-600':t.type==='error'?'bg-red-600':'bg-blue-600'}`}>
+            {t.type==='success'?'✓ ':t.type==='error'?'✗ ':'ℹ '}{t.msg}
+          </div>
+        ))}
+      </div>
+    </ToastCtx.Provider>
+  );
+}
+const useToast = () => useContext(ToastCtx);
+
+// ─────────────────────────────────────────────
+// SUPABASE BRAND PROFILE HOOK
+// ─────────────────────────────────────────────
+function useBrandProfile(storeId) {
+  const [profile, setProfile] = useState({ ...BRAND_DEFAULTS });
+  const [logo,    setLogo]    = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const sb = getSB();
+    if (!sb) { setLoading(false); return; }
+    setLoading(true);
+    sb.from('brand_profiles').select('*').eq('store_id', storeId).maybeSingle()
+      .then(({ data }) => {
+        if (data) {
+          const { logo_data, id, updated_at, store_id, ...p } = data;
+          setProfile({ ...BRAND_DEFAULTS, ...p });
+          setLogo(logo_data || null);
+        } else {
+          setProfile({ ...BRAND_DEFAULTS });
+          setLogo(null);
+        }
+      })
+      .finally(() => setLoading(false));
+  }, [storeId]);
+
+  const saveProfile = async (p) => {
+    const sb = getSB();
+    if (!sb) throw new Error('Supabase not connected');
+    const { error } = await sb.from('brand_profiles')
+      .upsert({ store_id: storeId, ...p }, { onConflict: 'store_id' });
+    if (error) throw error;
+    setProfile(p);
+  };
+
+  const saveLogo = async (dataUrl) => {
+    const sb = getSB();
+    if (!sb) throw new Error('Supabase not connected');
+    const { error } = await sb.from('brand_profiles')
+      .upsert({ store_id: storeId, logo_data: dataUrl }, { onConflict: 'store_id' });
+    if (error) throw error;
+    setLogo(dataUrl);
+  };
+
+  const clearLogo = async () => {
+    const sb = getSB();
+    if (!sb) throw new Error('Supabase not connected');
+    await sb.from('brand_profiles').update({ logo_data: null }).eq('store_id', storeId);
+    setLogo(null);
+  };
+
+  return { profile, logo, loading, saveProfile, saveLogo, clearLogo };
+}
+
+// ─────────────────────────────────────────────
+// GRAPH API HELPERS
+// ─────────────────────────────────────────────
+async function gFetch(path, opts={}) {
+  const res  = await fetch(`${GRAPH_API}${path}`, opts);
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || 'Graph API error');
+  return data;
+}
+async function gGet(path, params, token) {
+  const qs = new URLSearchParams({ ...params, access_token: token }).toString();
+  return gFetch(`${path}?${qs}`);
+}
+async function gPost(path, body, token) {
+  return gFetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...body, access_token: token }),
+  });
+}
+async function gPostForm(path, form) {
+  return gFetch(path, { method: 'POST', body: form });
+}
+
+// ─────────────────────────────────────────────
+// AI HELPERS
+// ─────────────────────────────────────────────
+async function callAI(prompt, apiKey, maxTokens=600) {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': apiKey,
+      'anthropic-version': '2023-06-01',
+      'anthropic-dangerous-direct-browser-access': 'true',
+    },
+    body: JSON.stringify({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: maxTokens,
+      messages: [{ role: 'user', content: prompt }],
+    }),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message);
+  return data.content[0].text.trim();
+}
+
+async function openAIDescribeImage(base64, mime, apiKey) {
+  const res = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      max_tokens: 200,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image_url', image_url: { url: `data:${mime};base64,${base64}` } },
+          { type: 'text', text: 'Describe this product image in detail for a DALL-E image generation prompt. Focus on the product, packaging, label, colours, and visual characteristics. Be specific and vivid. Under 80 words, no intro text.' }
+        ]
+      }]
+    })
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message);
+  return data.choices[0].message.content.trim();
+}
+
+async function openAIGenerateImage(prompt, dalleSize, apiKey) {
+  const res = await fetch('https://api.openai.com/v1/images/generations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+    body: JSON.stringify({ model: 'dall-e-3', prompt, n: 1, size: dalleSize, quality: 'standard', response_format: 'url' })
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message);
+  return { url: data.data[0].url, revised: data.data[0].revised_prompt };
+}
+
+// ─────────────────────────────────────────────
+// UTILITIES
+// ─────────────────────────────────────────────
+function fileToBase64(file) {
+  return new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload  = () => res(r.result.split(',')[1]);
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+}
+function fmtDate(iso)   { return new Date(iso).toLocaleString(undefined, { dateStyle:'medium', timeStyle:'short' }); }
+function fmtBudget(c)   { return c ? `$${(+c/100).toFixed(2)}` : '—'; }
+function fmtNum(n)      { if (!n||n==='—') return '—'; return Number(n).toLocaleString(); }
+function fmtCTR(v)      { if (!v||v==='—') return '—'; return `${parseFloat(v).toFixed(2)}%`; }
+function fbPostUrl(id)  { const p=String(id).split('_'); return p.length===2?`https://www.facebook.com/permalink.php?story_fbid=${p[1]}&id=${p[0]}`:`https://www.facebook.com/${id}`; }
+
+// ─────────────────────────────────────────────
+// UI PRIMITIVES
+// ─────────────────────────────────────────────
+const Card = ({ children, className='' }) => (
+  <div className={`bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 p-5 ${className}`}>{children}</div>
+);
+const Label = ({ children, className='' }) => (
+  <label className={`block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1 ${className}`}>{children}</label>
+);
+const inputCls = 'w-full rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent placeholder-gray-400 dark:placeholder-gray-500';
+const Input    = ({ className='', ...p }) => <input    className={`${inputCls} ${className}`} {...p} />;
+const Textarea = ({ className='', ...p }) => <textarea className={`${inputCls} resize-none ${className}`} {...p} />;
+const Select   = ({ children, className='', ...p }) => <select className={`${inputCls} ${className}`} {...p}>{children}</select>;
+
+function Button({ children, variant='primary', size='md', className='', loading=false, ...p }) {
+  const base = 'inline-flex items-center justify-center font-medium rounded-xl transition-all focus:outline-none focus:ring-2 focus:ring-offset-1 disabled:opacity-50 disabled:cursor-not-allowed';
+  const sz   = { sm:'px-3 py-1.5 text-xs', md:'px-4 py-2 text-sm', lg:'px-5 py-2.5 text-sm' }[size];
+  const v    = {
+    primary:   'bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white focus:ring-indigo-500',
+    secondary: 'bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 focus:ring-gray-400',
+    danger:    'bg-red-600 hover:bg-red-700 text-white focus:ring-red-500',
+    success:   'bg-emerald-600 hover:bg-emerald-700 text-white focus:ring-emerald-500',
+    ghost:     'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 focus:ring-gray-400',
+    outline:   'border border-indigo-500 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950 focus:ring-indigo-500',
+  }[variant];
+  return (
+    <button className={`${base} ${sz} ${v} ${className}`} disabled={loading||p.disabled} {...p}>
+      {loading && <svg className="animate-spin -ml-0.5 mr-1.5 h-4 w-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>}
+      {children}
+    </button>
+  );
+}
+
+function Badge({ children, color='gray' }) {
+  const c = { green:'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300', red:'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300', yellow:'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300', blue:'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300', gray:'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300', indigo:'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300' }[color]||'bg-gray-100 text-gray-700';
+  return <span className={`inline-flex items-center px-2 py-0.5 rounded-lg text-xs font-semibold ${c}`}>{children}</span>;
+}
+
+function Divider({ label }) {
+  return (
+    <div className="relative my-4">
+      <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-200 dark:border-gray-700"/></div>
+      {label && <div className="relative flex justify-center"><span className="bg-white dark:bg-gray-800 px-2 text-xs text-gray-400">{label}</span></div>}
+    </div>
+  );
+}
+
+function StepIndicator({ steps }) {
+  return (
+    <div className="space-y-2 mt-1">
+      {steps.map((s,i) => (
+        <div key={i} className="flex items-start gap-3">
+          <div className="mt-0.5 w-5 flex-shrink-0 flex justify-center">
+            {s.status==='running'  && <svg className="animate-spin h-4 w-4 text-indigo-500" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>}
+            {s.status==='done'    && <span className="text-emerald-500 font-bold text-sm">✓</span>}
+            {s.status==='error'   && <span className="text-red-500 font-bold text-sm">✗</span>}
+            {s.status==='pending' && <span className="text-gray-300 dark:text-gray-600">○</span>}
+          </div>
+          <div>
+            <p className={`text-sm ${s.status==='error'?'text-red-600 dark:text-red-400':s.status==='done'?'text-emerald-700 dark:text-emerald-400':s.status==='running'?'text-gray-900 dark:text-gray-100 font-medium':'text-gray-400 dark:text-gray-500'}`}>{s.label}</p>
+            {s.detail && <p className="text-xs text-gray-500 dark:text-gray-400 font-mono mt-0.5">{s.detail}</p>}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ImagePicker({ file, preview, onFile, onClear, label='Attach Image (optional)' }) {
+  const ref = useRef();
+  return (
+    <div>
+      <Label>{label}</Label>
+      <div className="flex items-center gap-3 flex-wrap">
+        <Button variant="secondary" size="sm" onClick={() => ref.current?.click()}>📷 Choose File</Button>
+        {file && <span className="text-sm text-gray-600 dark:text-gray-400 truncate max-w-xs">{file.name}</span>}
+        {file && <button onClick={onClear} className="text-xs text-red-500 hover:underline">Remove</button>}
+      </div>
+      <input ref={ref} type="file" accept="image/jpeg,image/png,image/gif,image/webp" onChange={e=>onFile(e.target.files[0])} className="hidden"/>
+      {preview && <img src={preview} alt="" className="mt-3 h-28 rounded-xl object-cover border border-gray-200 dark:border-gray-600"/>}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// SETUP SCREEN (first-run Supabase config)
+// ─────────────────────────────────────────────
+function SetupScreen({ onSetup }) {
+  const toast  = useToast();
+  const [url,  setUrl]  = useState('');
+  const [key,  setKey]  = useState('');
+
+  const connect = () => {
+    if (!url.trim() || !key.trim()) { toast.error('Enter both the Project URL and Anon Key'); return; }
+    try {
+      ls.set('smm_sb_url', url.trim());
+      ls.set('smm_sb_key', key.trim());
+      initSB(url.trim(), key.trim());
+      onSetup();
+    } catch (e) {
+      toast.error(`Connection failed: ${e.message}`);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 p-4">
+      <div className="w-full max-w-md">
+        <div className="text-center mb-8">
+          <span className="text-5xl">🥃</span>
+          <h1 className="text-2xl font-bold text-white mt-3">Liquor Store Social</h1>
+          <p className="text-gray-400 text-sm mt-1">Connect your Supabase project to get started</p>
+        </div>
+        <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-6 space-y-4">
+          <div>
+            <h2 className="text-base font-bold text-gray-900 dark:text-white">Connect Supabase</h2>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              Find these values in your Supabase project → <strong>Settings → API</strong>
+            </p>
+          </div>
+          <div>
+            <Label>Project URL</Label>
+            <Input value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://xxxxxxxxxxxx.supabase.co" type="url"/>
+          </div>
+          <div>
+            <Label>Anon (public) Key</Label>
+            <Input value={key} onChange={e=>setKey(e.target.value)} placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9…"/>
+          </div>
+          <Button onClick={connect} className="w-full" size="lg" disabled={!url||!key}>
+            Connect →
+          </Button>
+          <p className="text-xs text-gray-400 text-center">
+            Credentials are stored only in your browser's localStorage.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// LOGIN SCREEN
+// ─────────────────────────────────────────────
+function LoginScreen() {
+  const toast = useToast();
+  const [email,    setEmail]    = useState('');
+  const [password, setPassword] = useState('');
+  const [mode,     setMode]     = useState('login'); // 'login' | 'forgot'
+  const [loading,  setLoading]  = useState(false);
+  const [sent,     setSent]     = useState(false);
+
+  const signIn = async () => {
+    if (!email||!password) { toast.error('Enter email and password'); return; }
+    setLoading(true);
+    const { error } = await getSB().auth.signInWithPassword({ email, password });
+    if (error) toast.error(error.message);
+    setLoading(false);
+  };
+
+  const resetPw = async () => {
+    if (!email) { toast.error('Enter your email'); return; }
+    setLoading(true);
+    const { error } = await getSB().auth.resetPasswordForEmail(email, { redirectTo: window.location.origin });
+    if (error) toast.error(error.message);
+    else setSent(true);
+    setLoading(false);
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 p-4">
+      <div className="w-full max-w-sm">
+        <div className="text-center mb-8">
+          <span className="text-5xl">🥃</span>
+          <h1 className="text-2xl font-bold text-white mt-3">Liquor Store Social</h1>
+          <p className="text-gray-400 text-sm mt-1">4 locations · Social Media Manager</p>
+        </div>
+        <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-6">
+          <h2 className="text-lg font-bold text-gray-900 dark:text-white mb-5 text-center">
+            {mode==='login' ? 'Sign In' : 'Reset Password'}
+          </h2>
+          <div className="space-y-3">
+            <div>
+              <Label>Email</Label>
+              <Input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="you@example.com"
+                onKeyDown={e=>e.key==='Enter'&&mode==='login'&&signIn()}/>
+            </div>
+            {mode==='login' && (
+              <div>
+                <Label>Password</Label>
+                <Input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="••••••••"
+                  onKeyDown={e=>e.key==='Enter'&&signIn()}/>
+              </div>
+            )}
+          </div>
+          <div className="mt-5">
+            {mode==='login' && <Button onClick={signIn} loading={loading} className="w-full" size="lg">Sign In</Button>}
+            {mode==='forgot' && !sent && <Button onClick={resetPw} loading={loading} className="w-full" size="lg">Send Reset Email</Button>}
+            {sent && <p className="text-center text-sm text-emerald-600 font-medium py-2">✓ Check your inbox for the reset link</p>}
+          </div>
+          <div className="mt-4 text-center text-xs text-gray-500">
+            {mode==='login'
+              ? <button onClick={()=>setMode('forgot')} className="hover:text-indigo-600 underline">Forgot password?</button>
+              : <button onClick={()=>{setMode('login');setSent(false);}} className="hover:text-indigo-600 underline">← Back to sign in</button>}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// AI WRITER PANEL
+// ─────────────────────────────────────────────
+function AIWriter({ storeName, apiKey, mode='caption', onResult }) {
+  const toast = useToast();
+  const [topic,   setTopic]   = useState('');
+  const [tone,    setTone]    = useState('Friendly');
+  const [extra,   setExtra]   = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const generate = async () => {
+    if (!apiKey)       { toast.error('Add your Anthropic API key in Settings first'); return; }
+    if (!topic.trim()) { toast.error('Enter a topic or promotion description'); return; }
+    setLoading(true);
+    try {
+      let prompt;
+      if (mode==='caption') {
+        prompt = `Write a ${tone.toLowerCase()} Facebook post caption for "${storeName}", an independent retail liquor store in BC, Canada.\n\nPost topic/promotion: ${topic}${extra?`\n\nAdditional instructions: ${extra}`:''}\n\nRules:\n- Under 280 characters\n- Engaging and authentic\n- No hashtags unless requested\n- Output ONLY the caption text with no quotes, labels, or explanation`;
+      } else {
+        prompt = `Write Facebook ad copy for "${storeName}", an independent retail liquor store in BC, Canada.\n\nPromotion: ${topic}\nTone: ${tone}${extra?`\nNotes: ${extra}`:''}\n\nOutput EXACTLY two lines:\nHEADLINE: [max 25 characters]\nBODY: [max 90 characters]\n\nNo other text.`;
+      }
+      const result = await callAI(prompt, apiKey, 400);
+      onResult(result, mode);
+      toast.success('AI copy generated!');
+    } catch (e) {
+      toast.error(`AI error: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-950/40 p-4 space-y-3">
+      <p className="text-xs font-bold text-violet-700 dark:text-violet-300 uppercase tracking-widest">✨ AI Copy Writer</p>
+      <div>
+        <Label>Topic / Promotion</Label>
+        <Input value={topic} onChange={e=>setTopic(e.target.value)} placeholder={mode==='caption'?'e.g. Weekend sale — 20% off all BC craft beer':'e.g. Summer whiskey sale, $5 off any bottle'}/>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <Label>Tone</Label>
+          <Select value={tone} onChange={e=>setTone(e.target.value)}>{TONES.map(t=><option key={t}>{t}</option>)}</Select>
+        </div>
+        <div>
+          <Label>Extra instructions</Label>
+          <Input value={extra} onChange={e=>setExtra(e.target.value)} placeholder="Optional"/>
+        </div>
+      </div>
+      <Button onClick={generate} loading={loading} variant="outline" className="w-full">Generate with Claude Haiku</Button>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// MODULE 1 — POST COMPOSER
+// ─────────────────────────────────────────────
+function PostComposer({ settings }) {
+  const toast = useToast();
+  const [selected,  setSelected]  = useState([STORES[0].id]);
+  const [caption,   setCaption]   = useState('');
+  const [imgFile,   setImgFile]   = useState(null);
+  const [imgPrev,   setImgPrev]   = useState(null);
+  const [schedule,  setSchedule]  = useState('');
+  const [loading,   setLoading]   = useState(false);
+  const [showAI,    setShowAI]    = useState(false);
+  const [results,   setResults]   = useState([]);
+
+  const toggleStore = id => setSelected(p => p.includes(id)?p.filter(x=>x!==id):[...p,id]);
+
+  const handleFile = file => {
+    if (!file) return;
+    setImgFile(file);
+    const r=new FileReader(); r.onload=()=>setImgPrev(r.result); r.readAsDataURL(file);
+  };
+
+  const post = async () => {
+    if (!caption.trim())       { toast.error('Write a caption first'); return; }
+    if (selected.length===0)   { toast.error('Select at least one store'); return; }
+    const missing = selected.filter(id=>!settings.tokens[id]);
+    if (missing.length) { toast.error(`Missing token(s) for: ${missing.map(id=>STORES.find(s=>s.id===id)?.name).join(', ')}`); return; }
+    if (schedule) {
+      const ts = new Date(schedule).getTime();
+      if (ts < Date.now()+10*60*1000) { toast.error('Scheduled time must be at least 10 minutes in the future'); return; }
+    }
+
+    setLoading(true);
+    setResults([]);
+    const res = [];
+
+    for (const storeId of selected) {
+      const store   = STORES.find(s=>s.id===storeId);
+      const token   = settings.tokens[storeId];
+      const schedTs = schedule ? Math.floor(new Date(schedule).getTime()/1000) : null;
+      try {
+        let postId;
+        if (imgFile) {
+          const form = new FormData();
+          form.append('caption', caption+POST_SUFFIX);
+          form.append('source', imgFile);
+          form.append('access_token', token);
+          if (schedTs) { form.append('published','false'); form.append('scheduled_publish_time',String(schedTs)); }
+          const r = await gPostForm(`/${store.pageId}/photos`, form);
+          postId = r.post_id||r.id;
+        } else {
+          const body = { message: caption+POST_SUFFIX };
+          if (schedTs) { body.published=false; body.scheduled_publish_time=schedTs; }
+          const r = await gPost(`/${store.pageId}/feed`, body, token);
+          postId = r.id;
+        }
+        res.push({ store:store.name, success:true, postId, scheduled:!!schedTs });
+      } catch (e) {
+        res.push({ store:store.name, success:false, error:e.message });
+      }
+    }
+
+    setResults(res);
+    res.forEach(r => { if(r.success) toast.success(`${r.store}: ${r.scheduled?'Scheduled!':'Published!'}`); else toast.error(`${r.store}: ${r.error}`); });
+    if (res.some(r=>r.success)) { setCaption(''); setImgFile(null); setImgPrev(null); setSchedule(''); }
+    setLoading(false);
+  };
+
+  const activeStore = selected.length===1 ? STORES.find(s=>s.id===selected[0])?.name : 'our store';
+
+  return (
+    <Card>
+      <h2 className="text-base font-bold text-gray-900 dark:text-white mb-4">📝 Compose Post</h2>
+      <div className="mb-4">
+        <Label>Post to</Label>
+        <div className="grid grid-cols-2 gap-2">
+          {STORES.map(s => (
+            <label key={s.id} className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer text-sm transition-all
+              ${selected.includes(s.id)?'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-800 dark:text-indigo-200 shadow-sm':'border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:border-indigo-300'}`}>
+              <input type="checkbox" className="rounded" checked={selected.includes(s.id)} onChange={()=>toggleStore(s.id)}/>
+              <span className="leading-tight">{s.name}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+      <div className="mb-3">
+        <div className="flex items-center justify-between mb-1">
+          <Label className="mb-0">Caption</Label>
+          <button onClick={()=>setShowAI(v=>!v)} className="text-xs font-semibold text-violet-600 dark:text-violet-400 hover:underline">{showAI?'Hide AI Writer ↑':'✨ AI Writer'}</button>
+        </div>
+        <Textarea value={caption} onChange={e=>setCaption(e.target.value)} rows={4} placeholder="What's happening at the store?"/>
+        <p className="text-xs text-gray-400 mt-1 text-right">{caption.length} chars</p>
+        <p className="text-xs text-gray-400 dark:text-gray-500 mt-1 italic">↳ <span className="text-gray-500 dark:text-gray-400">Auto-appended:</span> Prices exclude tax &amp; deposit - while supplies last</p>
+      </div>
+      {showAI && <div className="mb-4"><AIWriter storeName={activeStore} apiKey={settings.anthropicKey} mode="caption" onResult={t=>setCaption(t)}/></div>}
+      <div className="mb-4"><ImagePicker file={imgFile} preview={imgPrev} onFile={handleFile} onClear={()=>{setImgFile(null);setImgPrev(null);}}/></div>
+      <div className="mb-5">
+        <Label>Schedule (leave blank to post immediately)</Label>
+        <Input type="datetime-local" value={schedule} onChange={e=>setSchedule(e.target.value)}/>
+      </div>
+      <Button onClick={post} loading={loading} className="w-full" size="lg">
+        {schedule?'📅 Schedule Post':'🚀 Publish Now'}
+      </Button>
+      {results.length>0 && (
+        <div className="mt-4 space-y-2">
+          <Divider label="Results"/>
+          {results.map((r,i) => (
+            <div key={i} className={`flex items-center justify-between text-sm p-3 rounded-xl ${r.success?'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300':'bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400'}`}>
+              <span>{r.success?'✓':'✗'} {r.store} — {r.success?(r.scheduled?'Scheduled':'Published'):r.error}</span>
+              {r.success&&r.postId && <a href={fbPostUrl(r.postId)} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline ml-3 whitespace-nowrap">View post →</a>}
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ─────────────────────────────────────────────
+// MODULE 1 — POST HISTORY
+// ─────────────────────────────────────────────
+function PostHistory({ settings }) {
+  const toast   = useToast();
+  const [storeId, setStoreId] = useState(STORES[0].id);
+  const [posts,   setPosts]   = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [loaded,  setLoaded]  = useState(false);
+  const store = STORES.find(s=>s.id===storeId);
+
+  useEffect(()=>{setLoaded(false);setPosts([]);},[storeId]);
+
+  const load = async () => {
+    const token = settings.tokens[storeId];
+    if (!token) { toast.error('No page token for this store — add it in Settings'); return; }
+    setLoading(true);
+    try {
+      const data = await gGet(`/${store.pageId}/posts`,{
+        fields:'message,story,created_time,full_picture,permalink_url,likes.summary(true),comments.summary(true),shares',limit:12
+      },token);
+      setPosts(data.data||[]);
+      setLoaded(true);
+    } catch(e) { toast.error(`Failed to load posts: ${e.message}`); }
+    finally    { setLoading(false); }
+  };
+
+  return (
+    <Card>
+      <div className="flex items-center gap-2 mb-4 flex-wrap">
+        <h2 className="text-base font-bold text-gray-900 dark:text-white flex-1">📋 Post History</h2>
+        <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs">{STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</Select>
+        <Button variant="secondary" size="sm" onClick={load} loading={loading}>{loaded?'Refresh':'Load Posts'}</Button>
+      </div>
+      {!loaded&&!loading && <div className="text-center py-10 text-gray-400 dark:text-gray-500 text-sm">Select a store and click Load Posts</div>}
+      {loaded&&posts.length===0 && <div className="text-center py-10 text-gray-400 dark:text-gray-500 text-sm">No posts found.</div>}
+      <div className="space-y-3 max-h-[480px] overflow-y-auto pr-1">
+        {posts.map(p => {
+          const text = p.message||p.story||'(no text)';
+          return (
+            <div key={p.id} className="flex gap-3 p-3 rounded-xl border border-gray-100 dark:border-gray-700 hover:border-indigo-200 dark:hover:border-indigo-700 transition-colors">
+              {p.full_picture && <img src={p.full_picture} alt="" className="w-16 h-16 rounded-lg object-cover flex-shrink-0 border border-gray-200 dark:border-gray-600"/>}
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-gray-800 dark:text-gray-200 line-clamp-3 leading-snug">{text}</p>
+                <p className="text-xs text-gray-400 mt-1">{fmtDate(p.created_time)}</p>
+                <div className="flex items-center gap-3 mt-1.5 flex-wrap">
+                  <span className="text-xs text-gray-500 dark:text-gray-400">👍 {p.likes?.summary?.total_count??0}</span>
+                  <span className="text-xs text-gray-500 dark:text-gray-400">💬 {p.comments?.summary?.total_count??0}</span>
+                  {(p.shares?.count??0)>0 && <span className="text-xs text-gray-500 dark:text-gray-400">🔄 {p.shares.count}</span>}
+                  <a href={p.permalink_url||fbPostUrl(p.id)} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline ml-auto">Open →</a>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+// ─────────────────────────────────────────────
+// MODULE 2 — CAMPAIGN BUILDER
+// ─────────────────────────────────────────────
+function CampaignBuilder({ settings }) {
+  const toast = useToast();
+  const [storeId,     setStoreId]     = useState(STORES[0].id);
+  const [objective,   setObjective]   = useState('OUTCOME_AWARENESS');
+  const [campName,    setCampName]    = useState('');
+  const [dailyBudget, setDailyBudget] = useState('20');
+  const [lat,         setLat]         = useState(String(STORES[0].lat));
+  const [lng,         setLng]         = useState(String(STORES[0].lng));
+  const [radius,      setRadius]      = useState('25');
+  const [ageMin,      setAgeMin]      = useState('21');
+  const [ageMax,      setAgeMax]      = useState('65');
+  const [placements,  setPlacements]  = useState(['facebook_feed']);
+  const [headline,    setHeadline]    = useState('');
+  const [bodyText,    setBodyText]    = useState('');
+  const [ctaType,     setCtaType]     = useState('LEARN_MORE');
+  const [destUrl,     setDestUrl]     = useState('');
+  const [adImg,       setAdImg]       = useState(null);
+  const [adImgPrev,   setAdImgPrev]   = useState(null);
+  const [showAI,      setShowAI]      = useState(false);
+  const [steps,       setSteps]       = useState([]);
+  const [running,     setRunning]     = useState(false);
+
+  const store = STORES.find(s=>s.id===storeId);
+
+  useEffect(()=>{ const s=STORES.find(x=>x.id===storeId); if(s){setLat(String(s.lat));setLng(String(s.lng));} },[storeId]);
+
+  const togglePlacement = p => setPlacements(prev=>prev.includes(p)?prev.filter(x=>x!==p):[...prev,p]);
+
+  const handleAI = (text) => {
+    const lines = text.split('\n');
+    for (const ln of lines) {
+      if (ln.startsWith('HEADLINE:')) setHeadline(ln.replace('HEADLINE:','').trim().slice(0,25));
+      if (ln.startsWith('BODY:'))     setBodyText(ln.replace('BODY:','').trim().slice(0,125));
+    }
+  };
+
+  const addStep    = (label,status='pending',detail='') => setSteps(p=>[...p,{label,status,detail}]);
+  const finishStep = (status,detail='') => setSteps(p=>{ const a=[...p]; a[a.length-1]={...a[a.length-1],status,detail}; return a; });
+
+  const launch = async () => {
+    const token = settings.metaToken;
+    if (!token)            { toast.error('Meta User Access Token not set in Settings'); return; }
+    if (!campName.trim())  { toast.error('Enter a campaign name'); return; }
+    if (!headline.trim()||!bodyText.trim()) { toast.error('Enter headline and body copy'); return; }
+    if (placements.length===0) { toast.error('Select at least one placement'); return; }
+
+    const objMeta = AD_OBJECTIVES.find(o=>o.value===objective);
+    setRunning(true); setSteps([]);
+
+    try {
+      addStep('Creating campaign…','running');
+      const camp = await gPost(`/${AD_ACCOUNT_ID}/campaigns`,{ name:`[${store.name}] ${campName}`, objective, status:'PAUSED', special_ad_categories:[] },token);
+      finishStep('done',`ID: ${camp.id}`);
+
+      addStep('Creating ad set…','running');
+      const targeting = { geo_locations:{ custom_locations:[{ latitude:parseFloat(lat)||store.lat, longitude:parseFloat(lng)||store.lng, radius:parseInt(radius)||25, distance_unit:'kilometer' }] }, age_min:parseInt(ageMin)||21, age_max:parseInt(ageMax)||65, facebook_positions:placements.filter(p=>p.startsWith('facebook')).map(p=>p.replace('facebook_','')).filter(Boolean), instagram_positions:placements.filter(p=>p.startsWith('instagram')).map(p=>p.replace('instagram_','')).filter(Boolean) };
+      const adSet = await gPost(`/${AD_ACCOUNT_ID}/adsets`,{ name:`${campName} — Ad Set`, campaign_id:camp.id, daily_budget:Math.round(parseFloat(dailyBudget)*100), billing_event:'IMPRESSIONS', optimization_goal:objMeta.optGoal, targeting, status:'PAUSED', page_id:store.pageId },token);
+      finishStep('done',`ID: ${adSet.id}`);
+
+      let imageHash=null;
+      if (adImg) {
+        addStep('Uploading image…','running');
+        const b64=await fileToBase64(adImg);
+        const resp=await gPost(`/${AD_ACCOUNT_ID}/adimages`,{[adImg.name]:b64},token);
+        imageHash=resp.images?Object.values(resp.images)[0]?.hash:null;
+        finishStep('done',imageHash?`Hash: ${imageHash}`:'Uploaded');
+      }
+
+      addStep('Creating ad creative…','running');
+      const linkUrl=destUrl.trim()||`https://www.facebook.com/${store.pageId}`;
+      const creative = await gPost(`/${AD_ACCOUNT_ID}/adcreatives`,{ name:`${campName} — Creative`, object_story_spec:{ page_id:store.pageId, link_data:{ message:bodyText, name:headline, link:linkUrl, call_to_action:{type:ctaType,value:{link:linkUrl}}, ...(imageHash?{image_hash:imageHash}:{}) } } },token);
+      finishStep('done',`ID: ${creative.id}`);
+
+      addStep('Creating ad…','running');
+      const ad=await gPost(`/${AD_ACCOUNT_ID}/ads`,{ name:`${campName} — Ad`, adset_id:adSet.id, creative:{creative_id:creative.id}, status:'PAUSED' },token);
+      finishStep('done',`ID: ${ad.id}`);
+
+      addStep('🎉 Campaign created — all assets are PAUSED','done','Activate in Meta Ads Manager when ready.');
+      toast.success('Campaign created!');
+    } catch(e) { finishStep('error',e.message); toast.error(`Failed: ${e.message}`); }
+    finally    { setRunning(false); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4 uppercase tracking-wide">Campaign</h3>
+        <div className="grid grid-cols-2 gap-4">
+          <div><Label>Store</Label><Select value={storeId} onChange={e=>setStoreId(e.target.value)}>{STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</Select></div>
+          <div><Label>Objective</Label><Select value={objective} onChange={e=>setObjective(e.target.value)}>{AD_OBJECTIVES.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</Select></div>
+          <div><Label>Campaign Name</Label><Input value={campName} onChange={e=>setCampName(e.target.value)} placeholder="Summer Whiskey Sale"/></div>
+          <div><Label>Daily Budget (CAD $)</Label><Input type="number" min="1" step="1" value={dailyBudget} onChange={e=>setDailyBudget(e.target.value)}/></div>
+        </div>
+      </Card>
+      <Card>
+        <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4 uppercase tracking-wide">Ad Set &amp; Targeting</h3>
+        <div className="grid grid-cols-3 gap-3 mb-4">
+          <div><Label>Latitude</Label><Input value={lat} onChange={e=>setLat(e.target.value)} placeholder="50.6745"/></div>
+          <div><Label>Longitude</Label><Input value={lng} onChange={e=>setLng(e.target.value)} placeholder="-120.3273"/></div>
+          <div><Label>Radius (km)</Label><Input type="number" min="1" max="80" value={radius} onChange={e=>setRadius(e.target.value)}/></div>
+          <div><Label>Min Age</Label><Input type="number" min="18" max="65" value={ageMin} onChange={e=>setAgeMin(e.target.value)}/></div>
+          <div><Label>Max Age</Label><Input type="number" min="18" max="65" value={ageMax} onChange={e=>setAgeMax(e.target.value)}/></div>
+        </div>
+        <div><Label>Placements</Label>
+          <div className="flex gap-2 flex-wrap">
+            {AD_PLACEMENTS.map(p => (
+              <label key={p.value} className={`flex items-center gap-2 px-3 py-2 rounded-xl border cursor-pointer text-sm transition-all
+                ${placements.includes(p.value)?'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300':'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400'}`}>
+                <input type="checkbox" className="rounded" checked={placements.includes(p.value)} onChange={()=>togglePlacement(p.value)}/>{p.label}
+              </label>
+            ))}
+          </div>
+        </div>
+      </Card>
+      <Card>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-wide">Ad Creative</h3>
+          <button onClick={()=>setShowAI(v=>!v)} className="text-xs font-semibold text-violet-600 dark:text-violet-400 hover:underline">{showAI?'Hide AI ↑':'✨ AI Copy'}</button>
+        </div>
+        {showAI && <div className="mb-4"><AIWriter storeName={store.name} apiKey={settings.anthropicKey} mode="ad" onResult={handleAI}/></div>}
+        <div className="space-y-3">
+          <div><Label>Headline <span className="text-gray-400 font-normal normal-case">({headline.length}/25)</span></Label><Input value={headline} onChange={e=>setHeadline(e.target.value)} maxLength={25} placeholder="Shop Our Whiskey Sale"/></div>
+          <div><Label>Primary Text</Label><Textarea value={bodyText} onChange={e=>setBodyText(e.target.value)} rows={3} placeholder="Discover amazing local spirits…"/></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div><Label>Call to Action</Label><Select value={ctaType} onChange={e=>setCtaType(e.target.value)}>{CTA_OPTIONS.map(c=><option key={c} value={c}>{c.replace(/_/g,' ')}</option>)}</Select></div>
+            <div><Label>Destination URL</Label><Input value={destUrl} onChange={e=>setDestUrl(e.target.value)} placeholder="https://yourstore.com" type="url"/></div>
+          </div>
+          <ImagePicker file={adImg} preview={adImgPrev} onFile={f=>{setAdImg(f);const r=new FileReader();r.onload=()=>setAdImgPrev(r.result);r.readAsDataURL(f);}} onClear={()=>{setAdImg(null);setAdImgPrev(null);}} label="Ad Image (optional)"/>
+        </div>
+      </Card>
+      {steps.length>0 && <Card><h3 className="text-sm font-bold text-gray-900 dark:text-white mb-3 uppercase tracking-wide">Build Progress</h3><StepIndicator steps={steps}/></Card>}
+      <Button onClick={launch} loading={running} className="w-full" size="lg">🚀 Create Campaign (starts Paused)</Button>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// MODULE 2 — CAMPAIGN DASHBOARD
+// ─────────────────────────────────────────────
+function CampaignDashboard({ settings }) {
+  const toast = useToast();
+  const [campaigns,  setCampaigns]  = useState([]);
+  const [loading,    setLoading]    = useState(false);
+  const [filter,     setFilter]     = useState('all');
+  const [togglingId, setTogglingId] = useState(null);
+
+  const load = async () => {
+    const token=settings.metaToken;
+    if (!token) { toast.error('Meta User Access Token not set in Settings'); return; }
+    setLoading(true);
+    try {
+      const data=await gGet(`/${AD_ACCOUNT_ID}/campaigns`,{ fields:'name,status,objective,daily_budget,insights{spend,impressions,clicks,ctr}',limit:100 },token);
+      setCampaigns(data.data||[]);
+    } catch(e) { toast.error(`Failed: ${e.message}`); }
+    finally    { setLoading(false); }
+  };
+
+  useEffect(()=>{ load(); },[]);
+
+  const toggleStatus = async (camp) => {
+    const token=settings.metaToken;
+    if(!token) { toast.error('Meta User Access Token not set'); return; }
+    const newStatus=camp.status==='ACTIVE'?'PAUSED':'ACTIVE';
+    setTogglingId(camp.id);
+    try {
+      await gPost(`/${camp.id}`,{status:newStatus},token);
+      setCampaigns(p=>p.map(c=>c.id===camp.id?{...c,status:newStatus}:c));
+      toast.success(`Campaign ${newStatus==='ACTIVE'?'resumed':'paused'}`);
+    } catch(e) { toast.error(`Failed: ${e.message}`); }
+    finally    { setTogglingId(null); }
+  };
+
+  const storeOf = name => STORES.find(s=>(name||'').startsWith(`[${s.name}]`));
+  const filtered = filter==='all'?campaigns:campaigns.filter(c=>storeOf(c.name)?.id===filter);
+  const insight  = (c,f) => c.insights?.data?.[0]?.[f]??null;
+  const statusColor = s=>({ACTIVE:'green',PAUSED:'yellow',DELETED:'red',ARCHIVED:'gray'}[s]||'gray');
+
+  return (
+    <Card>
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <h2 className="text-base font-bold text-gray-900 dark:text-white flex-1">📊 Campaign Dashboard</h2>
+        <Select value={filter} onChange={e=>setFilter(e.target.value)} className="w-auto text-xs">
+          <option value="all">All Stores</option>
+          {STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+        </Select>
+        <Button variant="secondary" size="sm" onClick={load} loading={loading}>Refresh</Button>
+      </div>
+      {!loading&&filtered.length===0 && <div className="text-center py-12 text-gray-400 dark:text-gray-500 text-sm">No campaigns found.</div>}
+      {filtered.length>0 && (
+        <div className="overflow-x-auto -mx-1">
+          <table className="w-full text-sm min-w-[700px]">
+            <thead>
+              <tr className="border-b border-gray-100 dark:border-gray-700">
+                {['Campaign','Store','Status','Budget/day','Spend','Impressions','CTR',''].map(h=>(
+                  <th key={h} className="text-left py-2 px-3 text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-50 dark:divide-gray-700/50">
+              {filtered.map(c => {
+                const s=storeOf(c.name);
+                const displayName=s?c.name.replace(`[${s.name}] `,''):c.name;
+                const spend=insight(c,'spend'), imps=insight(c,'impressions'), ctr=insight(c,'ctr');
+                return (
+                  <tr key={c.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
+                    <td className="py-3 px-3"><p className="font-medium text-gray-900 dark:text-gray-100 max-w-[180px] truncate" title={displayName}>{displayName}</p><p className="text-xs text-gray-400 font-mono">{c.id}</p></td>
+                    <td className="py-3 px-3">{s?<Badge color="indigo">{s.name.split(' ')[0]}</Badge>:<span className="text-xs text-gray-400">—</span>}</td>
+                    <td className="py-3 px-3"><Badge color={statusColor(c.status)}>{c.status}</Badge></td>
+                    <td className="py-3 px-3 text-gray-700 dark:text-gray-300">{fmtBudget(c.daily_budget)}</td>
+                    <td className="py-3 px-3 text-gray-700 dark:text-gray-300">{spend!==null?`$${parseFloat(spend).toFixed(2)}`:'—'}</td>
+                    <td className="py-3 px-3 text-gray-700 dark:text-gray-300">{imps!==null?fmtNum(imps):'—'}</td>
+                    <td className="py-3 px-3 text-gray-700 dark:text-gray-300">{ctr!==null?fmtCTR(ctr):'—'}</td>
+                    <td className="py-3 px-3"><Button variant={c.status==='ACTIVE'?'danger':'success'} size="sm" loading={togglingId===c.id} onClick={()=>toggleStatus(c)}>{c.status==='ACTIVE'?'Pause':'Resume'}</Button></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ─────────────────────────────────────────────
+// BRAND PROFILE EDITOR
+// ─────────────────────────────────────────────
+function BrandProfileEditor({ storeId }) {
+  const toast = useToast();
+  const { profile, logo, loading, saveProfile, saveLogo, clearLogo } = useBrandProfile(storeId);
+  const [form,   setForm]   = useState({ ...BRAND_DEFAULTS });
+  const [saving, setSaving] = useState(false);
+  const logoRef = useRef();
+
+  useEffect(()=>setForm({...BRAND_DEFAULTS,...profile}),[profile]);
+
+  const f = key => ({ value:form[key]||'', onChange:e=>setForm(p=>({...p,[key]:e.target.value})) });
+
+  const handleLogo = file => {
+    if (!file) return;
+    const r=new FileReader();
+    r.onload=async()=>{ try { await saveLogo(r.result); toast.success('Logo saved!'); } catch(e){ toast.error(e.message); } };
+    r.readAsDataURL(file);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try { await saveProfile(form); toast.success('Brand profile saved!'); }
+    catch(e) { toast.error(`Save failed: ${e.message}`); }
+    finally  { setSaving(false); }
+  };
+
+  if (loading) return <div className="text-center py-16 text-gray-400 text-sm animate-pulse">Loading brand profile…</div>;
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <Card>
+        <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-3 uppercase tracking-wide">Store Logo</h3>
+        <div className="flex items-start gap-4">
+          {logo ? (
+            <div className="relative flex-shrink-0">
+              <img src={logo} alt="Logo" className="h-20 w-20 object-contain rounded-xl border border-gray-200 dark:border-gray-600 bg-white p-1"/>
+              <button onClick={async()=>{try{await clearLogo();toast.success('Logo removed.');}catch(e){toast.error(e.message);}}} className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full w-5 h-5 text-xs flex items-center justify-center hover:bg-red-600 leading-none">✕</button>
+            </div>
+          ) : (
+            <div className="h-20 w-20 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-600 flex items-center justify-center text-gray-400 text-xs text-center leading-tight flex-shrink-0 p-2">No logo yet</div>
+          )}
+          <div>
+            <Button variant="secondary" size="sm" onClick={()=>logoRef.current?.click()}>Upload Logo</Button>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">PNG or SVG recommended. Stored in Supabase.</p>
+          </div>
+        </div>
+        <input ref={logoRef} type="file" accept="image/*" className="hidden" onChange={e=>handleLogo(e.target.files[0])}/>
+      </Card>
+      <Card>
+        <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4 uppercase tracking-wide">🎙 Voice &amp; Tone</h3>
+        <div className="space-y-4">
+          <div><Label>Brand Personality</Label><Input {...f('personality')} placeholder="e.g. Friendly, knowledgeable, local, approachable, authentic"/><p className="text-xs text-gray-400 mt-1">Comma-separated — used in AI caption and image prompts</p></div>
+          <div><Label>Tone Description</Label><Textarea {...f('tone')} rows={2} placeholder="e.g. Warm and conversational — like advice from a knowledgeable friend. Never pushy."/></div>
+          <div className="grid grid-cols-2 gap-4">
+            <div><Label>✅ Language &amp; Phrases We Use</Label><Textarea {...f('do_say')} rows={4} placeholder={"e.g.\nCheers!\nGreat find.\nLocal favourite."}/></div>
+            <div><Label>🚫 Language to Avoid</Label><Textarea {...f('dont_say')} rows={4} placeholder={"e.g.\nCheapest\nGet wasted"}/></div>
+          </div>
+          <div><Label>Target Audience</Label><Input {...f('audience')} placeholder="e.g. Adults 25–55 who enjoy quality craft spirits"/></div>
+        </div>
+      </Card>
+      <Card>
+        <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4 uppercase tracking-wide">🎨 Visual Brand</h3>
+        <div className="space-y-4">
+          <div className="grid grid-cols-3 gap-3">
+            {[{key:'primary_color',label:'Primary'},{key:'secondary_color',label:'Secondary'},{key:'accent_color',label:'Accent'}].map(c=>(
+              <div key={c.key}><Label>{c.label} Colour</Label>
+                <div className="flex gap-1.5 items-center">
+                  <input type="color" value={form[c.key]||'#000000'} onChange={e=>setForm(p=>({...p,[c.key]:e.target.value}))} className="h-9 w-10 rounded-lg border border-gray-200 dark:border-gray-600 cursor-pointer p-0.5 bg-white flex-shrink-0"/>
+                  <Input value={form[c.key]||''} onChange={e=>setForm(p=>({...p,[c.key]:e.target.value}))} placeholder="#1e3a5f" className="font-mono text-xs"/>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            {['primary_color','secondary_color','accent_color'].map((k,i)=>form[k]?(
+              <div key={i} className="flex items-center gap-1.5">
+                <div className="h-8 w-12 rounded-lg border border-gray-200 dark:border-gray-700 shadow-inner" style={{backgroundColor:form[k]}}/>
+                <span className="text-xs text-gray-400 font-mono">{form[k]}</span>
+              </div>
+            ):null)}
+          </div>
+          <div><Label>Visual Style</Label><Textarea {...f('visual_style')} rows={2} placeholder="e.g. Warm rustic craft aesthetic with modern touches. Natural lighting, wood textures."/></div>
+          <div className="grid grid-cols-2 gap-4">
+            <div><Label>Mood / Feeling</Label><Input {...f('mood')} placeholder="e.g. Sophisticated yet approachable. Authentic BC."/></div>
+            <div><Label>Style Keywords</Label><Input {...f('style_keywords')} placeholder="e.g. artisan, local, premium, craft, BC"/></div>
+          </div>
+          <div><Label>🚫 Avoid Visually</Label><Input {...f('avoid_visually')} placeholder="e.g. Dark nightclub vibes, generic stock photos, neon signs"/></div>
+        </div>
+      </Card>
+      <Button onClick={save} loading={saving} size="lg" className="w-full">Save Brand Profile</Button>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// IMAGE GENERATOR
+// ─────────────────────────────────────────────
+function ImageGenerator({ settings }) {
+  const toast = useToast();
+  const [storeId,    setStoreId]    = useState(STORES[0].id);
+  const [brief,      setBrief]      = useState('');
+  const [size,       setSize]       = useState('1024x1024');
+  const [prodFile,   setProdFile]   = useState(null);
+  const [prodPrev,   setProdPrev]   = useState(null);
+  const [editPrompt, setEditPrompt] = useState('');
+  const [showPrompt, setShowPrompt] = useState(false);
+  const [genStep,    setGenStep]    = useState('idle');
+  const [result,     setResult]     = useState(null);
+  const [brand,      setBrand]      = useState({ ...BRAND_DEFAULTS });
+  const [logo,       setLogo]       = useState(null);
+  const [history,    setHistory]    = useState([]);
+  const prodRef = useRef();
+
+  const store     = STORES.find(s=>s.id===storeId);
+  const dalleSize = IMAGE_SIZES.find(s=>s.value===size)?.dalleSize||'1024x1024';
+
+  // Load brand profile from Supabase when store changes
+  useEffect(()=>{
+    const sb=getSB(); if(!sb) return;
+    sb.from('brand_profiles').select('*').eq('store_id',storeId).maybeSingle()
+      .then(({data})=>{
+        if (data) { const {logo_data,...p}=data; setBrand({...BRAND_DEFAULTS,...p}); setLogo(logo_data||null); }
+        else      { setBrand({...BRAND_DEFAULTS}); setLogo(null); }
+      });
+  },[storeId]);
+
+  // Load generation history from Supabase
+  useEffect(()=>{
+    const sb=getSB(); if(!sb) return;
+    sb.from('generation_history').select('*').order('created_at',{ascending:false}).limit(24)
+      .then(({data})=>setHistory(data||[]));
+  },[]);
+
+  const handleProd = file => {
+    if (!file) return;
+    setProdFile(file);
+    const r=new FileReader(); r.onload=()=>setProdPrev(r.result); r.readAsDataURL(file);
+  };
+
+  const assemblePrompt = async () => {
+    const apiKey=settings.openaiKey;
+    if (!apiKey) { toast.error('Add your OpenAI API key in Settings'); return null; }
+    let productDesc='';
+    if (prodFile) {
+      setGenStep('analyzing');
+      const b64=await fileToBase64(prodFile);
+      productDesc=await openAIDescribeImage(b64,prodFile.type||'image/jpeg',apiKey);
+    }
+    setGenStep('building');
+    const parts=[`Professional social media image for "${store.name}", an independent retail liquor store in British Columbia, Canada.`];
+    if (brand.visual_style)   parts.push(`Visual style: ${brand.visual_style}.`);
+    if (brand.mood)           parts.push(`Mood: ${brand.mood}.`);
+    if (brand.style_keywords) parts.push(`Style keywords: ${brand.style_keywords}.`);
+    if (brand.primary_color&&brand.secondary_color) parts.push(`Brand colours: primary ${brand.primary_color}, secondary ${brand.secondary_color}.`);
+    if (brand.avoid_visually) parts.push(`Do NOT include: ${brand.avoid_visually}.`);
+    if (productDesc)          parts.push(`Feature this product prominently: ${productDesc}`);
+    if (brief.trim())         parts.push(`Creative direction: ${brief.trim()}.`);
+    parts.push('High-quality commercial photography. No text or words in the image unless specified. Suitable for Facebook and Instagram.');
+    return parts.join(' ');
+  };
+
+  const previewPrompt = async () => {
+    try { const p=await assemblePrompt(); if(p){setEditPrompt(p);setShowPrompt(true);setGenStep('idle');} }
+    catch(e) { toast.error(e.message); setGenStep('idle'); }
+  };
+
+  const generate = async () => {
+    const apiKey=settings.openaiKey;
+    if (!apiKey) { toast.error('Add your OpenAI API key in Settings'); return; }
+    setResult(null);
+    try {
+      let prompt;
+      if (showPrompt&&editPrompt.trim()) { prompt=editPrompt.trim(); setGenStep('generating'); }
+      else { prompt=await assemblePrompt(); if(!prompt) return; setEditPrompt(prompt); setShowPrompt(true); setGenStep('generating'); }
+
+      const img=await openAIGenerateImage(prompt,dalleSize,apiKey);
+      setResult(img);
+      setGenStep('done');
+      toast.success('Image generated!');
+
+      // Save to Supabase
+      const sb=getSB();
+      if (sb) {
+        await sb.from('generation_history').insert({ store_id:storeId, store_name:store.name, image_url:img.url, revised_prompt:img.revised, brief, size_label:size, prompt });
+        const {data}=await sb.from('generation_history').select('*').order('created_at',{ascending:false}).limit(24);
+        setHistory(data||[]);
+      }
+    } catch(e) { setGenStep('error'); toast.error(`Generation failed: ${e.message}`); }
+  };
+
+  const storeHistory = history.filter(h=>h.store_id===storeId);
+  const isBusy = ['analyzing','building','generating'].includes(genStep);
+  const stepLabel = { analyzing:'🔍 Analysing product image…', building:'⚙️ Building prompt…', generating:'🎨 Generating image…' };
+
+  return (
+    <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+      <div className="space-y-4">
+        <Card>
+          <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4 uppercase tracking-wide">🖼 Generate Image</h3>
+          <div className="mb-4">
+            <Label>Store</Label>
+            <Select value={storeId} onChange={e=>{setStoreId(e.target.value);setResult(null);setShowPrompt(false);}}>
+              {STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+            </Select>
+            <div className="flex items-center gap-2 mt-2 flex-wrap">
+              {logo && <img src={logo} alt="logo" className="h-7 w-7 rounded object-contain bg-white border border-gray-200 p-0.5"/>}
+              {brand.personality && brand.personality.split(',').slice(0,3).map((p,i)=><Badge key={i} color="indigo">{p.trim()}</Badge>)}
+              {brand.style_keywords && brand.style_keywords.split(',').slice(0,2).map((k,i)=><Badge key={i} color="gray">{k.trim()}</Badge>)}
+              {!brand.personality&&!brand.style_keywords && <span className="text-xs text-amber-600 dark:text-amber-400">⚠ No brand profile — add one in the Brand Profile tab</span>}
+            </div>
+          </div>
+          <div className="mb-4"><Label>Image Brief</Label><Textarea value={brief} onChange={e=>setBrief(e.target.value)} rows={3} placeholder="e.g. A bottle of Maker's Mark on a warm wooden bar with BC mountain scenery. Cozy summer evening."/></div>
+          <div className="mb-4">
+            <Label>Product Reference Photo (optional)</Label>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">GPT-4o Vision will describe it and weave it into the prompt.</p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <Button variant="secondary" size="sm" onClick={()=>prodRef.current?.click()}>📦 Upload Product Photo</Button>
+              {prodFile && <span className="text-xs text-gray-600 dark:text-gray-400 truncate max-w-xs">{prodFile.name}</span>}
+              {prodFile && <button onClick={()=>{setProdFile(null);setProdPrev(null);}} className="text-xs text-red-500 hover:underline">Remove</button>}
+            </div>
+            <input ref={prodRef} type="file" accept="image/*" className="hidden" onChange={e=>handleProd(e.target.files[0])}/>
+            {prodPrev && <img src={prodPrev} alt="" className="mt-2 h-24 rounded-xl object-contain border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 p-1"/>}
+          </div>
+          <div className="mb-4">
+            <Label>Image Size</Label>
+            <div className="grid grid-cols-2 gap-2">
+              {IMAGE_SIZES.map(s=>(
+                <label key={s.value} className={`flex items-start gap-2 p-2.5 rounded-xl border cursor-pointer transition-all ${size===s.value?'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/50':'border-gray-200 dark:border-gray-700 hover:border-indigo-300'}`}>
+                  <input type="radio" name="imgSize" value={s.value} checked={size===s.value} onChange={()=>setSize(s.value)} className="mt-0.5 flex-shrink-0"/>
+                  <div>
+                    <p className="text-xs font-bold text-gray-800 dark:text-gray-200">{s.label}</p>
+                    <p className="text-xs text-gray-500">{s.desc}</p>
+                    {s.dalleSize!==s.value && <p className="text-xs text-amber-600 dark:text-amber-400">Renders at {s.dalleSize}</p>}
+                  </div>
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="mb-5">
+            <div className="flex items-center justify-between mb-1">
+              <Label className="mb-0">DALL-E 3 Prompt</Label>
+              <button onClick={previewPrompt} disabled={isBusy} className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline disabled:opacity-50">⚙ Preview &amp; Edit Prompt</button>
+            </div>
+            {showPrompt
+              ? <Textarea value={editPrompt} onChange={e=>setEditPrompt(e.target.value)} rows={6} className="text-xs font-mono"/>
+              : <div className="rounded-xl border border-dashed border-gray-200 dark:border-gray-700 p-3 text-xs text-gray-400 italic">Click "Preview &amp; Edit Prompt" to see the auto-built prompt — or just click Generate.</div>}
+          </div>
+          <Button onClick={generate} loading={isBusy} className="w-full" size="lg">
+            {isBusy?(stepLabel[genStep]||'Working…'):'🎨 Generate Image'}
+          </Button>
+        </Card>
+      </div>
+      <div className="space-y-4">
+        {result && (
+          <Card>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-wide">Result</h3>
+              <a href={result.url} download="generated.png" target="_blank" rel="noopener noreferrer"><Button variant="secondary" size="sm">⬇ Download</Button></a>
+            </div>
+            <img src={result.url} alt="Generated" className="w-full rounded-xl border border-gray-200 dark:border-gray-600 shadow-md"/>
+            {result.revised && <details className="mt-3"><summary className="text-xs text-gray-400 cursor-pointer hover:text-gray-600 dark:hover:text-gray-300 select-none">DALL-E revised prompt ↓</summary><p className="text-xs text-gray-500 dark:text-gray-400 mt-1.5 font-mono leading-relaxed">{result.revised}</p></details>}
+          </Card>
+        )}
+        {storeHistory.length>0 && (
+          <Card>
+            <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-3 uppercase tracking-wide">Recent — {store.name}</h3>
+            <div className="grid grid-cols-4 gap-1.5">
+              {storeHistory.slice(0,8).map(h=>(
+                <a key={h.id} href={h.image_url} target="_blank" rel="noopener noreferrer" title={h.brief||'Generated image'}>
+                  <img src={h.image_url} alt="" className="w-full aspect-square object-cover rounded-lg border border-gray-200 dark:border-gray-600 hover:opacity-75 transition-opacity"/>
+                </a>
+              ))}
+            </div>
+            <p className="text-xs text-gray-400 mt-2.5">⚠ DALL-E URLs expire in ~1 hour — download images to keep them.</p>
+          </Card>
+        )}
+        {storeHistory.length===0&&!result && (
+          <Card><div className="text-center py-10 text-gray-400 dark:text-gray-500 text-sm"><p className="text-3xl mb-2">🖼</p><p>Generated images appear here.</p><p className="text-xs mt-1">Set a brand profile first for best results.</p></div></Card>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// SETTINGS PAGE
+// ─────────────────────────────────────────────
+function SettingsPage({ settings, onSave }) {
+  const toast = useToast();
+  const [form,   setForm]   = useState({ ...settings, tokens:{ ...settings.tokens } });
+  const [saving, setSaving] = useState(false);
+
+  // Sync form if settings loaded async after initial render
+  useEffect(()=>setForm({...settings,tokens:{...settings.tokens}}),[settings]);
+
+  const save = async () => {
+    setSaving(true);
+    try { await onSave(form); toast.success('Settings saved!'); }
+    catch(e) { toast.error(`Save failed: ${e.message}`); }
+    finally  { setSaving(false); }
+  };
+
+  return (
+    <div className="space-y-4 max-w-2xl">
+      <Card>
+        <h2 className="text-base font-bold text-gray-900 dark:text-white mb-1">Facebook Page Access Tokens</h2>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">Generate long-lived page tokens in the <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener" className="text-indigo-600 dark:text-indigo-400 underline">Graph API Explorer</a>. Requires <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">pages_manage_posts</code>, <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">pages_read_engagement</code> permissions.</p>
+        <div className="space-y-4">
+          {STORES.map(s=>(
+            <div key={s.id}>
+              <Label>{s.name}</Label>
+              <p className="text-xs text-gray-400 mb-1">Page ID: {s.pageId}</p>
+              <Input type="password" value={form.tokens[s.id]||''} onChange={e=>setForm(f=>({...f,tokens:{...f.tokens,[s.id]:e.target.value}}))} placeholder="EAAxxxxx…"/>
+            </div>
+          ))}
+        </div>
+      </Card>
+      <Card>
+        <h2 className="text-base font-bold text-gray-900 dark:text-white mb-1">Meta Ads</h2>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">User access token with <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">ads_management</code> and <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">ads_read</code> permissions.<br/>Ad Account: <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">{AD_ACCOUNT_ID}</code></p>
+        <Input type="password" value={form.metaToken||''} onChange={e=>setForm(f=>({...f,metaToken:e.target.value}))} placeholder="EAAxxxxx…"/>
+      </Card>
+      <Card>
+        <h2 className="text-base font-bold text-gray-900 dark:text-white mb-1">AI Copy Writer — Anthropic</h2>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">Used client-side with Claude Haiku to generate post captions and ad copy.<br/>Get yours at <a href="https://console.anthropic.com/" target="_blank" rel="noopener" className="text-indigo-600 dark:text-indigo-400 underline">console.anthropic.com</a>.</p>
+        <Input type="password" value={form.anthropicKey||''} onChange={e=>setForm(f=>({...f,anthropicKey:e.target.value}))} placeholder="sk-ant-xxxxx…"/>
+      </Card>
+      <Card>
+        <h2 className="text-base font-bold text-gray-900 dark:text-white mb-1">AI Image Generator — OpenAI</h2>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">Used client-side with DALL-E 3 (images) and GPT-4o Mini Vision (product analysis).<br/>Get yours at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener" className="text-indigo-600 dark:text-indigo-400 underline">platform.openai.com</a>.</p>
+        <Input type="password" value={form.openaiKey||''} onChange={e=>setForm(f=>({...f,openaiKey:e.target.value}))} placeholder="sk-xxxxx…"/>
+      </Card>
+      <Button onClick={save} loading={saving} size="lg" className="w-full">Save All Settings</Button>
+      <p className="text-xs text-center text-gray-400 dark:text-gray-500">All keys are encrypted at rest in Supabase and protected by Row Level Security — only authenticated users can read them.</p>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// PAGE CONTAINERS
+// ─────────────────────────────────────────────
+function PostsPage({ settings }) {
+  return (
+    <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+      <PostComposer settings={settings}/>
+      <PostHistory  settings={settings}/>
+    </div>
+  );
+}
+
+function AdsPage({ settings }) {
+  const [tab, setTab] = useState('build');
+  return (
+    <div>
+      <div className="flex border-b border-gray-200 dark:border-gray-700 mb-5">
+        {[{id:'build',label:'🛠 Build Campaign'},{id:'dash',label:'📊 Dashboard'}].map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)} className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}>{t.label}</button>
+        ))}
+      </div>
+      {tab==='build' ? <CampaignBuilder settings={settings}/> : <CampaignDashboard settings={settings}/>}
+    </div>
+  );
+}
+
+function BrandPage({ settings }) {
+  const [tab,     setTab]     = useState('profile');
+  const [storeId, setStoreId] = useState(STORES[0].id);
+  return (
+    <div>
+      <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 mb-5 flex-wrap gap-3 pb-0">
+        <div className="flex">
+          {[{id:'profile',label:'🎨 Brand Profile'},{id:'generate',label:'🖼 Image Generator'}].map(t=>(
+            <button key={t.id} onClick={()=>setTab(t.id)} className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}>{t.label}</button>
+          ))}
+        </div>
+        {tab==='profile' && <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs mb-1">{STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</Select>}
+      </div>
+      {tab==='profile'  && <BrandProfileEditor storeId={storeId}/>}
+      {tab==='generate' && <ImageGenerator settings={settings}/>}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// AUTHENTICATED APP (main shell)
+// ─────────────────────────────────────────────
+function AuthenticatedApp({ user, dark, onDark }) {
+  const toast = useToast();
+  const [page,           setPage]           = useState('posts');
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
+  const [settings,       setSettings]       = useState({
+    tokens: Object.fromEntries(STORES.map(s=>[s.id,''])),
+    metaToken:'', anthropicKey:'', openaiKey:'',
+  });
+
+  // Load settings from Supabase on mount
+  useEffect(()=>{
+    const sb=getSB(); if(!sb) return;
+    Promise.all([
+      sb.from('store_tokens').select('store_id,page_token'),
+      sb.from('api_keys').select('key_name,key_value'),
+    ]).then(([{data:tokens},{data:keys}])=>{
+      const tMap=Object.fromEntries(STORES.map(s=>[s.id,'']));
+      (tokens||[]).forEach(r=>{ if(r.store_id in tMap) tMap[r.store_id]=r.page_token||''; });
+      const kMap=Object.fromEntries((keys||[]).map(r=>[r.key_name,r.key_value||'']));
+      setSettings({ tokens:tMap, metaToken:kMap.meta_token||'', anthropicKey:kMap.anthropic_key||'', openaiKey:kMap.openai_key||'' });
+    }).catch(()=>{}).finally(()=>setSettingsLoaded(true));
+  },[]);
+
+  const saveSettings = async (s) => {
+    const sb=getSB(); if(!sb) throw new Error('Supabase not connected');
+    const [r1,r2]=await Promise.all([
+      sb.from('store_tokens').upsert(STORES.map(st=>({store_id:st.id,page_token:s.tokens[st.id]||''})),{onConflict:'store_id'}),
+      sb.from('api_keys').upsert([
+        {key_name:'meta_token',    key_value:s.metaToken    ||''},
+        {key_name:'anthropic_key', key_value:s.anthropicKey ||''},
+        {key_name:'openai_key',    key_value:s.openaiKey    ||''},
+      ],{onConflict:'key_name'}),
+    ]);
+    if(r1.error) throw r1.error;
+    if(r2.error) throw r2.error;
+    setSettings(s);
+  };
+
+  const signOut = async () => {
+    await getSB().auth.signOut();
+    ls.set('smm_sb_url',''); ls.set('smm_sb_key','');
+    _sb=null;
+    window.location.reload();
+  };
+
+  const nav = [
+    { id:'posts',    icon:'📝', label:'Posts' },
+    { id:'ads',      icon:'📣', label:'Ads' },
+    { id:'brand',    icon:'🎨', label:'Brand' },
+    { id:'settings', icon:'⚙️', label:'Settings' },
+  ];
+
+  if (!settingsLoaded) return (
+    <div className="min-h-screen flex items-center justify-center bg-gray-100 dark:bg-gray-900">
+      <div className="text-center"><div className="text-4xl mb-3">🥃</div><p className="text-gray-500 dark:text-gray-400 text-sm animate-pulse">Loading settings…</p></div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen flex flex-col bg-gray-100 dark:bg-gray-900 transition-colors">
+      <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 sticky top-0 z-30">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 flex items-center justify-between h-14">
+          <div className="flex items-center gap-2.5">
+            <span className="text-2xl">🥃</span>
+            <div>
+              <p className="text-sm font-bold text-gray-900 dark:text-white leading-none">Liquor Store Social</p>
+              <p className="text-xs text-gray-400 leading-none mt-0.5">4 locations · Meta v21</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-1">
+            {nav.map(n=>(
+              <button key={n.id} onClick={()=>setPage(n.id)} className={`px-3 py-2 rounded-xl text-sm font-semibold transition-all ${page===n.id?'bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300':'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-gray-200'}`}>
+                <span className="mr-1">{n.icon}</span><span className="hidden sm:inline">{n.label}</span>
+              </button>
+            ))}
+            <button onClick={()=>onDark(d=>!d)} className="ml-1 p-2 rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" title="Toggle dark mode">{dark?'☀️':'🌙'}</button>
+            <button onClick={signOut} className="ml-1 p-2 rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" title={`Sign out (${user?.email})`}>👤</button>
+          </div>
+        </div>
+      </header>
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
+        {page==='posts'    && <PostsPage    settings={settings}/>}
+        {page==='ads'      && <AdsPage      settings={settings}/>}
+        {page==='brand'    && <BrandPage    settings={settings}/>}
+        {page==='settings' && <SettingsPage settings={settings} onSave={saveSettings}/>}
+      </main>
+      <footer className="text-center py-3 text-xs text-gray-300 dark:text-gray-600">
+        Liquor Store Social · Supabase · Graph API v21.0 · {user?.email}
+      </footer>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// ROOT APP (auth routing)
+// ─────────────────────────────────────────────
+function App() {
+  const [dark,         setDark]         = useState(()=>ls.get('smm_dark',false));
+  const [sbReady,      setSbReady]      = useState(()=>!!(ls.get('smm_sb_url','')&&ls.get('smm_sb_key','')));
+  const [authState,    setAuthState]    = useState('checking');
+  const [user,         setUser]         = useState(null);
+
+  useEffect(()=>{
+    document.documentElement.classList.toggle('dark',dark);
+    ls.set('smm_dark',dark);
+  },[dark]);
+
+  useEffect(()=>{
+    if (!sbReady) return;
+    const sb=getSB(); if(!sb) return;
+    sb.auth.getSession().then(({data:{session}})=>{
+      setUser(session?.user||null);
+      setAuthState(session?'authed':'anon');
+    });
+    const {data:{subscription}}=sb.auth.onAuthStateChange((_,session)=>{
+      setUser(session?.user||null);
+      setAuthState(session?'authed':'anon');
+    });
+    return ()=>subscription.unsubscribe();
+  },[sbReady]);
+
+  if (!sbReady) return (
+    <ToastProvider>
+      <SetupScreen onSetup={()=>setSbReady(true)}/>
+    </ToastProvider>
+  );
+
+  if (authState==='checking') return (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900">
+      <div className="text-center"><div className="text-4xl mb-3">🥃</div><p className="text-gray-400 text-sm animate-pulse">Connecting…</p></div>
+    </div>
+  );
+
+  if (authState==='anon') return (
+    <ToastProvider>
+      <LoginScreen/>
+    </ToastProvider>
+  );
+
+  return (
+    <ToastProvider>
+      <AuthenticatedApp user={user} dark={dark} onDark={setDark}/>
+    </ToastProvider>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

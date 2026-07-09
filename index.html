@@ -175,6 +175,59 @@ function useBrandProfile(storeId) {
 }
 
 // ─────────────────────────────────────────────
+// PRODUCT IMAGE LIBRARY HOOK
+// ─────────────────────────────────────────────
+function useProductLibrary(storeId) {
+  const [images,  setImages]  = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    const sb=getSB(); if(!sb) return;
+    setLoading(true);
+    const {data}=await sb.from('product_images').select('id,name,data,created_at').eq('store_id',storeId).order('created_at',{ascending:false}).limit(40);
+    setImages(data||[]);
+    setLoading(false);
+  },[storeId]);
+
+  useEffect(()=>{ load(); },[load]);
+
+  const save = async (name, dataUrl) => {
+    const sb=getSB(); if(!sb) throw new Error('Not connected');
+    // Compress before saving
+    const compressed = await compressImage(dataUrl, 600, 0.75);
+    await sb.from('product_images').insert({ store_id:storeId, name, data:compressed });
+    await load();
+  };
+
+  const remove = async (id) => {
+    const sb=getSB(); if(!sb) return;
+    await sb.from('product_images').delete().eq('id',id);
+    setImages(p=>p.filter(x=>x.id!==id));
+  };
+
+  return { images, loading, save, remove, reload:load };
+}
+
+// ─────────────────────────────────────────────
+// IMAGE COMPRESSION UTILITY
+// ─────────────────────────────────────────────
+function compressImage(dataUrl, maxPx=600, quality=0.75) {
+  return new Promise(res => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxPx / Math.max(img.width, img.height));
+      const w = Math.round(img.width * scale);
+      const h = Math.round(img.height * scale);
+      const c = document.createElement('canvas');
+      c.width=w; c.height=h;
+      c.getContext('2d').drawImage(img, 0, 0, w, h);
+      res(c.toDataURL('image/jpeg', quality));
+    };
+    img.src = dataUrl;
+  });
+}
+
+// ─────────────────────────────────────────────
 // GRAPH API HELPERS
 // ─────────────────────────────────────────────
 async function gFetch(path, opts={}) {
@@ -535,7 +588,7 @@ function AIWriter({ storeName, apiKey, mode='caption', onResult }) {
 // ─────────────────────────────────────────────
 // MODULE 1 — POST COMPOSER
 // ─────────────────────────────────────────────
-function PostComposer({ settings }) {
+function PostComposer({ settings, pendingImage, onClearPending }) {
   const toast = useToast();
   const [selected,  setSelected]  = useState([STORES[0].id]);
   const [caption,   setCaption]   = useState('');
@@ -546,12 +599,23 @@ function PostComposer({ settings }) {
   const [showAI,    setShowAI]    = useState(false);
   const [results,   setResults]   = useState([]);
 
+  // When a generated image is passed in, show it as preview
+  useEffect(()=>{
+    if (pendingImage) { setImgFile(null); setImgPrev(pendingImage); }
+  },[pendingImage]);
+
   const toggleStore = id => setSelected(p => p.includes(id)?p.filter(x=>x!==id):[...p,id]);
 
   const handleFile = file => {
     if (!file) return;
     setImgFile(file);
     const r=new FileReader(); r.onload=()=>setImgPrev(r.result); r.readAsDataURL(file);
+    if (onClearPending) onClearPending();
+  };
+
+  const clearImage = () => {
+    setImgFile(null); setImgPrev(null);
+    if (onClearPending) onClearPending();
   };
 
   const post = async () => {
@@ -575,6 +639,7 @@ function PostComposer({ settings }) {
       try {
         let postId;
         if (imgFile) {
+          // File upload
           const form = new FormData();
           form.append('caption', caption+POST_SUFFIX);
           form.append('source', imgFile);
@@ -582,7 +647,14 @@ function PostComposer({ settings }) {
           if (schedTs) { form.append('published','false'); form.append('scheduled_publish_time',String(schedTs)); }
           const r = await gPostForm(`/${store.pageId}/photos`, form);
           postId = r.post_id||r.id;
+        } else if (pendingImage) {
+          // Generated image URL — Facebook fetches it server-side
+          const body = { url: pendingImage, caption: caption+POST_SUFFIX };
+          if (schedTs) { body.published=false; body.scheduled_publish_time=schedTs; }
+          const r = await gPost(`/${store.pageId}/photos`, body, token);
+          postId = r.post_id||r.id;
         } else {
+          // Text only
           const body = { message: caption+POST_SUFFIX };
           if (schedTs) { body.published=false; body.scheduled_publish_time=schedTs; }
           const r = await gPost(`/${store.pageId}/feed`, body, token);
@@ -596,7 +668,7 @@ function PostComposer({ settings }) {
 
     setResults(res);
     res.forEach(r => { if(r.success) toast.success(`${r.store}: ${r.scheduled?'Scheduled!':'Published!'}`); else toast.error(`${r.store}: ${r.error}`); });
-    if (res.some(r=>r.success)) { setCaption(''); setImgFile(null); setImgPrev(null); setSchedule(''); }
+    if (res.some(r=>r.success)) { setCaption(''); setImgFile(null); setImgPrev(null); setSchedule(''); if(onClearPending) onClearPending(); }
     setLoading(false);
   };
 
@@ -627,7 +699,23 @@ function PostComposer({ settings }) {
         <p className="text-xs text-gray-400 dark:text-gray-500 mt-1 italic">↳ <span className="text-gray-500 dark:text-gray-400">Auto-appended:</span> Prices exclude tax &amp; deposit - while supplies last</p>
       </div>
       {showAI && <div className="mb-4"><AIWriter storeName={activeStore} apiKey={settings.anthropicKey} mode="caption" onResult={t=>setCaption(t)}/></div>}
-      <div className="mb-4"><ImagePicker file={imgFile} preview={imgPrev} onFile={handleFile} onClear={()=>{setImgFile(null);setImgPrev(null);}}/></div>
+
+      {/* Image area — generated image OR file upload */}
+      <div className="mb-4">
+        {pendingImage && !imgFile ? (
+          <div>
+            <Label>Image (from generator)</Label>
+            <div className="relative inline-block">
+              <img src={pendingImage} alt="" className="h-32 rounded-xl object-cover border border-indigo-300 dark:border-indigo-600 shadow-sm"/>
+              <button onClick={clearImage} className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full w-5 h-5 text-xs flex items-center justify-center hover:bg-red-600">✕</button>
+            </div>
+            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">⚠ Generated image URLs expire in ~1 hour — post soon.</p>
+          </div>
+        ) : (
+          <ImagePicker file={imgFile} preview={imgPrev} onFile={handleFile} onClear={clearImage}/>
+        )}
+      </div>
+
       <div className="mb-5">
         <Label>Schedule (leave blank to post immediately)</Label>
         <Input type="datetime-local" value={schedule} onChange={e=>setSchedule(e.target.value)}/>
@@ -1036,7 +1124,7 @@ function BrandProfileEditor({ storeId }) {
 // ─────────────────────────────────────────────
 // IMAGE GENERATOR
 // ─────────────────────────────────────────────
-function ImageGenerator({ settings }) {
+function ImageGenerator({ settings, onUseInPost }) {
   const toast = useToast();
   const [storeId,    setStoreId]    = useState(STORES[0].id);
   const [brief,      setBrief]      = useState('');
@@ -1050,6 +1138,8 @@ function ImageGenerator({ settings }) {
   const [brand,      setBrand]      = useState({ ...BRAND_DEFAULTS });
   const [logo,       setLogo]       = useState(null);
   const [history,    setHistory]    = useState([]);
+  const [showLib,    setShowLib]    = useState(false);
+  const { images:libImages, save:saveToLib, remove:removeFromLib } = useProductLibrary(storeId);
   const prodRef = useRef();
 
   const store     = STORES.find(s=>s.id===storeId);
@@ -1075,7 +1165,25 @@ function ImageGenerator({ settings }) {
   const handleProd = file => {
     if (!file) return;
     setProdFile(file);
-    const r=new FileReader(); r.onload=()=>setProdPrev(r.result); r.readAsDataURL(file);
+    const r=new FileReader();
+    r.onload=async()=>{
+      setProdPrev(r.result);
+      // Auto-save to library
+      try { await saveToLib(file.name, r.result); }
+      catch(e) { /* silent — library save is non-critical */ }
+    };
+    r.readAsDataURL(file);
+  };
+
+  const selectFromLib = (img) => {
+    setProdPrev(img.data);
+    // Create a fake file-like object for the description step
+    fetch(img.data).then(r=>r.blob()).then(blob=>{
+      const f=new File([blob], img.name, {type:'image/jpeg'});
+      setProdFile(f);
+    }).catch(()=>{});
+    setShowLib(false);
+    toast.info(`Selected: ${img.name}`);
   };
 
   const assemblePrompt = async () => {
@@ -1152,8 +1260,11 @@ function ImageGenerator({ settings }) {
           </div>
           <div className="mb-4"><Label>Image Brief</Label><Textarea value={brief} onChange={e=>setBrief(e.target.value)} rows={3} placeholder="e.g. A bottle of Maker's Mark on a warm wooden bar with BC mountain scenery. Cozy summer evening."/></div>
           <div className="mb-4">
-            <Label>Product Reference Photo (optional)</Label>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">GPT-4o Vision will describe it and weave it into the prompt.</p>
+            <div className="flex items-center justify-between mb-1">
+              <Label className="mb-0">Product Reference Photo (optional)</Label>
+              {libImages.length>0 && <button onClick={()=>setShowLib(v=>!v)} className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">{showLib?'Hide Library ↑':`📚 Library (${libImages.length})`}</button>}
+            </div>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">GPT-4o Vision will describe it and weave it into the prompt. Photos are auto-saved to your library.</p>
             <div className="flex items-center gap-2 flex-wrap">
               <Button variant="secondary" size="sm" onClick={()=>prodRef.current?.click()}>📦 Upload Product Photo</Button>
               {prodFile && <span className="text-xs text-gray-600 dark:text-gray-400 truncate max-w-xs">{prodFile.name}</span>}
@@ -1161,6 +1272,25 @@ function ImageGenerator({ settings }) {
             </div>
             <input ref={prodRef} type="file" accept="image/*" className="hidden" onChange={e=>handleProd(e.target.files[0])}/>
             {prodPrev && <img src={prodPrev} alt="" className="mt-2 h-24 rounded-xl object-contain border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 p-1"/>}
+
+            {/* Product Library */}
+            {showLib && (
+              <div className="mt-3 p-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-750">
+                <p className="text-xs font-semibold text-gray-600 dark:text-gray-400 mb-2 uppercase tracking-wide">Product Library — {STORES.find(s=>s.id===storeId)?.name}</p>
+                <div className="grid grid-cols-5 gap-2">
+                  {libImages.map(img=>(
+                    <div key={img.id} className="relative group">
+                      <img src={img.data} alt={img.name} title={img.name}
+                        onClick={()=>selectFromLib(img)}
+                        className="w-full aspect-square object-cover rounded-lg border border-gray-200 dark:border-gray-600 cursor-pointer hover:border-indigo-400 hover:opacity-90 transition-all"/>
+                      <button onClick={()=>removeFromLib(img.id)}
+                        className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full w-4 h-4 text-xs items-center justify-center hidden group-hover:flex leading-none">✕</button>
+                      <p className="text-xs text-gray-400 mt-0.5 truncate">{img.name}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
           <div className="mb-4">
             <Label>Image Size</Label>
@@ -1194,9 +1324,16 @@ function ImageGenerator({ settings }) {
       <div className="space-y-4">
         {result && (
           <Card>
-            <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
               <h3 className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-wide">Result</h3>
-              <a href={result.url} download="generated.png" target="_blank" rel="noopener noreferrer"><Button variant="secondary" size="sm">⬇ Download</Button></a>
+              <div className="flex gap-2">
+                {onUseInPost && (
+                  <Button variant="success" size="sm" onClick={()=>onUseInPost(result.url)}>
+                    📝 Use in Post
+                  </Button>
+                )}
+                <a href={result.url} download="generated.png" target="_blank" rel="noopener noreferrer"><Button variant="secondary" size="sm">⬇ Download</Button></a>
+              </div>
             </div>
             <img src={result.url} alt="Generated" className="w-full rounded-xl border border-gray-200 dark:border-gray-600 shadow-md"/>
             {result.revised && <details className="mt-3"><summary className="text-xs text-gray-400 cursor-pointer hover:text-gray-600 dark:hover:text-gray-300 select-none">DALL-E revised prompt ↓</summary><p className="text-xs text-gray-500 dark:text-gray-400 mt-1.5 font-mono leading-relaxed">{result.revised}</p></details>}
@@ -1281,17 +1418,31 @@ function SettingsPage({ settings, onSave }) {
 // PAGE CONTAINERS
 // ─────────────────────────────────────────────
 function PostsPage({ settings }) {
-  const [tab, setTab] = useState('compose');
+  const [tab,          setTab]          = useState('compose');
+  const [pendingImage, setPendingImage] = useState(null);
+
+  const handleUseInPost = (url) => {
+    setPendingImage(url);
+    setTab('compose');
+  };
+
   return (
     <div>
       <div className="flex border-b border-gray-200 dark:border-gray-700 mb-5">
         {[{id:'compose',label:'✏️ Compose'},{id:'history',label:'📋 History'},{id:'images',label:'🖼 Image Generator'}].map(t=>(
-          <button key={t.id} onClick={()=>setTab(t.id)} className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}>{t.label}</button>
+          <button key={t.id} onClick={()=>setTab(t.id)} className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}>
+            {t.label}{t.id==='compose'&&pendingImage?' 🟢':''}
+          </button>
         ))}
       </div>
-      {tab==='compose' && <div className="grid grid-cols-1 xl:grid-cols-2 gap-5"><PostComposer settings={settings}/><PostHistory settings={settings}/></div>}
+      {tab==='compose' && (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+          <PostComposer settings={settings} pendingImage={pendingImage} onClearPending={()=>setPendingImage(null)}/>
+          <PostHistory  settings={settings}/>
+        </div>
+      )}
       {tab==='history' && <PostHistory settings={settings}/>}
-      {tab==='images'  && <ImageGenerator settings={settings}/>}
+      {tab==='images'  && <ImageGenerator settings={settings} onUseInPost={handleUseInPost}/>}
     </div>
   );
 }

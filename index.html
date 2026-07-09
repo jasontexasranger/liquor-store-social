@@ -50,6 +50,24 @@ const AD_PLACEMENTS = [
 const CTA_OPTIONS = ['LEARN_MORE','SHOP_NOW','GET_DIRECTIONS','CALL_NOW','MESSAGE_PAGE','SIGN_UP'];
 const TONES       = ['Friendly','Promotional','Informational'];
 
+const LIQUOR_CATEGORIES = [
+  { id:'beer-cider',     label:'Beer & Cider',        icon:'🍺' },
+  { id:'red-wine',       label:'Red Wine',             icon:'🍷' },
+  { id:'white-wine',     label:'White Wine',           icon:'🥂' },
+  { id:'rose-sparkling', label:'Rosé & Sparkling',    icon:'🍾' },
+  { id:'whisky',         label:'Whisky & Bourbon',    icon:'🥃' },
+  { id:'vodka',          label:'Vodka',                icon:'🫙' },
+  { id:'gin',            label:'Gin',                  icon:'🌿' },
+  { id:'rum',            label:'Rum',                  icon:'🏝' },
+  { id:'tequila',        label:'Tequila & Mezcal',    icon:'🌵' },
+  { id:'brandy',         label:'Brandy & Cognac',     icon:'🍂' },
+  { id:'liqueurs',       label:'Liqueurs & Cordials', icon:'🍹' },
+  { id:'rtd',            label:'Ready-to-Drink',      icon:'🥤' },
+  { id:'non-alc',        label:'Non-Alc & Mixers',    icon:'💧' },
+];
+
+const BOTTLE_SIZES = ['355ml','473ml','500ml','750ml','1L','1.14L','1.75L','2L','4-pack','6-pack','12-pack','24-pack','Other'];
+
 const BRAND_DEFAULTS = {
   personality:'', tone:'', do_say:'', dont_say:'', audience:'',
   primary_color:'#1e3a5f', secondary_color:'#c4a35a', accent_color:'#f8f4ef',
@@ -225,6 +243,36 @@ function compressImage(dataUrl, maxPx=600, quality=0.75) {
     };
     img.src = dataUrl;
   });
+}
+
+// ─────────────────────────────────────────────
+// BRAND IMAGE LIBRARY HOOK
+// ─────────────────────────────────────────────
+function useBrandImageLibrary(storeId) {
+  const [images, setImages] = useState([]);
+
+  const load = useCallback(async () => {
+    const sb=getSB(); if(!sb) return;
+    const {data}=await sb.from('brand_images').select('*').eq('store_id',storeId).order('category').order('created_at',{ascending:false});
+    setImages(data||[]);
+  },[storeId]);
+
+  useEffect(()=>{ load(); },[load]);
+
+  const add = async (product) => {
+    const sb=getSB(); if(!sb) throw new Error('Not connected');
+    const compressed = await compressImage(product.data, 800, 0.8);
+    await sb.from('brand_images').insert({ store_id:storeId, ...product, data:compressed });
+    await load();
+  };
+
+  const remove = async (id) => {
+    const sb=getSB(); if(!sb) return;
+    await sb.from('brand_images').delete().eq('id',id);
+    setImages(p=>p.filter(x=>x.id!==id));
+  };
+
+  return { images, load, add, remove };
 }
 
 // ─────────────────────────────────────────────
@@ -597,7 +645,8 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
   const [genStep,    setGenStep]    = useState('idle');
   const [brand,      setBrand]      = useState({ ...BRAND_DEFAULTS });
   const [showLib,    setShowLib]    = useState(false);
-  const { images:libImages, save:saveToLib, remove:removeFromLib } = useProductLibrary(storeId);
+  const { images:libImages, remove:removeFromLib } = useBrandImageLibrary(storeId);
+  const { save:saveToQuickLib } = useProductLibrary(storeId);
   const prodRef = useRef();
 
   useEffect(()=>{
@@ -675,15 +724,23 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
         <input ref={prodRef} type="file" accept="image/*" className="hidden" onChange={e=>handleProd(e.target.files[0])}/>
         {prodPrev && <img src={prodPrev} alt="" className="mt-2 h-16 rounded-lg object-contain border border-gray-200 dark:border-gray-600 bg-white p-0.5"/>}
         {showLib && libImages.length>0 && (
-          <div className="mt-2 grid grid-cols-6 gap-1.5">
-            {libImages.map(img=>(
-              <div key={img.id} className="relative group">
-                <img src={img.data} alt={img.name} title={img.name} onClick={()=>selectFromLib(img)}
-                  className="w-full aspect-square object-cover rounded-lg border border-gray-200 dark:border-gray-600 cursor-pointer hover:border-indigo-400 transition-all"/>
-                <button onClick={()=>removeFromLib(img.id)} className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full w-4 h-4 text-xs hidden group-hover:flex items-center justify-center">✕</button>
-              </div>
-            ))}
+          <div className="mt-2 grid grid-cols-4 gap-2">
+            {libImages.map(img=>{
+              const cat=LIQUOR_CATEGORIES.find(c=>c.id===img.category);
+              return (
+                <div key={img.id} className="relative group cursor-pointer" onClick={()=>selectFromLib(img)}>
+                  <img src={img.data} alt={img.product_name} title={img.product_name}
+                    className="w-full aspect-square object-cover rounded-lg border border-gray-200 dark:border-gray-600 hover:border-indigo-400 transition-all"/>
+                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 rounded-lg transition-all"/>
+                  <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5 truncate font-medium">{img.product_name}</p>
+                  <p className="text-xs text-gray-400">{img.size}{cat?` · ${cat.icon}`:''}</p>
+                </div>
+              );
+            })}
           </div>
+        )}
+        {showLib && libImages.length===0 && (
+          <p className="text-xs text-gray-400 mt-2 italic">No products in library yet — add some under Brand → Product Library.</p>
         )}
       </div>
       <div>
@@ -1167,6 +1224,174 @@ function CampaignDashboard({ settings }) {
 }
 
 // ─────────────────────────────────────────────
+// PRODUCT LIBRARY
+// ─────────────────────────────────────────────
+function ProductLibrary() {
+  const toast    = useToast();
+  const [storeId,     setStoreId]     = useState(STORES[0].id);
+  const [catFilter,   setCatFilter]   = useState('all');
+  const [showForm,    setShowForm]    = useState(false);
+  const [formImg,     setFormImg]     = useState(null);
+  const [formPrev,    setFormPrev]    = useState(null);
+  const [formName,    setFormName]    = useState('');
+  const [formSize,    setFormSize]    = useState('750ml');
+  const [formCat,     setFormCat]     = useState('');
+  const [formNotes,   setFormNotes]   = useState('');
+  const [saving,      setSaving]      = useState(false);
+  const [deleting,    setDeleting]    = useState(null);
+  const fileRef = useRef();
+  const { images, add, remove } = useBrandImageLibrary(storeId);
+
+  const handleFile = file => {
+    if (!file) return;
+    setFormImg(file);
+    const r=new FileReader(); r.onload=()=>setFormPrev(r.result); r.readAsDataURL(file);
+  };
+
+  const resetForm = () => {
+    setFormImg(null); setFormPrev(null); setFormName(''); setFormSize('750ml'); setFormCat(''); setFormNotes(''); setShowForm(false);
+  };
+
+  const saveProduct = async () => {
+    if (!formImg)       { toast.error('Upload a product image'); return; }
+    if (!formName.trim()){ toast.error('Enter a product name'); return; }
+    if (!formCat)       { toast.error('Select a category'); return; }
+    setSaving(true);
+    try {
+      await add({ product_name:formName.trim(), size:formSize, category:formCat, notes:formNotes.trim(), data:formPrev });
+      toast.success('Product added to library!');
+      resetForm();
+    } catch(e) { toast.error(e.message); }
+    finally { setSaving(false); }
+  };
+
+  const deleteProduct = async (id) => {
+    setDeleting(id);
+    try { await remove(id); toast.success('Removed.'); }
+    catch(e) { toast.error(e.message); }
+    finally { setDeleting(null); }
+  };
+
+  const catCounts = {};
+  images.forEach(i=>{ catCounts[i.category]=(catCounts[i.category]||0)+1; });
+  const filtered = catFilter==='all' ? images : images.filter(i=>i.category===catFilter);
+  const usedCats = LIQUOR_CATEGORIES.filter(c=>catCounts[c.id]);
+
+  return (
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-sm">
+          {STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+        </Select>
+        <div className="flex-1"/>
+        <Button onClick={()=>setShowForm(v=>!v)} variant={showForm?'secondary':'primary'} size="sm">
+          {showForm?'✕ Cancel':'+ Add Product'}
+        </Button>
+      </div>
+
+      {/* Add product form */}
+      {showForm && (
+        <Card className="border-2 border-indigo-200 dark:border-indigo-700">
+          <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4 uppercase tracking-wide">Add Product</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {/* Image upload */}
+            <div className="sm:col-span-2">
+              <Label>Product Photo</Label>
+              <div className="flex items-center gap-3 flex-wrap">
+                <Button variant="secondary" size="sm" onClick={()=>fileRef.current?.click()}>📷 Choose Image</Button>
+                {formImg && <span className="text-xs text-gray-500 truncate max-w-xs">{formImg.name}</span>}
+                {formImg && <button onClick={()=>{setFormImg(null);setFormPrev(null);}} className="text-xs text-red-500 hover:underline">Remove</button>}
+              </div>
+              <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={e=>handleFile(e.target.files[0])}/>
+              {formPrev && <img src={formPrev} alt="" className="mt-2 h-28 rounded-xl object-contain border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 p-1"/>}
+            </div>
+            <div>
+              <Label>Product Name</Label>
+              <Input value={formName} onChange={e=>setFormName(e.target.value)} placeholder="e.g. Maker's Mark Bourbon"/>
+            </div>
+            <div>
+              <Label>Size</Label>
+              <Select value={formSize} onChange={e=>setFormSize(e.target.value)}>
+                {BOTTLE_SIZES.map(s=><option key={s} value={s}>{s}</option>)}
+              </Select>
+            </div>
+            <div className="sm:col-span-2">
+              <Label>Category</Label>
+              <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+                {LIQUOR_CATEGORIES.map(c=>(
+                  <label key={c.id} className={`flex items-center gap-1.5 p-2 rounded-xl border cursor-pointer text-xs transition-all ${formCat===c.id?'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300':'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:border-indigo-300'}`}>
+                    <input type="radio" name="formCat" value={c.id} checked={formCat===c.id} onChange={()=>setFormCat(c.id)} className="hidden"/>
+                    <span>{c.icon}</span><span className="font-medium">{c.label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div className="sm:col-span-2">
+              <Label>Notes (optional)</Label>
+              <Input value={formNotes} onChange={e=>setFormNotes(e.target.value)} placeholder="e.g. Our best-seller, BC exclusive, seasonal"/>
+            </div>
+          </div>
+          <div className="mt-4 flex gap-2">
+            <Button onClick={saveProduct} loading={saving} className="flex-1">Save to Library</Button>
+            <Button onClick={resetForm} variant="secondary">Cancel</Button>
+          </div>
+        </Card>
+      )}
+
+      {/* Category filter */}
+      {images.length>0 && (
+        <div className="flex gap-2 overflow-x-auto pb-1">
+          <button onClick={()=>setCatFilter('all')} className={`flex-shrink-0 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border ${catFilter==='all'?'bg-indigo-600 text-white border-indigo-600':'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:border-indigo-300'}`}>
+            All ({images.length})
+          </button>
+          {usedCats.map(c=>(
+            <button key={c.id} onClick={()=>setCatFilter(c.id)} className={`flex-shrink-0 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border flex items-center gap-1 ${catFilter===c.id?'bg-indigo-600 text-white border-indigo-600':'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:border-indigo-300'}`}>
+              {c.icon} {c.label} <span className="opacity-70">({catCounts[c.id]})</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Product grid */}
+      {filtered.length===0 && !showForm && (
+        <div className="text-center py-16 text-gray-400 dark:text-gray-500">
+          <p className="text-4xl mb-3">📦</p>
+          <p className="text-sm font-medium">No products yet</p>
+          <p className="text-xs mt-1">Click "+ Add Product" to build your library</p>
+        </div>
+      )}
+      {filtered.length>0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-3">
+          {filtered.map(p=>{
+            const cat = LIQUOR_CATEGORIES.find(c=>c.id===p.category);
+            return (
+              <div key={p.id} className="bg-white dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 overflow-hidden group hover:border-indigo-300 dark:hover:border-indigo-600 transition-all shadow-sm">
+                <div className="relative">
+                  <img src={p.data} alt={p.product_name} className="w-full aspect-square object-cover"/>
+                  <button onClick={()=>deleteProduct(p.id)} disabled={deleting===p.id}
+                    className="absolute top-1.5 right-1.5 bg-red-500 text-white rounded-full w-6 h-6 text-xs items-center justify-center hidden group-hover:flex hover:bg-red-600 transition-colors">
+                    {deleting===p.id?'…':'✕'}
+                  </button>
+                </div>
+                <div className="p-2.5">
+                  <p className="text-xs font-bold text-gray-900 dark:text-gray-100 leading-tight truncate" title={p.product_name}>{p.product_name}</p>
+                  <div className="flex items-center gap-1 mt-1.5 flex-wrap">
+                    <span className="px-1.5 py-0.5 rounded-md bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 text-xs font-medium">{p.size}</span>
+                    {cat && <span className="px-1.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 text-xs font-medium">{cat.icon} {cat.label}</span>}
+                  </div>
+                  {p.notes && <p className="text-xs text-gray-400 mt-1 truncate" title={p.notes}>{p.notes}</p>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
 // BRAND PROFILE EDITOR
 // ─────────────────────────────────────────────
 function BrandProfileEditor({ storeId }) {
@@ -1309,22 +1534,19 @@ function ImageGenerator({ settings, onUseInPost }) {
     const r=new FileReader();
     r.onload=async()=>{
       setProdPrev(r.result);
-      // Auto-save to library
-      try { await saveToLib(file.name, r.result); }
-      catch(e) { /* silent — library save is non-critical */ }
+      try { await saveToQuickLib(file.name, r.result); } catch{}
     };
     r.readAsDataURL(file);
   };
 
   const selectFromLib = (img) => {
     setProdPrev(img.data);
-    // Create a fake file-like object for the description step
     fetch(img.data).then(r=>r.blob()).then(blob=>{
-      const f=new File([blob], img.name, {type:'image/jpeg'});
+      const f=new File([blob], img.product_name||'product', {type:'image/jpeg'});
       setProdFile(f);
     }).catch(()=>{});
     setShowLib(false);
-    toast.info(`Selected: ${img.name}`);
+    toast.info(`Selected: ${img.product_name||img.name}`);
   };
 
   const assemblePrompt = async () => {
@@ -1603,14 +1825,20 @@ function AdsPage({ settings }) {
 }
 
 function BrandPage({ settings }) {
+  const [tab,     setTab]     = useState('profile');
   const [storeId, setStoreId] = useState(STORES[0].id);
   return (
     <div>
-      <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 mb-5 pb-0">
-        <h2 className="px-1 py-3 text-sm font-semibold text-indigo-600 dark:text-indigo-400 border-b-2 border-indigo-500">🎨 Brand Profile</h2>
-        <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs mb-1">{STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</Select>
+      <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 mb-5 flex-wrap gap-2">
+        <div className="flex">
+          {[{id:'profile',label:'🎨 Brand Profile'},{id:'library',label:'📦 Product Library'}].map(t=>(
+            <button key={t.id} onClick={()=>setTab(t.id)} className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}>{t.label}</button>
+          ))}
+        </div>
+        {tab==='profile' && <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs mb-1">{STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</Select>}
       </div>
-      <BrandProfileEditor storeId={storeId}/>
+      {tab==='profile' && <BrandProfileEditor storeId={storeId}/>}
+      {tab==='library' && <ProductLibrary/>}
     </div>
   );
 }

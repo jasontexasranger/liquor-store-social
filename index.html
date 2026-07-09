@@ -347,11 +347,15 @@ async function openAIGenerateImage(prompt, dalleSize, apiKey) {
   const res = await fetch('https://api.openai.com/v1/images/generations', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify({ model: 'dall-e-3', prompt, n: 1, size: dalleSize, quality: 'standard' })
+    body: JSON.stringify({ model: 'gpt-image-1', prompt, n: 1, size: dalleSize, quality: 'standard' })
   });
   const data = await res.json();
   if (data.error) throw new Error(data.error.message);
-  return { url: data.data[0].url, revised: data.data[0].revised_prompt };
+  // gpt-image-1 returns base64, convert to data URL
+  const item = data.data[0];
+  const url = item.url || (item.b64_json ? `data:image/png;base64,${item.b64_json}` : null);
+  if (!url) throw new Error('No image returned from API');
+  return { url, revised: item.revised_prompt || '' };
 }
 
 // ─────────────────────────────────────────────

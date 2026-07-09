@@ -586,41 +586,167 @@ function AIWriter({ storeName, apiKey, mode='caption', onResult }) {
 }
 
 // ─────────────────────────────────────────────
+// INLINE IMAGE GENERATOR (embedded in PostComposer)
+// ─────────────────────────────────────────────
+function InlineImageGenerator({ storeId, settings, onGenerated }) {
+  const toast = useToast();
+  const [brief,      setBrief]      = useState('');
+  const [size,       setSize]       = useState('1024x1024');
+  const [prodFile,   setProdFile]   = useState(null);
+  const [prodPrev,   setProdPrev]   = useState(null);
+  const [genStep,    setGenStep]    = useState('idle');
+  const [brand,      setBrand]      = useState({ ...BRAND_DEFAULTS });
+  const [showLib,    setShowLib]    = useState(false);
+  const { images:libImages, save:saveToLib, remove:removeFromLib } = useProductLibrary(storeId);
+  const prodRef = useRef();
+
+  useEffect(()=>{
+    const sb=getSB(); if(!sb) return;
+    sb.from('brand_profiles').select('*').eq('store_id',storeId).maybeSingle()
+      .then(({data})=>{ if(data){ const {logo_data,...p}=data; setBrand({...BRAND_DEFAULTS,...p}); } else setBrand({...BRAND_DEFAULTS}); });
+  },[storeId]);
+
+  const handleProd = file => {
+    if (!file) return;
+    setProdFile(file);
+    const r=new FileReader();
+    r.onload=async()=>{ setProdPrev(r.result); try { await saveToLib(file.name, r.result); } catch{} };
+    r.readAsDataURL(file);
+  };
+
+  const selectFromLib = img => {
+    setProdPrev(img.data);
+    fetch(img.data).then(r=>r.blob()).then(blob=>setProdFile(new File([blob],img.name,{type:'image/jpeg'}))).catch(()=>{});
+    setShowLib(false);
+  };
+
+  const generate = async () => {
+    const apiKey = settings.openaiKey;
+    if (!apiKey) { toast.error('Add your OpenAI API key in Settings'); return; }
+    setGenStep('building');
+    try {
+      let productDesc = '';
+      if (prodFile) {
+        setGenStep('analyzing');
+        const b64 = await fileToBase64(prodFile);
+        productDesc = await openAIDescribeImage(b64, prodFile.type||'image/jpeg', apiKey);
+      }
+      setGenStep('generating');
+      const parts = [`Professional social media image for "${STORES.find(s=>s.id===storeId)?.name}", a retail liquor store in BC, Canada.`];
+      if (brand.visual_style)   parts.push(`Visual style: ${brand.visual_style}.`);
+      if (brand.mood)           parts.push(`Mood: ${brand.mood}.`);
+      if (brand.style_keywords) parts.push(`Style keywords: ${brand.style_keywords}.`);
+      if (brand.primary_color)  parts.push(`Brand colour: ${brand.primary_color}.`);
+      if (brand.avoid_visually) parts.push(`Do NOT include: ${brand.avoid_visually}.`);
+      if (productDesc)          parts.push(`Feature this product: ${productDesc}`);
+      if (brief.trim())         parts.push(`Creative direction: ${brief.trim()}.`);
+      parts.push('High-quality commercial photography. No text or words in the image.');
+      const dalleSize = IMAGE_SIZES.find(s=>s.value===size)?.dalleSize||'1024x1024';
+      const img = await openAIGenerateImage(parts.join(' '), dalleSize, apiKey);
+      onGenerated(img.url);
+      toast.success('Image generated — ready to post!');
+      setGenStep('idle');
+      // Save to history
+      const sb=getSB();
+      if(sb) await sb.from('generation_history').insert({ store_id:storeId, store_name:STORES.find(s=>s.id===storeId)?.name, image_url:img.url, revised_prompt:img.revised, brief, size_label:size, prompt:parts.join(' ') });
+    } catch(e) { toast.error(`Generation failed: ${e.message}`); setGenStep('idle'); }
+  };
+
+  const isBusy = genStep !== 'idle';
+  const stepLabel = { analyzing:'🔍 Analysing product…', building:'⚙️ Building prompt…', generating:'🎨 Generating…' };
+
+  return (
+    <div className="rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/30 p-4 space-y-3">
+      <p className="text-xs font-bold text-indigo-700 dark:text-indigo-300 uppercase tracking-widest">🎨 Generate Image with AI</p>
+      <div>
+        <Label>Image Brief</Label>
+        <Textarea value={brief} onChange={e=>setBrief(e.target.value)} rows={2} placeholder="e.g. A bottle of Maker's Mark on a warm wooden bar — cozy summer evening"/>
+      </div>
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <Label className="mb-0">Product Reference (optional)</Label>
+          {libImages.length>0 && <button onClick={()=>setShowLib(v=>!v)} className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">{showLib?'Hide ↑':`📚 Library (${libImages.length})`}</button>}
+        </div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Button variant="secondary" size="sm" onClick={()=>prodRef.current?.click()}>📦 Upload</Button>
+          {prodFile && <span className="text-xs text-gray-500 truncate max-w-[140px]">{prodFile.name}</span>}
+          {prodFile && <button onClick={()=>{setProdFile(null);setProdPrev(null);}} className="text-xs text-red-500 hover:underline">✕</button>}
+        </div>
+        <input ref={prodRef} type="file" accept="image/*" className="hidden" onChange={e=>handleProd(e.target.files[0])}/>
+        {prodPrev && <img src={prodPrev} alt="" className="mt-2 h-16 rounded-lg object-contain border border-gray-200 dark:border-gray-600 bg-white p-0.5"/>}
+        {showLib && libImages.length>0 && (
+          <div className="mt-2 grid grid-cols-6 gap-1.5">
+            {libImages.map(img=>(
+              <div key={img.id} className="relative group">
+                <img src={img.data} alt={img.name} title={img.name} onClick={()=>selectFromLib(img)}
+                  className="w-full aspect-square object-cover rounded-lg border border-gray-200 dark:border-gray-600 cursor-pointer hover:border-indigo-400 transition-all"/>
+                <button onClick={()=>removeFromLib(img.id)} className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full w-4 h-4 text-xs hidden group-hover:flex items-center justify-center">✕</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <div>
+        <Label>Size</Label>
+        <div className="grid grid-cols-2 gap-1.5">
+          {IMAGE_SIZES.map(s=>(
+            <label key={s.value} className={`flex items-center gap-2 p-2 rounded-lg border cursor-pointer text-xs transition-all ${size===s.value?'border-indigo-500 bg-white dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300':'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400'}`}>
+              <input type="radio" name="inlineSize" value={s.value} checked={size===s.value} onChange={()=>setSize(s.value)} className="flex-shrink-0"/>
+              <span><strong>{s.label}</strong> — {s.desc}</span>
+            </label>
+          ))}
+        </div>
+      </div>
+      <Button onClick={generate} loading={isBusy} className="w-full" variant="primary">
+        {isBusy?(stepLabel[genStep]||'Working…'):'🎨 Generate & Add to Post'}
+      </Button>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
 // MODULE 1 — POST COMPOSER
 // ─────────────────────────────────────────────
 function PostComposer({ settings, pendingImage, onClearPending }) {
   const toast = useToast();
-  const [selected,  setSelected]  = useState([STORES[0].id]);
-  const [caption,   setCaption]   = useState('');
-  const [imgFile,   setImgFile]   = useState(null);
-  const [imgPrev,   setImgPrev]   = useState(null);
-  const [schedule,  setSchedule]  = useState('');
-  const [loading,   setLoading]   = useState(false);
-  const [showAI,    setShowAI]    = useState(false);
-  const [results,   setResults]   = useState([]);
+  const [selected,   setSelected]   = useState([STORES[0].id]);
+  const [caption,    setCaption]    = useState('');
+  const [imgFile,    setImgFile]    = useState(null);
+  const [imgPrev,    setImgPrev]    = useState(null);
+  const [genImgUrl,  setGenImgUrl]  = useState(null);
+  const [schedule,   setSchedule]   = useState('');
+  const [loading,    setLoading]    = useState(false);
+  const [showAI,     setShowAI]     = useState(false);
+  const [showImgGen, setShowImgGen] = useState(false);
+  const [results,    setResults]    = useState([]);
 
-  // When a generated image is passed in, show it as preview
   useEffect(()=>{
-    if (pendingImage) { setImgFile(null); setImgPrev(pendingImage); }
+    if (pendingImage) { setImgFile(null); setImgPrev(pendingImage); setGenImgUrl(pendingImage); setShowImgGen(false); }
   },[pendingImage]);
 
   const toggleStore = id => setSelected(p => p.includes(id)?p.filter(x=>x!==id):[...p,id]);
 
   const handleFile = file => {
     if (!file) return;
-    setImgFile(file);
+    setImgFile(file); setGenImgUrl(null);
     const r=new FileReader(); r.onload=()=>setImgPrev(r.result); r.readAsDataURL(file);
     if (onClearPending) onClearPending();
   };
 
   const clearImage = () => {
-    setImgFile(null); setImgPrev(null);
+    setImgFile(null); setImgPrev(null); setGenImgUrl(null);
+    if (onClearPending) onClearPending();
+  };
+
+  const handleGenerated = (url) => {
+    setGenImgUrl(url); setImgPrev(url); setImgFile(null);
+    setShowImgGen(false);
     if (onClearPending) onClearPending();
   };
 
   const post = async () => {
-    if (!caption.trim())       { toast.error('Write a caption first'); return; }
-    if (selected.length===0)   { toast.error('Select at least one store'); return; }
+    if (!caption.trim())     { toast.error('Write a caption first'); return; }
+    if (selected.length===0) { toast.error('Select at least one store'); return; }
     const missing = selected.filter(id=>!settings.tokens[id]);
     if (missing.length) { toast.error(`Missing token(s) for: ${missing.map(id=>STORES.find(s=>s.id===id)?.name).join(', ')}`); return; }
     if (schedule) {
@@ -628,9 +754,9 @@ function PostComposer({ settings, pendingImage, onClearPending }) {
       if (ts < Date.now()+10*60*1000) { toast.error('Scheduled time must be at least 10 minutes in the future'); return; }
     }
 
-    setLoading(true);
-    setResults([]);
+    setLoading(true); setResults([]);
     const res = [];
+    const activeImgUrl = genImgUrl || (pendingImage&&!imgFile?pendingImage:null);
 
     for (const storeId of selected) {
       const store   = STORES.find(s=>s.id===storeId);
@@ -639,7 +765,6 @@ function PostComposer({ settings, pendingImage, onClearPending }) {
       try {
         let postId;
         if (imgFile) {
-          // File upload
           const form = new FormData();
           form.append('caption', caption+POST_SUFFIX);
           form.append('source', imgFile);
@@ -647,32 +772,31 @@ function PostComposer({ settings, pendingImage, onClearPending }) {
           if (schedTs) { form.append('published','false'); form.append('scheduled_publish_time',String(schedTs)); }
           const r = await gPostForm(`/${store.pageId}/photos`, form);
           postId = r.post_id||r.id;
-        } else if (pendingImage) {
-          // Generated image URL — Facebook fetches it server-side
-          const body = { url: pendingImage, caption: caption+POST_SUFFIX };
+        } else if (activeImgUrl) {
+          const body = { url: activeImgUrl, caption: caption+POST_SUFFIX };
           if (schedTs) { body.published=false; body.scheduled_publish_time=schedTs; }
           const r = await gPost(`/${store.pageId}/photos`, body, token);
           postId = r.post_id||r.id;
         } else {
-          // Text only
           const body = { message: caption+POST_SUFFIX };
           if (schedTs) { body.published=false; body.scheduled_publish_time=schedTs; }
           const r = await gPost(`/${store.pageId}/feed`, body, token);
           postId = r.id;
         }
         res.push({ store:store.name, success:true, postId, scheduled:!!schedTs });
-      } catch (e) {
+      } catch(e) {
         res.push({ store:store.name, success:false, error:e.message });
       }
     }
 
     setResults(res);
     res.forEach(r => { if(r.success) toast.success(`${r.store}: ${r.scheduled?'Scheduled!':'Published!'}`); else toast.error(`${r.store}: ${r.error}`); });
-    if (res.some(r=>r.success)) { setCaption(''); setImgFile(null); setImgPrev(null); setSchedule(''); if(onClearPending) onClearPending(); }
+    if (res.some(r=>r.success)) { setCaption(''); setImgFile(null); setImgPrev(null); setGenImgUrl(null); setSchedule(''); if(onClearPending) onClearPending(); }
     setLoading(false);
   };
 
-  const activeStore = selected.length===1 ? STORES.find(s=>s.id===selected[0])?.name : 'our store';
+  const activeStoreId = selected.length===1 ? selected[0] : STORES[0].id;
+  const activeStore   = STORES.find(s=>s.id===activeStoreId)?.name || 'our store';
 
   return (
     <Card>
@@ -700,19 +824,36 @@ function PostComposer({ settings, pendingImage, onClearPending }) {
       </div>
       {showAI && <div className="mb-4"><AIWriter storeName={activeStore} apiKey={settings.anthropicKey} mode="caption" onResult={t=>setCaption(t)}/></div>}
 
-      {/* Image area — generated image OR file upload */}
+      {/* Image section */}
       <div className="mb-4">
-        {pendingImage && !imgFile ? (
-          <div>
-            <Label>Image (from generator)</Label>
+        <div className="flex items-center justify-between mb-2">
+          <Label className="mb-0">Image</Label>
+          <div className="flex gap-2">
+            <button onClick={()=>setShowImgGen(v=>!v)} className={`text-xs font-semibold hover:underline ${showImgGen?'text-indigo-600 dark:text-indigo-400':'text-indigo-500 dark:text-indigo-400'}`}>{showImgGen?'Hide Generator ↑':'🎨 Generate with AI'}</button>
+          </div>
+        </div>
+
+        {/* Generated image preview */}
+        {(genImgUrl||(pendingImage&&!imgFile)) && (
+          <div className="mb-3">
             <div className="relative inline-block">
-              <img src={pendingImage} alt="" className="h-32 rounded-xl object-cover border border-indigo-300 dark:border-indigo-600 shadow-sm"/>
+              <img src={genImgUrl||pendingImage} alt="" className="h-32 rounded-xl object-cover border border-indigo-300 dark:border-indigo-600 shadow-sm"/>
               <button onClick={clearImage} className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full w-5 h-5 text-xs flex items-center justify-center hover:bg-red-600">✕</button>
             </div>
-            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">⚠ Generated image URLs expire in ~1 hour — post soon.</p>
+            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">⚠ Generated URLs expire in ~1 hour — post soon.</p>
           </div>
-        ) : (
-          <ImagePicker file={imgFile} preview={imgPrev} onFile={handleFile} onClear={clearImage}/>
+        )}
+
+        {/* File upload (shown when no generated image) */}
+        {!genImgUrl && !(pendingImage&&!imgFile) && (
+          <ImagePicker file={imgFile} preview={imgPrev} onFile={handleFile} onClear={clearImage} label="Upload Image"/>
+        )}
+
+        {/* Inline generator */}
+        {showImgGen && (
+          <div className="mt-3">
+            <InlineImageGenerator storeId={activeStoreId} settings={settings} onGenerated={handleGenerated}/>
+          </div>
         )}
       </div>
 

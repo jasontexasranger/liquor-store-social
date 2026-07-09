@@ -1281,10 +1281,17 @@ function SettingsPage({ settings, onSave }) {
 // PAGE CONTAINERS
 // ─────────────────────────────────────────────
 function PostsPage({ settings }) {
+  const [tab, setTab] = useState('compose');
   return (
-    <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
-      <PostComposer settings={settings}/>
-      <PostHistory  settings={settings}/>
+    <div>
+      <div className="flex border-b border-gray-200 dark:border-gray-700 mb-5">
+        {[{id:'compose',label:'✏️ Compose'},{id:'history',label:'📋 History'},{id:'images',label:'🖼 Image Generator'}].map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)} className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}>{t.label}</button>
+        ))}
+      </div>
+      {tab==='compose' && <div className="grid grid-cols-1 xl:grid-cols-2 gap-5"><PostComposer settings={settings}/><PostHistory settings={settings}/></div>}
+      {tab==='history' && <PostHistory settings={settings}/>}
+      {tab==='images'  && <ImageGenerator settings={settings}/>}
     </div>
   );
 }
@@ -1304,20 +1311,14 @@ function AdsPage({ settings }) {
 }
 
 function BrandPage({ settings }) {
-  const [tab,     setTab]     = useState('profile');
   const [storeId, setStoreId] = useState(STORES[0].id);
   return (
     <div>
-      <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 mb-5 flex-wrap gap-3 pb-0">
-        <div className="flex">
-          {[{id:'profile',label:'🎨 Brand Profile'},{id:'generate',label:'🖼 Image Generator'}].map(t=>(
-            <button key={t.id} onClick={()=>setTab(t.id)} className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}>{t.label}</button>
-          ))}
-        </div>
-        {tab==='profile' && <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs mb-1">{STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</Select>}
+      <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 mb-5 pb-0">
+        <h2 className="px-1 py-3 text-sm font-semibold text-indigo-600 dark:text-indigo-400 border-b-2 border-indigo-500">🎨 Brand Profile</h2>
+        <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs mb-1">{STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</Select>
       </div>
-      {tab==='profile'  && <BrandProfileEditor storeId={storeId}/>}
-      {tab==='generate' && <ImageGenerator settings={settings}/>}
+      <BrandProfileEditor storeId={storeId}/>
     </div>
   );
 }

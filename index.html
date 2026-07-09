@@ -84,6 +84,16 @@ const IMAGE_SIZES = [
 const POST_SUFFIX = '\n\nPrices exclude tax & deposit - while supplies last';
 
 // ─────────────────────────────────────────────
+// RETAIL AD TEMPLATES
+// Pure Canvas layouts — AI is not involved in the final image
+// ─────────────────────────────────────────────
+const RETAIL_TEMPLATES = [
+  { id:'classic', name:'Classic Retail', previewBg:'#F5EDDA', previewBar:'#1e3a5f' },
+  { id:'dark',    name:'Dark Premium',   previewBg:'#0D1B2A', previewBar:'#1A2E45' },
+  { id:'bold',    name:'Bold White',     previewBg:'#FFFFFF', previewBar:'#1e3a5f' },
+];
+
+// ─────────────────────────────────────────────
 // LOCAL STORAGE (dark mode + Supabase config only)
 // ─────────────────────────────────────────────
 const ls = {
@@ -532,6 +542,169 @@ function compositeProductAndLogo(bgDataUrl, productDataUrl, logoDataUrl, priceOp
 }
 
 // ─────────────────────────────────────────────
+// RETAIL TEMPLATE RENDERER
+// Builds the entire ad with Canvas — no AI involved.
+// Locked layout: top bar (logo), left (price), right (product), footer.
+// tplId: 'classic' | 'dark' | 'bold'
+// brandColors: { primary, accent }
+// data: { saveText, priceText, productName, productSize, storeName }
+// ─────────────────────────────────────────────
+async function renderRetailTemplate(tplId, { productDataUrl, logoDataUrl, brandPrimary='#1e3a5f', brandAccent='#c4a35a' }, { saveText='', priceText='', productName='', productSize='', storeName='' }) {
+  const W = 1080, H = 1080;
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  const isDark  = tplId === 'dark';
+  const BG      = isDark ? '#0D1B2A' : tplId === 'bold' ? '#FFFFFF' : '#F5EDDA';
+  const txtMain = isDark ? '#FFFFFF' : brandPrimary;
+
+  // ── Background ──
+  ctx.fillStyle = BG;
+  ctx.fillRect(0, 0, W, H);
+
+  // ── Top bar ──
+  const BAR_H = 150;
+  ctx.fillStyle = brandPrimary;
+  ctx.fillRect(0, 0, W, BAR_H);
+
+  // ── Accent stripe ──
+  ctx.fillStyle = brandAccent;
+  ctx.fillRect(0, BAR_H, W, 7);
+
+  // ── Logo or store name ──
+  await new Promise(res => {
+    if (!logoDataUrl) {
+      ctx.fillStyle = '#ffffff';
+      ctx.font      = `bold 52px -apple-system,Arial,sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText((storeName || '').toUpperCase(), W/2, BAR_H/2);
+      return res();
+    }
+    const logo = new Image();
+    logo.onload = () => {
+      const lh = BAR_H * 0.68, lw = lh * (logo.width / logo.height);
+      ctx.drawImage(logo, (W - lw)/2, (BAR_H - lh)/2, lw, lh);
+      res();
+    };
+    logo.onerror = res;
+    logo.src = logoDataUrl;
+  });
+
+  // ── Subtle vertical divider ──
+  ctx.strokeStyle = txtMain + '28';
+  ctx.lineWidth   = 1.5;
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.moveTo(515, BAR_H + 50);
+  ctx.lineTo(515, H - 55);
+  ctx.stroke();
+
+  // ── LEFT ZONE: price content ──
+  const LX = 62;
+  let ly = BAR_H + 55;
+  ctx.textAlign    = 'left';
+  ctx.textBaseline = 'top';
+
+  // SAVE badge
+  if (saveText) {
+    const label = saveText.startsWith('$') ? `SAVE ${saveText}` : `SAVE $${saveText}`;
+    const fs = 44, iph = 14, ipv = 10;
+    ctx.font = `bold ${fs}px -apple-system,Arial,sans-serif`;
+    const tw = ctx.measureText(label).width;
+    const bw = tw + iph*2, bh = fs*1.0 + ipv*2;
+    ctx.save();
+    ctx.shadowColor='rgba(0,0,0,0.18)'; ctx.shadowBlur=12; ctx.shadowOffsetY=4;
+    ctx.fillStyle = brandAccent;
+    ctx.beginPath(); ctx.roundRect(LX, ly, bw, bh, 10); ctx.fill();
+    ctx.restore();
+    ctx.fillStyle = brandPrimary;
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, LX + iph, ly + bh/2);
+    ctx.textBaseline = 'top';
+    ly += bh + 26;
+  }
+
+  // Product name (ALL CAPS, word-wrapped ~430px)
+  if (productName) {
+    const fs = 34;
+    ctx.font = `bold ${fs}px -apple-system,Arial,sans-serif`;
+    ctx.fillStyle = txtMain;
+    const maxW = 430, words = productName.toUpperCase().split(' ');
+    let line = '';
+    for (const w of words) {
+      const test = line ? `${line} ${w}` : w;
+      if (ctx.measureText(test).width > maxW && line) {
+        ctx.fillText(line, LX, ly); ly += fs * 1.35; line = w;
+      } else { line = test; }
+    }
+    if (line) { ctx.fillText(line, LX, ly); ly += fs * 1.35; }
+    ly += 4;
+  }
+
+  // Product size
+  if (productSize) {
+    const fs = 27;
+    ctx.font = `${fs}px -apple-system,Arial,sans-serif`;
+    ctx.fillStyle = txtMain + (isDark ? 'aa' : '99');
+    ctx.fillText(productSize, LX, ly);
+    ly += fs * 1.7;
+  }
+
+  ly += 18;
+
+  // JUST + Price
+  if (priceText) {
+    const priceVal = priceText.startsWith('$') ? priceText : `$${priceText}`;
+    const justFs = 32, priceFs = 118;
+
+    // "JUST" label in accent colour
+    ctx.font = `bold ${justFs}px -apple-system,Arial,sans-serif`;
+    ctx.fillStyle = brandAccent;
+    ctx.fillText('JUST', LX, ly);
+    ly += justFs * 1.45;
+
+    // Big price
+    ctx.save();
+    ctx.shadowColor='rgba(0,0,0,0.12)'; ctx.shadowBlur=8; ctx.shadowOffsetY=4;
+    ctx.font = `900 ${priceFs}px -apple-system,Arial Black,sans-serif`;
+    ctx.fillStyle = txtMain;
+    ctx.fillText(priceVal, LX, ly);
+    ctx.restore();
+  }
+
+  // Footer
+  ctx.font = `22px -apple-system,Arial,sans-serif`;
+  ctx.fillStyle = txtMain + (isDark ? '66' : '55');
+  ctx.textBaseline = 'bottom';
+  ctx.fillText('Plus tax & deposit. While supplies last.', LX, H - 24);
+
+  // ── RIGHT ZONE: product photo ──
+  if (productDataUrl) {
+    await new Promise(res => {
+      const prod = new Image();
+      prod.onload = () => {
+        const PX=530, PY=BAR_H+20, PW=490, PH=H-BAR_H-60;
+        const scale = Math.min(PW/prod.width, PH/prod.height);
+        const dw = prod.width*scale, dh = prod.height*scale;
+        const dx = PX + (PW-dw)/2;
+        const dy = PY + PH - dh; // bottom-align
+        ctx.save();
+        ctx.shadowColor='rgba(0,0,0,0.20)';
+        ctx.shadowBlur=32; ctx.shadowOffsetX=5; ctx.shadowOffsetY=18;
+        ctx.drawImage(prod, dx, dy, dw, dh);
+        ctx.restore();
+        res();
+      };
+      prod.onerror = res;
+      prod.src = productDataUrl;
+    });
+  }
+
+  return canvas.toDataURL('image/png');
+}
+
+// ─────────────────────────────────────────────
 // LIGHTBOX
 // ─────────────────────────────────────────────
 function Lightbox({ src, onClose }) {
@@ -919,17 +1092,21 @@ function AIWriter({ storeName, apiKey, mode='caption', onResult }) {
 // ─────────────────────────────────────────────
 function InlineImageGenerator({ storeId, settings, onGenerated }) {
   const toast = useToast();
-  const [brief,      setBrief]      = useState('');
-  const [size,       setSize]       = useState('1024x1024');
-  const [prodFile,   setProdFile]   = useState(null);
-  const [prodPrev,   setProdPrev]   = useState(null);
-  const [saveText,   setSaveText]   = useState('');
-  const [priceText,  setPriceText]  = useState('');
-  const [genStep,    setGenStep]    = useState('idle');
-  const [brand,      setBrand]      = useState({ ...BRAND_DEFAULTS });
-  const [logo,       setLogo]       = useState(null);
-  const [showLib,    setShowLib]    = useState(false);
-  const [lightbox,   setLightbox]   = useState(null);
+  const [mode,        setMode]       = useState('template'); // 'template' | 'lifestyle'
+  const [template,    setTemplate]   = useState('classic');
+  const [brief,       setBrief]      = useState('');
+  const [size,        setSize]       = useState('1024x1024');
+  const [prodFile,    setProdFile]   = useState(null);
+  const [prodPrev,    setProdPrev]   = useState(null);
+  const [saveText,    setSaveText]   = useState('');
+  const [priceText,   setPriceText]  = useState('');
+  const [productName, setProductName]= useState('');
+  const [productSize, setProductSize]= useState('');
+  const [genStep,     setGenStep]    = useState('idle');
+  const [brand,       setBrand]      = useState({ ...BRAND_DEFAULTS });
+  const [logo,        setLogo]       = useState(null);
+  const [showLib,     setShowLib]    = useState(false);
+  const [lightbox,    setLightbox]   = useState(null);
   const { images:libImages, remove:removeFromLib } = useBrandImageLibrary(storeId);
   const { save:saveToQuickLib } = useProductLibrary(storeId);
   const prodRef = useRef();
@@ -953,57 +1130,65 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
 
   const selectFromLib = img => {
     setProdPrev(img.data);
-    fetch(img.data).then(r=>r.blob()).then(blob=>setProdFile(new File([blob],img.name,{type:'image/jpeg'}))).catch(()=>{});
+    setProductName(img.product_name || '');
+    setProductSize(img.size || '');
+    fetch(img.data).then(r=>r.blob()).then(blob=>setProdFile(new File([blob],img.product_name||'product',{type:'image/jpeg'}))).catch(()=>{});
     setShowLib(false);
   };
 
-  const generate = async () => {
+  // ── TEMPLATE MODE: pure Canvas, no AI ──
+  const generateTemplate = async () => {
+    if (!prodPrev) { toast.error('Upload a product photo first'); return; }
+    const store = STORES.find(s=>s.id===storeId);
+    try {
+      setGenStep('removing');
+      let cleanProd = prodPrev;
+      try { cleanProd = await removeProductBackground(prodPrev); } catch(e) {}
+
+      setGenStep('compositing');
+      const finalUrl = await renderRetailTemplate(
+        template,
+        { productDataUrl: cleanProd, logoDataUrl: logo, brandPrimary: brand.primary_color||'#1e3a5f', brandAccent: brand.secondary_color||'#c4a35a' },
+        { saveText: saveText.trim(), priceText: priceText.trim(), productName: productName.trim(), productSize: productSize.trim(), storeName: store?.name||'' }
+      );
+      onGenerated(finalUrl);
+      toast.success('Ad created!');
+      setGenStep('idle');
+      const sb=getSB();
+      if(sb) sb.from('generation_history').insert({ store_id:storeId, store_name:store?.name, image_url:finalUrl, brief:`Template: ${template}`, size_label:'1080x1080' });
+    } catch(e) { toast.error(`Failed: ${e.message}`); setGenStep('idle'); }
+  };
+
+  // ── LIFESTYLE MODE: AI background + composite ──
+  const generateLifestyle = async () => {
     const apiKey = settings.openaiKey;
     if (!apiKey) { toast.error('Add your OpenAI API key in Settings'); return; }
+    const store    = STORES.find(s=>s.id===storeId);
+    const storeName= store?.name || 'the store';
+    const dalleSize= IMAGE_SIZES.find(s=>s.value===size)?.dalleSize || '1024x1024';
     setGenStep('building');
     try {
-      const hasProduct = !!prodPrev;
-      const storeName  = STORES.find(s=>s.id===storeId)?.name || 'the store';
-      const dalleSize  = IMAGE_SIZES.find(s=>s.value===size)?.dalleSize || '1024x1024';
-
-      let prompt;
-      if (hasProduct) {
-        // Background-only scene — real product will be composited in afterwards
-        const parts = [`Photorealistic atmospheric background for a retail liquor store promotion in BC, Canada.`];
-        if (brand.visual_style)   parts.push(`Visual style: ${brand.visual_style}.`);
-        if (brand.mood)           parts.push(`Mood: ${brand.mood}.`);
-        if (brand.style_keywords) parts.push(`Keywords: ${brand.style_keywords}.`);
-        if (brand.primary_color)  parts.push(`Accent colour: ${brand.primary_color}.`);
-        if (brand.avoid_visually) parts.push(`Avoid: ${brand.avoid_visually}.`);
-        if (brief.trim())         parts.push(`Direction: ${brief.trim()}.`);
-        parts.push('CRITICAL RULES: Absolutely NO bottles, cans, boxes, products, or objects of any kind. NO text, numbers, letters, prices, or words anywhere. Pure background only — beautiful surface texture, lighting, atmosphere, depth of field — ready for a product photo to be placed on top.');
-        prompt = parts.join(' ');
-      } else {
-        const parts = [`Professional social media image for "${storeName}", a retail liquor store in BC, Canada.`];
-        if (brand.visual_style)   parts.push(`Visual style: ${brand.visual_style}.`);
-        if (brand.mood)           parts.push(`Mood: ${brand.mood}.`);
-        if (brand.style_keywords) parts.push(`Style keywords: ${brand.style_keywords}.`);
-        if (brand.primary_color)  parts.push(`Brand colour: ${brand.primary_color}.`);
-        if (brand.avoid_visually) parts.push(`Do NOT include: ${brand.avoid_visually}.`);
-        if (brief.trim())         parts.push(`Creative direction: ${brief.trim()}.`);
-        parts.push('High-quality commercial photography. No text or words in the image.');
-        prompt = parts.join(' ');
-      }
+      const parts = [`Clean atmospheric background for a retail liquor store campaign in BC, Canada.`];
+      if (brand.visual_style)   parts.push(`Visual style: ${brand.visual_style}.`);
+      if (brand.mood)           parts.push(`Mood: ${brand.mood}.`);
+      if (brand.style_keywords) parts.push(`Keywords: ${brand.style_keywords}.`);
+      if (brand.avoid_visually) parts.push(`Avoid: ${brand.avoid_visually}.`);
+      if (brief.trim())         parts.push(brief.trim());
+      parts.push('NO text, NO bottles, NO products, NO logos, NO prices. Pure background only.');
+      const prompt = parts.join(' ');
 
       setGenStep('generating');
       const img = await openAIGenerateImage(prompt, dalleSize, apiKey);
 
-      // Step 1: remove white/cream background from product photo
       let cleanProd = prodPrev;
-      if (hasProduct) {
+      if (prodPrev) {
         setGenStep('removing');
-        try { cleanProd = await removeProductBackground(prodPrev); } catch(e) { cleanProd = prodPrev; }
+        try { cleanProd = await removeProductBackground(prodPrev); } catch(e) {}
       }
 
-      // Step 2: composite product + price labels + logo onto AI background
       setGenStep('compositing');
       let finalUrl;
-      if (hasProduct) {
+      if (prodPrev) {
         const priceOpts = { saveText: saveText.trim(), priceText: priceText.trim(), primaryColor: brand.primary_color, accentColor: brand.secondary_color };
         finalUrl = await compositeProductAndLogo(img.url, cleanProd, logo, priceOpts);
       } else {
@@ -1011,86 +1196,160 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
       }
 
       onGenerated(finalUrl);
-      toast.success('Image generated — ready to post!');
+      toast.success('Image generated!');
       setGenStep('idle');
       const sb=getSB();
-      if(sb) await sb.from('generation_history').insert({ store_id:storeId, store_name:storeName, image_url:finalUrl, revised_prompt:img.revised, brief, size_label:size, prompt });
-    } catch(e) { toast.error(`✗ Generation failed: ${e.message}`); setGenStep('idle'); }
+      if(sb) sb.from('generation_history').insert({ store_id:storeId, store_name:storeName, image_url:finalUrl, revised_prompt:img.revised, brief, size_label:size, prompt });
+    } catch(e) { toast.error(`✗ ${e.message}`); setGenStep('idle'); }
   };
 
-  const isBusy = genStep !== 'idle';
-  const stepLabel = { building:'⚙️ Building prompt…', generating:'🎨 Generating background…', removing:'✂️ Removing background…', compositing:'📦 Compositing final image…' };
+  const generate  = mode === 'template' ? generateTemplate : generateLifestyle;
+  const isBusy    = genStep !== 'idle';
+  const stepLabel = { building:'⚙️ Building prompt…', generating:'🎨 Generating…', removing:'✂️ Removing background…', compositing:'🖼 Building ad…' };
+
+  const clearProduct = () => { setProdFile(null); setProdPrev(null); setSaveText(''); setPriceText(''); setProductName(''); setProductSize(''); };
 
   return (
     <>
     {lightbox && <Lightbox src={lightbox} onClose={()=>setLightbox(null)}/>}
     <div className="rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/30 p-4 space-y-3">
-      <p className="text-xs font-bold text-indigo-700 dark:text-indigo-300 uppercase tracking-widest">🎨 Generate Image with AI</p>
-      <div>
-        <Label>Image Brief</Label>
-        <Textarea value={brief} onChange={e=>setBrief(e.target.value)} rows={2} placeholder="e.g. A bottle of Maker's Mark on a warm wooden bar — cozy summer evening"/>
+      <p className="text-xs font-bold text-indigo-700 dark:text-indigo-300 uppercase tracking-widest">🎨 Image Creator</p>
+
+      {/* Mode toggle */}
+      <div className="flex rounded-lg overflow-hidden border border-indigo-300 dark:border-indigo-700">
+        <button onClick={()=>setMode('template')} className={`flex-1 py-2 text-xs font-bold transition-colors ${mode==='template'?'bg-indigo-600 text-white':'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-indigo-50 dark:hover:bg-gray-700'}`}>
+          📋 Price Ad
+        </button>
+        <button onClick={()=>setMode('lifestyle')} className={`flex-1 py-2 text-xs font-bold transition-colors ${mode==='lifestyle'?'bg-indigo-600 text-white':'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-indigo-50 dark:hover:bg-gray-700'}`}>
+          🎨 Lifestyle (AI)
+        </button>
       </div>
-      <div>
-        <div className="flex items-center justify-between mb-1">
-          <Label className="mb-0">Product Reference (optional)</Label>
-          {libImages.length>0 && <button onClick={()=>setShowLib(v=>!v)} className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">{showLib?'Hide ↑':`📚 Library (${libImages.length})`}</button>}
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <Button variant="secondary" size="sm" onClick={()=>prodRef.current?.click()}>📦 Upload</Button>
-          {prodFile && <span className="text-xs text-gray-500 truncate max-w-[140px]">{prodFile.name}</span>}
-          {prodFile && <button onClick={()=>{setProdFile(null);setProdPrev(null);setSaveText('');setPriceText('');}} className="text-xs text-red-500 hover:underline">✕</button>}
-        </div>
-        <input ref={prodRef} type="file" accept="image/*" className="hidden" onChange={e=>handleProd(e.target.files[0])}/>
-        {prodPrev && <img src={prodPrev} alt="" className="mt-2 h-16 rounded-lg object-contain border border-gray-200 dark:border-gray-600 bg-white p-0.5"/>}
-        {prodPrev && (
-          <div className="mt-2 p-2.5 bg-white dark:bg-gray-800 rounded-lg border border-indigo-100 dark:border-indigo-900 space-y-2">
-            <p className="text-xs font-semibold text-indigo-600 dark:text-indigo-400">🏷 Price Labels (added by Canvas — always renders correctly)</p>
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <Label>Save Amount</Label>
-                <Input value={saveText} onChange={e=>setSaveText(e.target.value)} placeholder="e.g. $5.50"/>
-              </div>
-              <div>
-                <Label>Sale Price</Label>
-                <Input value={priceText} onChange={e=>setPriceText(e.target.value)} placeholder="e.g. $27.99"/>
-              </div>
-            </div>
-          </div>
-        )}
-        {showLib && libImages.length>0 && (
-          <div className="mt-2 grid grid-cols-4 gap-2">
-            {libImages.map(img=>{
-              const cat=LIQUOR_CATEGORIES.find(c=>c.id===img.category);
-              return (
-                <div key={img.id} className="relative group cursor-pointer" onClick={()=>selectFromLib(img)}>
-                  <img src={img.data} alt={img.product_name} title={img.product_name}
-                    className="w-full aspect-square object-cover rounded-lg border border-gray-200 dark:border-gray-600 hover:border-indigo-400 transition-all"/>
-                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 rounded-lg transition-all"/>
-                  <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5 truncate font-medium">{img.product_name}</p>
-                  <p className="text-xs text-gray-400">{img.size}{cat?` · ${cat.icon}`:''}</p>
+
+      {/* ── TEMPLATE MODE ── */}
+      {mode==='template' && (<>
+        {/* Template picker */}
+        <div>
+          <Label>Template</Label>
+          <div className="grid grid-cols-3 gap-2">
+            {RETAIL_TEMPLATES.map(t=>(
+              <button key={t.id} onClick={()=>setTemplate(t.id)}
+                className={`rounded-lg border-2 p-1.5 text-center transition-all ${template===t.id?'border-indigo-500':'border-gray-200 dark:border-gray-700'}`}>
+                <div className="w-full h-8 rounded mb-1 overflow-hidden flex flex-col">
+                  <div className="flex-none h-2.5" style={{background:t.previewBar}}/>
+                  <div className="flex-1" style={{background:t.previewBg}}/>
                 </div>
-              );
-            })}
+                <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">{t.name}</span>
+              </button>
+            ))}
           </div>
-        )}
-        {showLib && libImages.length===0 && (
-          <p className="text-xs text-gray-400 mt-2 italic">No products in library yet — add some under Brand → Product Library.</p>
-        )}
-      </div>
-      <div>
-        <Label>Size</Label>
-        <div className="grid grid-cols-2 gap-1.5">
-          {IMAGE_SIZES.map(s=>(
-            <label key={s.value} className={`flex items-center gap-2 p-2 rounded-lg border cursor-pointer text-xs transition-all ${size===s.value?'border-indigo-500 bg-white dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300':'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400'}`}>
-              <input type="radio" name="inlineSize" value={s.value} checked={size===s.value} onChange={()=>setSize(s.value)} className="flex-shrink-0"/>
-              <span><strong>{s.label}</strong> — {s.desc}</span>
-            </label>
-          ))}
         </div>
-      </div>
-      <Button onClick={generate} loading={isBusy} className="w-full" variant="primary">
-        {isBusy?(stepLabel[genStep]||'Working…'):'🎨 Generate & Add to Post'}
-      </Button>
+
+        {/* Product upload */}
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <Label className="mb-0">Product Photo <span className="text-red-500">*</span></Label>
+            {libImages.length>0 && <button onClick={()=>setShowLib(v=>!v)} className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">{showLib?'Hide ↑':`📚 Library (${libImages.length})`}</button>}
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button variant="secondary" size="sm" onClick={()=>prodRef.current?.click()}>📦 Upload Photo</Button>
+            {prodPrev && <button onClick={clearProduct} className="text-xs text-red-500 hover:underline">✕ Clear</button>}
+          </div>
+          <input ref={prodRef} type="file" accept="image/*" className="hidden" onChange={e=>handleProd(e.target.files[0])}/>
+          {prodPrev && <img src={prodPrev} alt="" className="mt-2 h-20 rounded-lg object-contain border border-gray-200 dark:border-gray-600 bg-white p-1"/>}
+          {showLib && (
+            <div className="mt-2">
+              {libImages.length>0 ? (
+                <div className="grid grid-cols-4 gap-2">
+                  {libImages.map(img=>{
+                    const cat=LIQUOR_CATEGORIES.find(c=>c.id===img.category);
+                    return (
+                      <div key={img.id} className="cursor-pointer group" onClick={()=>selectFromLib(img)}>
+                        <img src={img.data} alt={img.product_name}
+                          className="w-full aspect-square object-contain rounded-lg border border-gray-200 dark:border-gray-600 bg-white hover:border-indigo-400 transition-all p-0.5"/>
+                        <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5 truncate font-medium">{img.product_name}</p>
+                        <p className="text-xs text-gray-400">{img.size}{cat?` ${cat.icon}`:''}</p>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : <p className="text-xs text-gray-400 italic">No products in library yet.</p>}
+            </div>
+          )}
+        </div>
+
+        {/* Product details */}
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <Label>Product Name</Label>
+            <Input value={productName} onChange={e=>setProductName(e.target.value)} placeholder="e.g. Corona Extra"/>
+          </div>
+          <div>
+            <Label>Size / Format</Label>
+            <Input value={productSize} onChange={e=>setProductSize(e.target.value)} placeholder="e.g. 12 × 330 ml"/>
+          </div>
+        </div>
+
+        {/* Price fields */}
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <Label>Save Amount</Label>
+            <Input value={saveText} onChange={e=>setSaveText(e.target.value)} placeholder="e.g. $5.50"/>
+          </div>
+          <div>
+            <Label>Sale Price</Label>
+            <Input value={priceText} onChange={e=>setPriceText(e.target.value)} placeholder="e.g. $27.99"/>
+          </div>
+        </div>
+
+        <Button onClick={generate} loading={isBusy} className="w-full" variant="primary">
+          {isBusy?(stepLabel[genStep]||'Working…'):'📋 Build Price Ad'}
+        </Button>
+        <p className="text-xs text-center text-gray-400 dark:text-gray-500">No AI image generation — fast, clean, brand-accurate</p>
+      </>)}
+
+      {/* ── LIFESTYLE MODE ── */}
+      {mode==='lifestyle' && (<>
+        <div>
+          <Label>Scene Brief</Label>
+          <Textarea value={brief} onChange={e=>setBrief(e.target.value)} rows={2} placeholder="e.g. warm wooden bar, soft amber lighting, craft whisky vibe — atmosphere only, no products"/>
+        </div>
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <Label className="mb-0">Product (optional — will be composited)</Label>
+            {libImages.length>0 && <button onClick={()=>setShowLib(v=>!v)} className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">{showLib?'Hide ↑':`📚 Library (${libImages.length})`}</button>}
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button variant="secondary" size="sm" onClick={()=>prodRef.current?.click()}>📦 Upload</Button>
+            {prodPrev && <button onClick={clearProduct} className="text-xs text-red-500 hover:underline">✕</button>}
+          </div>
+          <input ref={prodRef} type="file" accept="image/*" className="hidden" onChange={e=>handleProd(e.target.files[0])}/>
+          {prodPrev && <img src={prodPrev} alt="" className="mt-2 h-14 rounded-lg object-contain border border-gray-200 dark:border-gray-600 bg-white p-0.5"/>}
+          {showLib && libImages.length>0 && (
+            <div className="mt-2 grid grid-cols-4 gap-2">
+              {libImages.map(img=>(
+                <div key={img.id} className="cursor-pointer" onClick={()=>selectFromLib(img)}>
+                  <img src={img.data} alt={img.product_name} className="w-full aspect-square object-contain rounded-lg border border-gray-200 dark:border-gray-600 bg-white hover:border-indigo-400 transition-all p-0.5"/>
+                  <p className="text-xs text-gray-500 truncate mt-0.5">{img.product_name}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <div>
+          <Label>Size</Label>
+          <div className="grid grid-cols-2 gap-1.5">
+            {IMAGE_SIZES.map(s=>(
+              <label key={s.value} className={`flex items-center gap-2 p-2 rounded-lg border cursor-pointer text-xs transition-all ${size===s.value?'border-indigo-500 bg-white dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300':'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400'}`}>
+                <input type="radio" name="inlineSize" value={s.value} checked={size===s.value} onChange={()=>setSize(s.value)} className="flex-shrink-0"/>
+                <span><strong>{s.label}</strong> — {s.desc}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+        <Button onClick={generate} loading={isBusy} className="w-full" variant="primary">
+          {isBusy?(stepLabel[genStep]||'Working…'):'🎨 Generate & Add to Post'}
+        </Button>
+      </>)}
     </div>
     </>
   );

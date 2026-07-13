@@ -11,9 +11,9 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
   <!-- PDF.js: renders PDF template first-page to canvas for display & compositing -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
   <!-- jsPDF: generates print-ready 8.5×11" PDF output -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   <style>
     ::-webkit-scrollbar { width: 5px; height: 5px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -979,7 +979,7 @@ const ST_CATEGORIES = ['Generic','Regular Price','Sale','Multi-Buy','Limited Tim
 async function pdfPageToDataUrl(pdfDataUrl, maxPx=2000) {
   if (!window.pdfjsLib) throw new Error('PDF.js not loaded');
   window.pdfjsLib.GlobalWorkerOptions.workerSrc =
-    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
   const raw = atob(pdfDataUrl.split(',')[1]);
   const bytes = new Uint8Array(raw.length);
   for (let i=0;i<raw.length;i++) bytes[i]=raw.charCodeAt(i);

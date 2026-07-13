@@ -1133,7 +1133,10 @@ function useSTFields(templateId) {
     await sb.from('shelf_talker_fields').delete().eq('template_id', templateId);
     if (fieldList.length) {
       const { error } = await sb.from('shelf_talker_fields').insert(
-        fieldList.map((f,i) => ({ ...f, template_id: templateId, field_order: i }))
+        fieldList.map((f,i) => {
+          const { id, ...rest } = f;
+          return { ...rest, template_id: templateId, field_order: i };
+        })
       );
       if (error) throw error;
     }

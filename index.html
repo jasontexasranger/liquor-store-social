@@ -10,6 +10,10 @@
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+  <!-- PDF.js: renders PDF template first-page to canvas for display & compositing -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <!-- jsPDF: generates print-ready 8.5×11" PDF output -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <style>
     ::-webkit-scrollbar { width: 5px; height: 5px; }
     ::-webkit-scrollbar-track { background: transparent; }
@@ -102,22 +106,16 @@ const ls = {
 };
 
 // ─────────────────────────────────────────────
-// SUPABASE CLIENT (lazy init)
+// SUPABASE CLIENT (hardcoded credentials)
 // ─────────────────────────────────────────────
-let _sb = null;
+const SUPABASE_URL = 'https://yyveikxfomxmedlxsulh.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl5dmVpa3hmb214bWVkbHhzdWxoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2MTk0MDksImV4cCI6MjA5OTE5NTQwOX0.bBuyIp-LS9X2mPiY0fbgjS5urw0Ke-YZbE56SgYgpt4';
+
+// Admin emails — full access to all tabs
+const ADMIN_EMAILS = ['jasontexasranger@gmail.com'];
+
+const _sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true } });
 const getSB = () => _sb;
-
-function initSB(url, key) {
-  _sb = window.supabase.createClient(url, key, { auth: { persistSession: true } });
-  return _sb;
-}
-
-// Auto-init from localStorage on page load
-;(function() {
-  const url = ls.get('smm_sb_url','');
-  const key = ls.get('smm_sb_key','');
-  if (url && key) initSB(url, key);
-})();
 
 // ─────────────────────────────────────────────
 // TOAST CONTEXT
@@ -972,9 +970,182 @@ function ImagePicker({ file, preview, onFile, onClear, label='Attach Image (opti
   );
 }
 
-// ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// SHELF TALKER — CONSTANTS & HELPERS
+// ═══════════════════════════════════════════════════════════════
+const ST_CATEGORIES = ['Generic','Regular Price','Sale','Multi-Buy','Limited Time','New Product','Staff Pick','Clearance','Seasonal'];
+
+// Render a PDF's first page to a data URL via PDF.js
+async function pdfPageToDataUrl(pdfDataUrl, maxPx=2000) {
+  if (!window.pdfjsLib) throw new Error('PDF.js not loaded');
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  const raw = atob(pdfDataUrl.split(',')[1]);
+  const bytes = new Uint8Array(raw.length);
+  for (let i=0;i<raw.length;i++) bytes[i]=raw.charCodeAt(i);
+  const pdf = await window.pdfjsLib.getDocument({ data: bytes }).promise;
+  const page = await pdf.getPage(1);
+  const vp0 = page.getViewport({ scale: 1 });
+  const scale = Math.min(maxPx / vp0.width, maxPx / vp0.height, 4);
+  const vp = page.getViewport({ scale });
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(vp.width);
+  canvas.height = Math.round(vp.height);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+  return canvas.toDataURL('image/png');
+}
+
+// Binary-search text fitting — returns { fontSize, lines, overflow }
+// Operates on an off-screen canvas for measurement; scale-independent.
+function fitText(text, boxW, boxH, settings={}) {
+  const {
+    maxFontSize=48, minFontSize=8, bold=false,
+    lineSpacing=1.2, wrap=true, maxLines=null, align='left',
+  } = settings;
+
+  const canvas = document.createElement('canvas');
+  canvas.width=2000; canvas.height=2000;
+  const ctx = canvas.getContext('2d');
+
+  const measure = (fontSize) => {
+    ctx.font = `${bold?'bold ':''} ${fontSize}px Arial,sans-serif`;
+    if (!wrap) {
+      const w = ctx.measureText(text).width;
+      return { lines:[text], fits: w<=boxW && fontSize<=boxH };
+    }
+    const words = text.split(/\s+/);
+    const lines = [];
+    let cur='';
+    for (const w of words) {
+      const test = cur ? cur+' '+w : w;
+      if (ctx.measureText(test).width > boxW && cur) { lines.push(cur); cur=w; }
+      else cur=test;
+    }
+    if (cur) lines.push(cur);
+    const limit = maxLines || 99;
+    const totalH = lines.length * fontSize * lineSpacing;
+    return { lines, fits: lines.length<=limit && totalH<=boxH };
+  };
+
+  let lo=minFontSize, hi=maxFontSize, best=null;
+  while (lo<=hi) {
+    const mid=Math.floor((lo+hi)/2);
+    const r=measure(mid);
+    if (r.fits) { best={ fontSize:mid, lines:r.lines, overflow:false }; lo=mid+1; }
+    else hi=mid-1;
+  }
+  if (!best) {
+    const r=measure(minFontSize);
+    best={ fontSize:minFontSize, lines:r.lines, overflow:true };
+  }
+  return best;
+}
+
+// Draw a single text field onto a canvas context.
+// box: { x, y, w, h } in canvas pixels
+function drawTextField(ctx, text, box, settings={}, fit=null) {
+  const { align='left', valign='top', color='#000000', bold=false,
+          lineSpacing=1.2, minFontSize=8, maxFontSize=48, wrap=true, maxLines=null } = settings;
+  const r = fit || fitText(text, box.w, box.h, { align, bold, lineSpacing, wrap, maxLines, maxFontSize, minFontSize });
+  const { fontSize, lines } = r;
+
+  ctx.save();
+  ctx.font = `${bold?'bold ':''} ${fontSize}px Arial,sans-serif`;
+  ctx.fillStyle = color;
+  ctx.textBaseline = 'top';
+
+  const lineH = fontSize * lineSpacing;
+  const totalH = lines.length * lineH;
+
+  let startY = box.y;
+  if (valign==='middle') startY = box.y + (box.h - totalH) / 2;
+  else if (valign==='bottom') startY = box.y + box.h - totalH;
+
+  for (let i=0; i<lines.length; i++) {
+    let x = box.x;
+    if (align==='center') {
+      ctx.textAlign='center'; x=box.x+box.w/2;
+    } else if (align==='right') {
+      ctx.textAlign='right'; x=box.x+box.w;
+    } else {
+      ctx.textAlign='left';
+    }
+    ctx.fillText(lines[i], x, startY + i*lineH);
+  }
+  ctx.restore();
+  return r;
+}
+
+// ─── Shelf Talker DB Hooks ───────────────────────────────────────
+
+function useSTTemplates(storeId=null, isAdmin=false) {
+  const [templates, setTemplates] = useState([]);
+  const [loading,   setLoading]   = useState(true);
+
+  const load = useCallback(async () => {
+    const sb=getSB(); if(!sb) return;
+    setLoading(true);
+    try {
+      const { data } = await sb.from('shelf_talker_templates')
+        .select('*, shelf_talker_template_brands(store_id)')
+        .order('created_at', { ascending: false });
+      const all = data || [];
+      if (isAdmin) {
+        setTemplates(all);
+      } else {
+        // Show active global templates + templates assigned to this store
+        setTemplates(all.filter(t =>
+          t.is_active && (
+            t.scope === 'global' ||
+            (t.shelf_talker_template_brands||[]).some(b => b.store_id === storeId)
+          )
+        ));
+      }
+    } finally { setLoading(false); }
+  }, [storeId, isAdmin]);
+
+  useEffect(() => { load(); }, [load]);
+  return { templates, loading, reload: load };
+}
+
+function useSTFields(templateId) {
+  const [fields,  setFields]  = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!templateId) { setFields([]); return; }
+    const sb=getSB(); if(!sb) return;
+    setLoading(true);
+    const { data } = await sb.from('shelf_talker_fields')
+      .select('*').eq('template_id', templateId)
+      .order('field_order');
+    setFields(data||[]);
+    setLoading(false);
+  }, [templateId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const save = async (fieldList) => {
+    const sb=getSB(); if(!sb) throw new Error('Not connected');
+    await sb.from('shelf_talker_fields').delete().eq('template_id', templateId);
+    if (fieldList.length) {
+      const { error } = await sb.from('shelf_talker_fields').insert(
+        fieldList.map((f,i) => ({ ...f, template_id: templateId, field_order: i }))
+      );
+      if (error) throw error;
+    }
+    await load();
+  };
+
+  return { fields, loading, save, reload: load };
+}
+
+// ═══════════════════════════════════════════════════════════════
 // SETUP SCREEN (first-run Supabase config)
-// ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
 function SetupScreen({ onSetup }) {
   const toast  = useToast();
   const [url,  setUrl]  = useState('');
@@ -2445,6 +2616,737 @@ function ImageGenerator({ settings, onUseInPost }) {
 // ─────────────────────────────────────────────
 // SETTINGS PAGE
 // ─────────────────────────────────────────────
+// ═══════════════════════════════════════════════════════════════
+// SHELF TALKER — ADMIN: VISUAL FIELD EDITOR
+// Drag-to-create, drag-to-move, resize text boxes on template preview
+// Positions stored as % of template dimensions
+// ═══════════════════════════════════════════════════════════════
+const FIELD_DEFAULTS = {
+  label:'New Field', placeholder:'', sample_text:'',
+  required:false, multiline:false, max_lines:2, max_chars:null,
+  align:'left', valign:'top', color:'#000000',
+  max_font_size:48, min_font_size:8, bold:false, line_spacing:1.2, wrap:true,
+};
+
+function STFieldEditor({ templateDataUrl, fields, onChange }) {
+  const containerRef = useRef();
+  const [imgSize, setImgSize] = useState({ w:1, h:1 });
+  const [selected, setSelected] = useState(null);
+  const [dragging, setDragging] = useState(null); // { fieldId, type:'move'|'resize', startX, startY, origBox }
+  const [drawing,  setDrawing]  = useState(null); // { startX, startY } %
+  const [editingId, setEditingId] = useState(null);
+
+  const pxToBox = useCallback((f, iw, ih) => ({
+    x: f.x_pct/100*iw, y: f.y_pct/100*ih,
+    w: f.w_pct/100*iw, h: f.h_pct/100*ih,
+  }), []);
+
+  const getRelXY = (e) => {
+    const rect = containerRef.current.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) / rect.width * 100,
+      y: (e.clientY - rect.top)  / rect.height * 100,
+    };
+  };
+
+  const onImgLoad = (e) => setImgSize({ w: e.target.naturalWidth, h: e.target.naturalHeight });
+
+  // Mouse down on canvas background → start drawing new field
+  const onBgMouseDown = (e) => {
+    if (e.target !== e.currentTarget) return;
+    e.preventDefault();
+    const { x, y } = getRelXY(e);
+    setDrawing({ startX: x, startY: y, curX: x, curY: y });
+    setSelected(null);
+  };
+
+  const onMouseMove = (e) => {
+    if (drawing) {
+      const { x, y } = getRelXY(e);
+      setDrawing(d => d ? { ...d, curX: x, curY: y } : null);
+    }
+    if (dragging) {
+      const { x, y } = getRelXY(e);
+      const dx = x - dragging.startX, dy = y - dragging.startY;
+      onChange(fields.map(f => {
+        if (f.id !== dragging.fieldId) return f;
+        const ob = dragging.origBox;
+        if (dragging.type === 'move') {
+          return { ...f,
+            x_pct: Math.max(0, Math.min(95, ob.x + dx)),
+            y_pct: Math.max(0, Math.min(95, ob.y + dy)),
+          };
+        } else {
+          return { ...f,
+            w_pct: Math.max(5, Math.min(100 - ob.x, ob.w + dx)),
+            h_pct: Math.max(3, Math.min(100 - ob.y, ob.h + dy)),
+          };
+        }
+      }));
+    }
+  };
+
+  const onMouseUp = (e) => {
+    if (drawing) {
+      const { x, y } = getRelXY(e);
+      const x0=Math.min(drawing.startX, x), y0=Math.min(drawing.startY, y);
+      const w=Math.abs(x-drawing.startX), h=Math.abs(y-drawing.startY);
+      if (w > 3 && h > 2) {
+        const newField = {
+          id: 'new_'+Date.now(), ...FIELD_DEFAULTS,
+          x_pct: x0, y_pct: y0, w_pct: w, h_pct: h,
+          label: `Field ${fields.length+1}`,
+        };
+        onChange([...fields, newField]);
+        setSelected(newField.id);
+        setEditingId(newField.id);
+      }
+      setDrawing(null);
+    }
+    if (dragging) setDragging(null);
+  };
+
+  const startDrag = (e, fieldId, type) => {
+    e.preventDefault(); e.stopPropagation();
+    const { x, y } = getRelXY(e);
+    const f = fields.find(f=>f.id===fieldId);
+    setDragging({ fieldId, type, startX:x, startY:y, origBox:{ x:f.x_pct, y:f.y_pct, w:f.w_pct, h:f.h_pct } });
+    setSelected(fieldId);
+  };
+
+  const deleteField = (id) => { onChange(fields.filter(f=>f.id!==id)); setSelected(null); setEditingId(null); };
+  const dupeField   = (f)  => {
+    const newF = { ...f, id:'new_'+Date.now(), x_pct:f.x_pct+2, y_pct:f.y_pct+2, label:f.label+' copy' };
+    onChange([...fields, newF]);
+  };
+  const updateField = (id, patch) => onChange(fields.map(f=>f.id===id?{...f,...patch}:f));
+
+  const selField = fields.find(f=>f.id===selected);
+  const editField = fields.find(f=>f.id===editingId);
+
+  const draw = drawing ? {
+    x: Math.min(drawing.startX, drawing.curX),
+    y: Math.min(drawing.startY, drawing.curY),
+    w: Math.abs(drawing.curX - drawing.startX),
+    h: Math.abs(drawing.curY - drawing.startY),
+  } : null;
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-gray-500 dark:text-gray-400">
+        <strong>Draw</strong> to create a field · <strong>Drag</strong> to move · <strong>Drag corner ◢</strong> to resize · <strong>Click</strong> to select and configure
+      </p>
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
+        {/* Canvas */}
+        <div className="lg:col-span-3">
+          <div
+            ref={containerRef}
+            className="relative select-none rounded-xl overflow-hidden border-2 border-dashed border-indigo-300 dark:border-indigo-700 cursor-crosshair"
+            style={{ userSelect:'none' }}
+            onMouseDown={onBgMouseDown}
+            onMouseMove={onMouseMove}
+            onMouseUp={onMouseUp}
+            onMouseLeave={onMouseUp}
+          >
+            <img
+              src={templateDataUrl}
+              alt="template"
+              className="w-full block pointer-events-none"
+              draggable={false}
+              onLoad={onImgLoad}
+            />
+            {/* Existing fields */}
+            {fields.map(f => (
+              <div
+                key={f.id}
+                onMouseDown={e=>startDrag(e,f.id,'move')}
+                onClick={e=>{e.stopPropagation();setSelected(f.id);setEditingId(f.id);}}
+                className={`absolute border-2 cursor-move ${selected===f.id?'border-indigo-500 bg-indigo-500/10':'border-blue-400/70 bg-blue-400/5'}`}
+                style={{ left:`${f.x_pct}%`, top:`${f.y_pct}%`, width:`${f.w_pct}%`, height:`${f.h_pct}%` }}
+              >
+                <span className="absolute top-0.5 left-1 text-xs font-bold text-indigo-700 dark:text-indigo-300 whitespace-nowrap overflow-hidden leading-none" style={{fontSize:'10px'}}>
+                  {f.label}
+                </span>
+                {f.sample_text && (
+                  <span className="absolute inset-0 flex items-center justify-center text-gray-600 dark:text-gray-300 overflow-hidden pointer-events-none" style={{fontSize:'9px', padding:'14px 2px 2px'}}>
+                    {f.sample_text}
+                  </span>
+                )}
+                {/* Resize handle */}
+                <div
+                  onMouseDown={e=>startDrag(e,f.id,'resize')}
+                  className="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize flex items-end justify-end text-indigo-500"
+                  style={{fontSize:'10px'}}
+                >◢</div>
+              </div>
+            ))}
+            {/* In-progress draw rectangle */}
+            {draw && draw.w>0.5 && (
+              <div className="absolute border-2 border-dashed border-green-500 bg-green-400/10 pointer-events-none"
+                style={{left:`${draw.x}%`,top:`${draw.y}%`,width:`${draw.w}%`,height:`${draw.h}%`}}/>
+            )}
+          </div>
+        </div>
+
+        {/* Field list + settings panel */}
+        <div className="lg:col-span-2 space-y-3">
+          {/* Field list */}
+          <div className="space-y-1 max-h-40 overflow-y-auto pr-1">
+            {fields.length===0 && <p className="text-xs text-gray-400 italic">Draw a field on the template to get started.</p>}
+            {fields.map((f,i)=>(
+              <div key={f.id} onClick={()=>{setSelected(f.id);setEditingId(f.id);}}
+                className={`flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer text-xs ${selected===f.id?'bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-300':'bg-gray-50 dark:bg-gray-700/50 border border-transparent'}`}>
+                <span className="font-bold text-gray-400 w-4">{i+1}</span>
+                <span className="flex-1 font-medium text-gray-800 dark:text-gray-200 truncate">{f.label}</span>
+                {f.required && <Badge color="red">req</Badge>}
+                <button onClick={e=>{e.stopPropagation();dupeField(f);}} className="text-gray-400 hover:text-indigo-500 px-1">⧉</button>
+                <button onClick={e=>{e.stopPropagation();deleteField(f.id);}} className="text-gray-400 hover:text-red-500 px-1">✕</button>
+              </div>
+            ))}
+          </div>
+
+          {/* Settings panel for selected field */}
+          {editField && (
+            <div className="bg-gray-50 dark:bg-gray-700/50 rounded-xl p-3 space-y-2 border border-gray-200 dark:border-gray-700">
+              <p className="text-xs font-bold text-gray-700 dark:text-gray-200 uppercase tracking-wide">Field Settings</p>
+
+              <div><Label>Manager Label</Label>
+                <Input value={editField.label} onChange={e=>updateField(editField.id,{label:e.target.value})} className="text-xs py-1"/>
+              </div>
+              <div><Label>Placeholder</Label>
+                <Input value={editField.placeholder} onChange={e=>updateField(editField.id,{placeholder:e.target.value})} placeholder="Hint text…" className="text-xs py-1"/>
+              </div>
+              <div><Label>Sample Preview Text</Label>
+                <Input value={editField.sample_text} onChange={e=>updateField(editField.id,{sample_text:e.target.value})} className="text-xs py-1"/>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div><Label>Max Font (px)</Label>
+                  <Input type="number" value={editField.max_font_size} min={8} max={300}
+                    onChange={e=>updateField(editField.id,{max_font_size:+e.target.value})} className="text-xs py-1"/>
+                </div>
+                <div><Label>Min Font (px)</Label>
+                  <Input type="number" value={editField.min_font_size} min={6} max={72}
+                    onChange={e=>updateField(editField.id,{min_font_size:+e.target.value})} className="text-xs py-1"/>
+                </div>
+                <div><Label>Align</Label>
+                  <Select value={editField.align} onChange={e=>updateField(editField.id,{align:e.target.value})} className="text-xs py-1">
+                    <option value="left">Left</option><option value="center">Center</option><option value="right">Right</option>
+                  </Select>
+                </div>
+                <div><Label>V-Align</Label>
+                  <Select value={editField.valign} onChange={e=>updateField(editField.id,{valign:e.target.value})} className="text-xs py-1">
+                    <option value="top">Top</option><option value="middle">Middle</option><option value="bottom">Bottom</option>
+                  </Select>
+                </div>
+                <div><Label>Text Color</Label>
+                  <Input type="color" value={editField.color} onChange={e=>updateField(editField.id,{color:e.target.value})} className="text-xs py-1 h-8"/>
+                </div>
+                <div><Label>Line Spacing</Label>
+                  <Input type="number" value={editField.line_spacing} step={0.05} min={0.8} max={3}
+                    onChange={e=>updateField(editField.id,{line_spacing:+e.target.value})} className="text-xs py-1"/>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-3 text-xs">
+                <label className="flex items-center gap-1 cursor-pointer">
+                  <input type="checkbox" checked={editField.required} onChange={e=>updateField(editField.id,{required:e.target.checked})} className="rounded"/>
+                  Required
+                </label>
+                <label className="flex items-center gap-1 cursor-pointer">
+                  <input type="checkbox" checked={editField.bold} onChange={e=>updateField(editField.id,{bold:e.target.checked})} className="rounded"/>
+                  Bold
+                </label>
+                <label className="flex items-center gap-1 cursor-pointer">
+                  <input type="checkbox" checked={editField.multiline} onChange={e=>updateField(editField.id,{multiline:e.target.checked})} className="rounded"/>
+                  Multiline
+                </label>
+                <label className="flex items-center gap-1 cursor-pointer">
+                  <input type="checkbox" checked={editField.wrap} onChange={e=>updateField(editField.id,{wrap:e.target.checked})} className="rounded"/>
+                  Word Wrap
+                </label>
+              </div>
+              {editField.multiline && (
+                <div><Label>Max Lines</Label>
+                  <Input type="number" value={editField.max_lines} min={1} max={20}
+                    onChange={e=>updateField(editField.id,{max_lines:+e.target.value})} className="text-xs py-1"/>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Admin: Template Upload Form ──────────────────────────────
+function STTemplateForm({ onSaved, initialTemplate=null }) {
+  const toast = useToast();
+  const [name,       setName]       = useState(initialTemplate?.name||'');
+  const [desc,       setDesc]       = useState(initialTemplate?.description||'');
+  const [category,   setCategory]   = useState(initialTemplate?.category||'Generic');
+  const [scope,      setScope]      = useState(initialTemplate?.scope||'global');
+  const [brands,     setBrands]     = useState(initialTemplate?.shelf_talker_template_brands?.map(b=>b.store_id)||[]);
+  const [widthIn,    setWidthIn]    = useState(initialTemplate?.width_in||4.25);
+  const [heightIn,   setHeightIn]   = useState(initialTemplate?.height_in||5.5);
+  const [isActive,   setIsActive]   = useState(initialTemplate?.is_active ?? true);
+  const [fileData,   setFileData]   = useState(initialTemplate?.file_data||null);
+  const [fileType,   setFileType]   = useState(initialTemplate?.file_type||'png');
+  const [saving,     setSaving]     = useState(false);
+  const [fields,     setFields]     = useState([]);
+  const [savedId,    setSavedId]    = useState(initialTemplate?.id||null);
+  const [step,       setStep]       = useState(initialTemplate ? 'fields' : 'upload'); // 'upload'|'fields'
+  const fileRef = useRef();
+  const { fields: loadedFields, save: saveFields } = useSTFields(savedId);
+
+  useEffect(() => {
+    if (loadedFields.length) setFields(loadedFields);
+  }, [loadedFields.length]);
+
+  const handleFile = async (file) => {
+    if (!file) return;
+    const allowed = ['image/png','image/jpeg','image/jpg','application/pdf'];
+    if (!allowed.includes(file.type)) { toast.error('Only PNG, JPG or PDF files are supported'); return; }
+    if (file.size > 20*1024*1024) { toast.error('File must be under 20 MB'); return; }
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const dataUrl = ev.target.result;
+      if (file.type === 'application/pdf') {
+        toast.info('Rendering PDF first page…');
+        try {
+          const rendered = await pdfPageToDataUrl(dataUrl);
+          setFileData(rendered); setFileType('pdf');
+        } catch(e) { toast.error('Could not render PDF: '+e.message); }
+      } else {
+        setFileData(dataUrl); setFileType(file.type.includes('png')?'png':'jpg');
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const saveTemplate = async () => {
+    if (!name.trim()) { toast.error('Enter a template name'); return; }
+    if (!fileData)    { toast.error('Upload a template file first'); return; }
+    setSaving(true);
+    try {
+      const sb = getSB();
+      const payload = {
+        name: name.trim(), description: desc.trim(), file_data: fileData,
+        file_type: fileType, width_in: +widthIn, height_in: +heightIn,
+        scope, category, is_active: isActive,
+        updated_at: new Date().toISOString(),
+      };
+      let id = savedId;
+      if (id) {
+        await sb.from('shelf_talker_templates').update(payload).eq('id', id);
+      } else {
+        const { data, error } = await sb.from('shelf_talker_templates').insert(payload).select().single();
+        if (error) throw error;
+        id = data.id;
+        setSavedId(id);
+      }
+      // Brand assignments
+      await sb.from('shelf_talker_template_brands').delete().eq('template_id', id);
+      if (scope==='brand' && brands.length) {
+        await sb.from('shelf_talker_template_brands').insert(brands.map(s=>({ template_id:id, store_id:s })));
+      }
+      toast.success('Template saved! Now set up the text fields.');
+      setStep('fields');
+      setSavedId(id);
+    } catch(e) { toast.error(e.message); }
+    finally { setSaving(false); }
+  };
+
+  const saveFieldLayout = async () => {
+    if (!savedId) { toast.error('Save template info first'); return; }
+    setSaving(true);
+    try {
+      await saveFields(fields.map(({ id:_id, ...f }) => ({
+        ...f,
+        id: String(_id).startsWith('new_') ? undefined : _id,
+      })));
+      toast.success('Fields saved!');
+      onSaved?.();
+    } catch(e) { toast.error(e.message); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Step tabs */}
+      <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700 mb-2">
+        {[{id:'upload',label:'1 · Template Info'},{id:'fields',label:'2 · Text Fields'}].map(t=>(
+          <button key={t.id} disabled={t.id==='fields'&&!savedId}
+            onClick={()=>setStep(t.id)}
+            className={`px-4 py-2 text-sm font-semibold border-b-2 transition-colors ${step===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 disabled:opacity-40 hover:text-gray-700 dark:hover:text-gray-200'}`}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {step==='upload' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          <div className="space-y-3">
+            <div><Label>Template Name *</Label><Input value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Classic Sale Tag"/></div>
+            <div><Label>Description</Label><Textarea value={desc} onChange={e=>setDesc(e.target.value)} rows={2} placeholder="Optional notes…"/></div>
+            <div><Label>Category</Label>
+              <Select value={category} onChange={e=>setCategory(e.target.value)}>
+                {ST_CATEGORIES.map(c=><option key={c}>{c}</option>)}
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div><Label>Width (inches)</Label><Input type="number" value={widthIn} step={0.25} min={1} max={8.5} onChange={e=>setWidthIn(e.target.value)}/></div>
+              <div><Label>Height (inches)</Label><Input type="number" value={heightIn} step={0.25} min={1} max={11} onChange={e=>setHeightIn(e.target.value)}/></div>
+            </div>
+            <div>
+              <Label>Availability</Label>
+              <div className="flex gap-3 mt-1">
+                {['global','brand'].map(s=>(
+                  <label key={s} className="flex items-center gap-1.5 text-sm cursor-pointer">
+                    <input type="radio" checked={scope===s} onChange={()=>setScope(s)} className="accent-indigo-600"/>
+                    {s==='global'?'🌐 Global (all stores)':'🏪 Brand Specific'}
+                  </label>
+                ))}
+              </div>
+            </div>
+            {scope==='brand' && (
+              <div>
+                <Label>Assign to Stores</Label>
+                <div className="flex flex-col gap-1 mt-1">
+                  {STORES.map(s=>(
+                    <label key={s.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                      <input type="checkbox" checked={brands.includes(s.id)}
+                        onChange={e=>setBrands(p=>e.target.checked?[...p,s.id]:p.filter(x=>x!==s.id))}
+                        className="accent-indigo-600 rounded"/>
+                      {s.name}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input type="checkbox" checked={isActive} onChange={e=>setIsActive(e.target.checked)} className="accent-indigo-600 rounded"/>
+              Active (visible to store managers)
+            </label>
+            <Button onClick={saveTemplate} loading={saving} className="w-full">
+              {savedId ? 'Update Template Info →' : 'Save & Continue to Fields →'}
+            </Button>
+          </div>
+          <div>
+            <Label>Template File (PNG, JPG or PDF)</Label>
+            <div
+              className="border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-xl p-4 text-center cursor-pointer hover:border-indigo-400 transition-colors"
+              onClick={()=>fileRef.current?.click()}
+              onDragOver={e=>{e.preventDefault();}}
+              onDrop={e=>{e.preventDefault();handleFile(e.dataTransfer.files[0]);}}
+            >
+              {fileData
+                ? <img src={fileData} alt="" className="max-h-64 mx-auto rounded-lg object-contain"/>
+                : <div className="py-8 text-gray-400">
+                    <p className="text-3xl mb-2">📄</p>
+                    <p className="text-sm font-medium">Click or drag to upload</p>
+                    <p className="text-xs mt-1">PNG · JPG · PDF — max 20 MB</p>
+                  </div>
+              }
+            </div>
+            <input ref={fileRef} type="file" accept="image/png,image/jpeg,.pdf,application/pdf" className="hidden"
+              onChange={e=>handleFile(e.target.files[0])}/>
+            {fileData && <Button variant="ghost" size="sm" className="mt-2 text-red-500" onClick={()=>setFileData(null)}>Remove file</Button>}
+          </div>
+        </div>
+      )}
+
+      {step==='fields' && fileData && (
+        <div className="space-y-4">
+          <STFieldEditor templateDataUrl={fileData} fields={fields} onChange={setFields}/>
+          <Button onClick={saveFieldLayout} loading={saving} className="w-full">
+            💾 Save Field Layout
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Admin: Template Library ─────────────────────────────────
+function STAdminLibrary({ onEditTemplate }) {
+  const toast = useToast();
+  const { templates, loading, reload } = useSTTemplates(null, true);
+  const [search,     setSearch]     = useState('');
+  const [catFilter,  setCatFilter]  = useState('all');
+  const [scopeFilter,setScopeFilter]= useState('all');
+  const [sortBy,     setSortBy]     = useState('newest');
+
+  const toggleActive = async (tpl) => {
+    const sb=getSB();
+    await sb.from('shelf_talker_templates').update({ is_active:!tpl.is_active, updated_at:new Date().toISOString() }).eq('id',tpl.id);
+    reload();
+  };
+
+  const duplicateTemplate = async (tpl) => {
+    const sb=getSB();
+    const { data:newTpl, error } = await sb.from('shelf_talker_templates')
+      .insert({ ...tpl, id:undefined, name:tpl.name+' (copy)', created_at:undefined, updated_at:undefined })
+      .select().single();
+    if (error) { toast.error(error.message); return; }
+    // Copy brands
+    if (tpl.shelf_talker_template_brands?.length) {
+      await sb.from('shelf_talker_template_brands').insert(
+        tpl.shelf_talker_template_brands.map(b=>({ template_id:newTpl.id, store_id:b.store_id }))
+      );
+    }
+    // Copy fields
+    const { data:srcFields } = await sb.from('shelf_talker_fields').select('*').eq('template_id',tpl.id);
+    if (srcFields?.length) {
+      await sb.from('shelf_talker_fields').insert(
+        srcFields.map(({id:_,...f})=>({ ...f, template_id:newTpl.id }))
+      );
+    }
+    toast.success('Template duplicated!');
+    reload();
+  };
+
+  const deleteTemplate = async (id) => {
+    if (!confirm('Delete this template? This cannot be undone.')) return;
+    await getSB().from('shelf_talker_templates').delete().eq('id',id);
+    reload();
+    toast.success('Deleted');
+  };
+
+  let list = [...templates];
+  if (search) list = list.filter(t=>t.name.toLowerCase().includes(search.toLowerCase()));
+  if (catFilter!=='all') list = list.filter(t=>t.category===catFilter);
+  if (scopeFilter!=='all') list = list.filter(t=>t.scope===scopeFilter);
+  if (sortBy==='newest')   list.sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
+  if (sortBy==='updated')  list.sort((a,b)=>new Date(b.updated_at)-new Date(a.updated_at));
+  if (sortBy==='alpha')    list.sort((a,b)=>a.name.localeCompare(b.name));
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2">
+        <Input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 Search templates…" className="max-w-xs"/>
+        <Select value={catFilter} onChange={e=>setCatFilter(e.target.value)} className="w-auto">
+          <option value="all">All Categories</option>
+          {ST_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
+        </Select>
+        <Select value={scopeFilter} onChange={e=>setScopeFilter(e.target.value)} className="w-auto">
+          <option value="all">All Scope</option>
+          <option value="global">Global</option>
+          <option value="brand">Brand Specific</option>
+        </Select>
+        <Select value={sortBy} onChange={e=>setSortBy(e.target.value)} className="w-auto">
+          <option value="newest">Newest</option>
+          <option value="updated">Recently Updated</option>
+          <option value="alpha">A–Z</option>
+        </Select>
+      </div>
+
+      {loading && <p className="text-sm text-gray-400 animate-pulse">Loading templates…</p>}
+      {!loading && list.length===0 && <p className="text-sm text-gray-400 italic">No templates found.</p>}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+        {list.map(tpl => {
+          const brandNames = STORES.filter(s=>(tpl.shelf_talker_template_brands||[]).some(b=>b.store_id===s.id)).map(s=>s.name.split(' ')[0]);
+          return (
+            <div key={tpl.id} className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-sm overflow-hidden flex flex-col">
+              <div className="relative aspect-[4/5] bg-gray-100 dark:bg-gray-900 overflow-hidden">
+                <img src={tpl.file_data} alt={tpl.name} className="absolute inset-0 w-full h-full object-contain"/>
+                <div className="absolute top-2 left-2 flex gap-1 flex-wrap">
+                  {tpl.scope==='global'
+                    ? <Badge color="blue">🌐 Global</Badge>
+                    : brandNames.map(n=><Badge key={n} color="indigo">{n}</Badge>)
+                  }
+                </div>
+                <div className="absolute top-2 right-2">
+                  <Badge color={tpl.is_active?'green':'gray'}>{tpl.is_active?'Active':'Inactive'}</Badge>
+                </div>
+              </div>
+              <div className="p-3 flex-1 flex flex-col gap-2">
+                <div>
+                  <p className="font-semibold text-gray-900 dark:text-white text-sm">{tpl.name}</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-400">{tpl.category} · {tpl.width_in}″×{tpl.height_in}″</p>
+                  {tpl.description && <p className="text-xs text-gray-400 mt-1 line-clamp-2">{tpl.description}</p>}
+                </div>
+                <p className="text-xs text-gray-400">{fmtDate(tpl.updated_at)}</p>
+                <div className="flex gap-1 flex-wrap mt-auto">
+                  <Button size="sm" variant="outline" onClick={()=>onEditTemplate(tpl)} className="text-xs">✏️ Edit</Button>
+                  <Button size="sm" variant="secondary" onClick={()=>duplicateTemplate(tpl)} className="text-xs">⧉ Dupe</Button>
+                  <Button size="sm" variant="ghost" onClick={()=>toggleActive(tpl)} className="text-xs">{tpl.is_active?'Deactivate':'Activate'}</Button>
+                  <Button size="sm" variant="danger" onClick={()=>deleteTemplate(tpl.id)} className="text-xs">🗑</Button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// USER ACCOUNTS SECTION (admin only)
+// ─────────────────────────────────────────────
+function UserAccountsSection() {
+  const toast = useToast();
+  const [users,      setUsers]      = useState([]);
+  const [loading,    setLoading]    = useState(true);
+  const [email,      setEmail]      = useState('');
+  const [password,   setPassword]   = useState('');
+  const [role,       setRole]       = useState('store');
+  const [storeId,    setStoreId]    = useState(STORES[0].id);
+  const [creating,   setCreating]   = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
+  const [showPw,     setShowPw]     = useState(false);
+  const [resetId,    setResetId]    = useState(null);
+  const [newPw,      setNewPw]      = useState('');
+  const [resetting,  setResetting]  = useState(false);
+
+  const callAdmin = async (body) => {
+    const { data: { session } } = await getSB().auth.getSession();
+    const resp = await fetch(`${SUPABASE_URL}/functions/v1/user-admin`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${session.access_token}`,
+        'apikey': SUPABASE_KEY,
+      },
+      body: JSON.stringify(body),
+    });
+    const json = await resp.json();
+    if (json.error) throw new Error(json.error);
+    return json;
+  };
+
+  const loadUsers = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { users: u } = await callAdmin({ action: 'list' });
+      setUsers((u || []).filter(x => !ADMIN_EMAILS.includes((x.email||'').toLowerCase())));
+    } catch(e) { toast.error(e.message); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { loadUsers(); }, [loadUsers]);
+
+  const createUser = async () => {
+    if (!email.trim())      { toast.error('Enter an email address'); return; }
+    if (password.length < 8) { toast.error('Password must be at least 8 characters'); return; }
+    setCreating(true);
+    try {
+      await callAdmin({ action: 'create', email: email.trim(), password, role });
+      // Set store_id in user_roles after creation (list call returns user_id)
+      const { users: fresh } = await callAdmin({ action: 'list' });
+      const newU = fresh?.find(u => u.email === email.trim());
+      if (newU?.user_id && role==='store') {
+        await getSB().from('user_roles').update({ store_id: storeId }).eq('user_id', newU.user_id);
+      }
+      toast.success(`Account created for ${email.trim()}`);
+      setEmail(''); setPassword('');
+      await loadUsers();
+    } catch(e) { toast.error(e.message); }
+    finally { setCreating(false); }
+  };
+
+  const deleteUser = async (userId, userEmail) => {
+    if (!confirm(`Delete account for ${userEmail}?\nThis cannot be undone.`)) return;
+    setDeletingId(userId);
+    try {
+      await callAdmin({ action: 'delete', userId });
+      toast.success('Account deleted');
+      setUsers(p => p.filter(u => u.user_id !== userId));
+    } catch(e) { toast.error(e.message); }
+    finally { setDeletingId(null); }
+  };
+
+  const resetPassword = async (userId) => {
+    if (newPw.length < 8) { toast.error('Password must be at least 8 characters'); return; }
+    setResetting(true);
+    try {
+      await callAdmin({ action: 'update_password', userId, password: newPw });
+      toast.success('Password updated');
+      setResetId(null); setNewPw('');
+    } catch(e) { toast.error(e.message); }
+    finally { setResetting(false); }
+  };
+
+  return (
+    <Card>
+      <h2 className="text-base font-bold text-gray-900 dark:text-white mb-1">👥 Store User Accounts</h2>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">Create logins for store staff. Store accounts see Posts and Shelf Talkers for their assigned location.</p>
+
+      {/* Create form */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+        <div>
+          <Label>Email</Label>
+          <Input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="staff@hideaway.com"/>
+        </div>
+        <div>
+          <Label>Password</Label>
+          <div className="relative">
+            <Input type={showPw?'text':'password'} value={password} onChange={e=>setPassword(e.target.value)} placeholder="Min 8 characters"/>
+            <button type="button" onClick={()=>setShowPw(p=>!p)} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 text-xs">{showPw?'hide':'show'}</button>
+          </div>
+        </div>
+        <div>
+          <Label>Role</Label>
+          <Select value={role} onChange={e=>setRole(e.target.value)}>
+            <option value="store">Store (Posts + Shelf Talkers)</option>
+            <option value="admin">Admin (Full access)</option>
+          </Select>
+        </div>
+        {role==='store' && (
+          <div>
+            <Label>Assigned Store</Label>
+            <Select value={storeId} onChange={e=>setStoreId(e.target.value)}>
+              {STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+            </Select>
+          </div>
+        )}
+      </div>
+      <Button onClick={createUser} loading={creating} size="sm" className="mb-5">+ Create Account</Button>
+
+      {/* User list */}
+      <div className="border-t border-gray-100 dark:border-gray-700 pt-4">
+        <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-3">Existing Accounts</p>
+        {loading ? (
+          <p className="text-xs text-gray-400 animate-pulse">Loading…</p>
+        ) : users.length === 0 ? (
+          <p className="text-xs text-gray-400 italic">No store accounts yet.</p>
+        ) : (
+          <div className="space-y-2">
+            {users.map(u => (
+              <div key={u.user_id} className="rounded-xl bg-gray-50 dark:bg-gray-700/50 border border-gray-100 dark:border-gray-700 overflow-hidden">
+                <div className="flex items-center justify-between px-3 py-2.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-medium text-gray-900 dark:text-white">{u.email}</span>
+                    <span className={`text-xs px-1.5 py-0.5 rounded font-semibold ${u.role==='admin'?'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300':'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'}`}>{u.role}</span>
+                    {u.store_id && <span className="text-xs text-gray-500">{STORES.find(s=>s.id===u.store_id)?.name?.split(' ')[0]}</span>}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button onClick={()=>{ setResetId(resetId===u.user_id?null:u.user_id); setNewPw(''); }} className="text-xs text-indigo-500 hover:text-indigo-700 font-semibold">
+                      {resetId===u.user_id ? 'Cancel' : '🔑 Reset PW'}
+                    </button>
+                    <button onClick={()=>deleteUser(u.user_id, u.email)} disabled={deletingId===u.user_id} className="text-xs text-red-500 hover:text-red-700 font-semibold disabled:opacity-40">
+                      {deletingId===u.user_id ? '…' : 'Remove'}
+                    </button>
+                  </div>
+                </div>
+                {resetId===u.user_id && (
+                  <div className="flex gap-2 px-3 pb-2.5">
+                    <Input type="password" value={newPw} onChange={e=>setNewPw(e.target.value)} placeholder="New password (min 8 chars)" className="flex-1 text-sm"/>
+                    <Button size="sm" loading={resetting} onClick={()=>resetPassword(u.user_id)}>Save</Button>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 function SettingsPage({ settings, onSave }) {
   const toast = useToast();
   const [form,   setForm]   = useState({ ...settings, tokens:{ ...settings.tokens } });
@@ -2490,6 +3392,7 @@ function SettingsPage({ settings, onSave }) {
         <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">Used client-side with DALL-E 3 (images) and GPT-4o Mini Vision (product analysis).<br/>Get yours at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener" className="text-indigo-600 dark:text-indigo-400 underline">platform.openai.com</a>.</p>
         <Input type="password" value={form.openaiKey||''} onChange={e=>setForm(f=>({...f,openaiKey:e.target.value}))} placeholder="sk-xxxxx…"/>
       </Card>
+      <UserAccountsSection/>
       <Button onClick={save} loading={saving} size="lg" className="w-full">Save All Settings</Button>
       <p className="text-xs text-center text-gray-400 dark:text-gray-500">All keys are encrypted at rest in Supabase and protected by Row Level Security — only authenticated users can read them.</p>
     </div>
@@ -2664,6 +3567,462 @@ function TemplateManager({ storeId }) {
   );
 }
 
+// ═══════════════════════════════════════════════════════════════
+// SHELF TALKER — PRINT ENGINE
+// Renders a completed shelf talker to a 2-up or 4-up canvas
+// Paper: 8.5×11" @ 150 dpi → 1275×1650 px
+// ═══════════════════════════════════════════════════════════════
+const PX_PER_IN = 150;
+const PAGE_W = Math.round(8.5 * PX_PER_IN); // 1275
+const PAGE_H = Math.round(11  * PX_PER_IN); // 1650
+const MARGIN  = Math.round(0.25 * PX_PER_IN); // 37px = 0.25"
+const CROP_LEN = 18;  // px length of crop mark lines
+const CROP_GAP = 6;   // px gap between artwork and crop mark
+
+// Render completed shelf-talker to an off-screen canvas.
+// Returns a canvas element at (widthIn×heightIn×PX_PER_IN) px.
+async function renderSTCanvas(template, fields, values) {
+  const { file_data, width_in, height_in } = template;
+  const W = Math.round(width_in  * PX_PER_IN);
+  const H = Math.round(height_in * PX_PER_IN);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  // Draw template artwork
+  await new Promise(res => {
+    const img = new Image();
+    img.onload = () => { ctx.drawImage(img, 0, 0, W, H); res(); };
+    img.onerror = res;
+    img.src = file_data;
+  });
+
+  // Draw text fields
+  for (const f of fields) {
+    const text = values[f.id] || '';
+    if (!text && !f.required) continue;
+    const box = {
+      x: Math.round(f.x_pct / 100 * W),
+      y: Math.round(f.y_pct / 100 * H),
+      w: Math.round(f.w_pct / 100 * W),
+      h: Math.round(f.h_pct / 100 * H),
+    };
+    drawTextField(ctx, text, box, {
+      align: f.align, valign: f.valign, color: f.color,
+      bold: f.bold, lineSpacing: f.line_spacing,
+      wrap: f.wrap, maxLines: f.multiline ? f.max_lines : 1,
+      maxFontSize: f.max_font_size, minFontSize: f.min_font_size,
+    });
+  }
+  return canvas;
+}
+
+// Draw crop marks (corner) at (cx,cy), oriented by (dx,dy) signs.
+function drawCropMark(ctx, cx, cy, dx, dy) {
+  ctx.beginPath();
+  ctx.moveTo(cx + dx*CROP_GAP, cy);
+  ctx.lineTo(cx + dx*(CROP_GAP+CROP_LEN), cy);
+  ctx.moveTo(cx, cy + dy*CROP_GAP);
+  ctx.lineTo(cx, cy + dy*(CROP_GAP+CROP_LEN));
+  ctx.stroke();
+}
+
+// Arrange shelf-talker canvases into a print page. Returns array of page canvases.
+function buildPrintPages(stCanvas, layout, qty) {
+  const perPage = layout==='4up' ? 4 : 2;
+  const totalPages = Math.ceil(qty / perPage);
+  const pages = [];
+
+  const stW = stCanvas.width, stH = stCanvas.height;
+  // Compute cell size
+  let cols, rows;
+  if (layout==='4up') { cols=2; rows=2; }
+  else {
+    // 2-up: pick orientation that maximises shelf talker size
+    const horizW = (PAGE_W - MARGIN*3) / 2;
+    const horizH = PAGE_H - MARGIN*2;
+    const vertW  = PAGE_W - MARGIN*2;
+    const vertH  = (PAGE_H - MARGIN*3) / 2;
+    const hScale = Math.min(horizW/stW, horizH/stH);
+    const vScale = Math.min(vertW/stW,  vertH/stH);
+    if (hScale >= vScale) { cols=2; rows=1; } else { cols=1; rows=2; }
+  }
+
+  const cellW = (PAGE_W - MARGIN*(cols+1)) / cols;
+  const cellH = (PAGE_H - MARGIN*(rows+1)) / rows;
+  const scale = Math.min(cellW/stW, cellH/stH, 1); // never upscale beyond natural
+  const dw = Math.round(stW * scale);
+  const dh = Math.round(stH * scale);
+
+  for (let p=0; p<totalPages; p++) {
+    const page = document.createElement('canvas');
+    page.width=PAGE_W; page.height=PAGE_H;
+    const ctx=page.getContext('2d');
+    ctx.fillStyle='#ffffff';
+    ctx.fillRect(0,0,PAGE_W,PAGE_H);
+
+    ctx.save();
+    ctx.strokeStyle='#999999';
+    ctx.lineWidth=0.75;
+
+    const startIdx = p*perPage;
+    const endIdx   = Math.min(startIdx+perPage, qty);
+
+    for (let i=0; i<(endIdx-startIdx); i++) {
+      const col=i%cols, row=Math.floor(i/cols);
+      const cellX = MARGIN + col*(cellW+MARGIN);
+      const cellY = MARGIN + row*(cellH+MARGIN);
+      const cx = cellX + (cellW-dw)/2;
+      const cy = cellY + (cellH-dh)/2;
+
+      // Draw shelf talker
+      ctx.drawImage(stCanvas, cx, cy, dw, dh);
+
+      // Crop marks at 4 corners
+      drawCropMark(ctx, cx,    cy,    -1, -1);
+      drawCropMark(ctx, cx+dw, cy,     1, -1);
+      drawCropMark(ctx, cx,    cy+dh, -1,  1);
+      drawCropMark(ctx, cx+dw, cy+dh,  1,  1);
+    }
+    ctx.restore();
+    pages.push(page);
+  }
+  return { pages, dw, dh };
+}
+
+// Export pages as a jsPDF document and trigger download
+function exportPDF(pages, filename='shelf-talkers.pdf') {
+  if (!window.jspdf?.jsPDF) { alert('jsPDF not loaded'); return; }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation:'portrait', unit:'in', format:'letter' });
+  pages.forEach((page,i) => {
+    if (i>0) doc.addPage('letter','portrait');
+    const imgData = page.toDataURL('image/jpeg', 0.92);
+    doc.addImage(imgData, 'JPEG', 0, 0, 8.5, 11);
+  });
+  doc.save(filename);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SHELF TALKER — MANAGER CREATOR
+// ═══════════════════════════════════════════════════════════════
+function STCreator({ storeId, isAdmin }) {
+  const toast = useToast();
+  const { templates, loading:tplLoading } = useSTTemplates(storeId, isAdmin);
+  const [selected,   setSelected]   = useState(null);
+  const [values,     setValues]     = useState({});
+  const [layout,     setLayout]     = useState('4up');
+  const [qty,        setQty]        = useState(4);
+  const [step,       setStep]       = useState('browse'); // browse|compose|preview
+  const [printing,   setPrinting]   = useState(false);
+  const [printPages, setPrintPages] = useState([]);
+  const [printDims,  setPrintDims]  = useState(null);
+  const { fields, loading:fLoading } = useSTFields(selected?.id);
+  const [catFilter,  setCatFilter]  = useState('all');
+  const [search,     setSearch]     = useState('');
+  const previewRef = useRef();
+
+  // Field overflow validation
+  const overflowIds = fields.filter(f => {
+    const text = values[f.id]||'';
+    if (!text) return false;
+    const { overflow } = fitText(text, 999, 999, {
+      maxFontSize:f.max_font_size, minFontSize:f.min_font_size,
+      bold:f.bold, lineSpacing:f.line_spacing, wrap:f.wrap,
+      maxLines:f.multiline?f.max_lines:1,
+    });
+    return overflow;
+  }).map(f=>f.id);
+  const missingRequired = fields.filter(f=>f.required && !values[f.id]?.trim()).map(f=>f.id);
+  const canPrint = overflowIds.length===0 && missingRequired.length===0 && selected;
+
+  const selectTemplate = (tpl) => { setSelected(tpl); setValues({}); setStep('compose'); };
+
+  const buildPreview = async () => {
+    if (!canPrint) return;
+    setPrinting(true);
+    try {
+      const stCanvas = await renderSTCanvas(selected, fields, values);
+      const { pages, dw, dh } = buildPrintPages(stCanvas, layout, qty);
+      setPrintPages(pages);
+      setPrintDims({ dw, dh, scale: PX_PER_IN });
+      setStep('preview');
+    } catch(e) { toast.error('Preview failed: '+e.message); }
+    finally { setPrinting(false); }
+  };
+
+  const printSheet = () => {
+    if (!printPages.length) return;
+    const w = window.open('','_blank');
+    w.document.write(`<!DOCTYPE html><html><head><title>Shelf Talkers</title>
+      <style>
+        @page{size:letter portrait;margin:0;}
+        body{margin:0;padding:0;background:#fff;}
+        img{display:block;width:8.5in;height:11in;page-break-after:always;}
+        img:last-child{page-break-after:avoid;}
+      </style></head><body>`);
+    printPages.forEach(p => {
+      w.document.write(`<img src="${p.toDataURL('image/jpeg',0.92)}"/>`);
+    });
+    w.document.write(`</body></html>`);
+    w.document.close();
+    w.focus();
+    w.print();
+  };
+
+  // Live preview canvas
+  const livePreviewRef = useRef();
+  useEffect(() => {
+    if (!selected || !livePreviewRef.current || step!=='compose') return;
+    let cancelled = false;
+    (async () => {
+      const canvas = livePreviewRef.current;
+      const stCanvas = await renderSTCanvas(selected, fields, values);
+      if (cancelled) return;
+      canvas.width  = stCanvas.width;
+      canvas.height = stCanvas.height;
+      canvas.getContext('2d').drawImage(stCanvas, 0, 0);
+    })();
+    return () => { cancelled=true; };
+  }, [selected, fields, values, step]);
+
+  const filteredTpls = templates.filter(t => {
+    if (catFilter!=='all' && t.category!==catFilter) return false;
+    if (search && !t.name.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  // ── Browse step ────────────────────────────────────────────
+  if (step==='browse') return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2">
+        <Input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 Search…" className="max-w-xs"/>
+        <Select value={catFilter} onChange={e=>setCatFilter(e.target.value)} className="w-auto">
+          <option value="all">All Categories</option>
+          {ST_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
+        </Select>
+      </div>
+      {tplLoading && <p className="text-sm text-gray-400 animate-pulse">Loading templates…</p>}
+      {!tplLoading && filteredTpls.length===0 && (
+        <div className="text-center py-16 text-gray-400">
+          <p className="text-4xl mb-3">🏷</p>
+          <p className="font-medium">No shelf talker templates available</p>
+          {isAdmin && <p className="text-sm mt-1">Create one in the Admin tab</p>}
+        </div>
+      )}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+        {filteredTpls.map(tpl => {
+          const isGlobal = tpl.scope==='global';
+          const brandNames = STORES.filter(s=>(tpl.shelf_talker_template_brands||[]).some(b=>b.store_id===s.id)).map(s=>s.name.split(' ')[0]);
+          return (
+            <button key={tpl.id} onClick={()=>selectTemplate(tpl)}
+              className="bg-white dark:bg-gray-800 rounded-2xl border border-gray-100 dark:border-gray-700 shadow-sm hover:border-indigo-400 hover:shadow-md transition-all text-left overflow-hidden group">
+              <div className="relative aspect-[4/5] bg-gray-100 dark:bg-gray-900 overflow-hidden">
+                <img src={tpl.file_data} alt={tpl.name} className="absolute inset-0 w-full h-full object-contain group-hover:scale-105 transition-transform"/>
+              </div>
+              <div className="p-2.5">
+                <p className="font-semibold text-sm text-gray-900 dark:text-white truncate">{tpl.name}</p>
+                <p className="text-xs text-gray-500">{tpl.category}</p>
+                <div className="flex gap-1 mt-1 flex-wrap">
+                  {isGlobal ? <Badge color="blue">🌐 Global</Badge> : brandNames.map(n=><Badge key={n} color="indigo">{n}</Badge>)}
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+
+  // ── Compose step ───────────────────────────────────────────
+  if (step==='compose') return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3">
+        <button onClick={()=>setStep('browse')} className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline">← Back to Templates</button>
+        <Badge color="indigo">{selected?.category}</Badge>
+        <span className="font-semibold text-gray-900 dark:text-white text-sm">{selected?.name}</span>
+        <span className="text-xs text-gray-400">{selected?.width_in}″ × {selected?.height_in}″</span>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+        {/* Form */}
+        <Card>
+          <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4">Fill in the fields</h3>
+          {fLoading && <p className="text-xs text-gray-400 animate-pulse">Loading fields…</p>}
+          {!fLoading && fields.length===0 && <p className="text-xs text-gray-400 italic">No text fields configured for this template.</p>}
+          <div className="space-y-3">
+            {fields.map(f => {
+              const overflow = overflowIds.includes(f.id);
+              const missing  = missingRequired.includes(f.id) && values[f.id]!==undefined;
+              return (
+                <div key={f.id}>
+                  <Label>
+                    {f.label}{f.required && <span className="text-red-500 ml-0.5">*</span>}
+                  </Label>
+                  {f.multiline
+                    ? <Textarea value={values[f.id]||''} onChange={e=>setValues(v=>({...v,[f.id]:e.target.value}))}
+                        placeholder={f.placeholder} rows={Math.min(f.max_lines||2, 4)}
+                        className={overflow||missing?'border-red-400 focus:ring-red-400':''}/>
+                    : <Input value={values[f.id]||''} onChange={e=>setValues(v=>({...v,[f.id]:e.target.value}))}
+                        placeholder={f.placeholder} maxLength={f.max_chars||undefined}
+                        className={overflow||missing?'border-red-400 focus:ring-red-400':''}/>
+                  }
+                  {overflow && <p className="text-xs text-red-500 mt-0.5">⚠ Text too long — please shorten</p>}
+                  {missing  && <p className="text-xs text-amber-500 mt-0.5">This field is required</p>}
+                </div>
+              );
+            })}
+          </div>
+
+          <Divider label="Print Settings"/>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label>Layout</Label>
+              <div className="flex gap-2 mt-1">
+                {['2up','4up'].map(l=>(
+                  <label key={l} className="flex items-center gap-1.5 text-sm cursor-pointer">
+                    <input type="radio" checked={layout===l} onChange={()=>setLayout(l)} className="accent-indigo-600"/>
+                    {l==='2up'?'2-up':'4-up'}
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div>
+              <Label>Qty</Label>
+              <Input type="number" value={qty} min={1} max={100} onChange={e=>setQty(Math.max(1,+e.target.value))} className="w-20"/>
+            </div>
+          </div>
+          <p className="text-xs text-gray-400 mt-2">
+            {Math.ceil(qty/(layout==='4up'?4:2))} page{Math.ceil(qty/(layout==='4up'?4:2))>1?'s':''} · Print at <strong>Actual Size / 100%</strong>, disable headers & footers
+          </p>
+          <div className="flex gap-2 mt-4">
+            <Button onClick={buildPreview} loading={printing} disabled={!canPrint} className="flex-1">
+              👁 Preview Print Sheet
+            </Button>
+          </div>
+          {(overflowIds.length>0||missingRequired.length>0) && (
+            <p className="text-xs text-red-500 mt-1">Fix errors above before printing</p>
+          )}
+        </Card>
+
+        {/* Live Preview */}
+        <div>
+          <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">Live Preview</p>
+          <div className="rounded-2xl overflow-hidden border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-900 flex items-center justify-center min-h-48">
+            <canvas ref={livePreviewRef} className="max-w-full max-h-[500px] object-contain"/>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ── Print Preview step ─────────────────────────────────────
+  if (step==='preview') return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <button onClick={()=>setStep('compose')} className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline">← Back to Edit</button>
+        <span className="text-sm font-semibold text-gray-900 dark:text-white">{selected?.name} · {layout==='4up'?'4-up':'2-up'} · {qty} copies</span>
+        {printDims && (
+          <span className="text-xs text-gray-400">
+            Actual print size: {(printDims.dw/PX_PER_IN).toFixed(2)}″ × {(printDims.dh/PX_PER_IN).toFixed(2)}″
+          </span>
+        )}
+      </div>
+
+      {printPages.map((page,i) => (
+        <div key={i}>
+          <p className="text-xs text-gray-400 mb-1">Page {i+1} of {printPages.length}</p>
+          <div className="border border-gray-300 dark:border-gray-600 rounded-xl overflow-hidden shadow-sm bg-white">
+            <canvas ref={i===0?previewRef:undefined}
+              width={page.width} height={page.height}
+              className="w-full"
+              ref={(el)=>{ if(el){el.width=page.width;el.height=page.height;el.getContext('2d').drawImage(page,0,0);} }}
+            />
+          </div>
+        </div>
+      ))}
+
+      <div className="flex gap-3">
+        <Button onClick={printSheet} size="lg">🖨 Print</Button>
+        <Button variant="secondary" size="lg" onClick={()=>exportPDF(printPages, `${selected?.name||'shelf-talkers'}.pdf`)}>
+          ⬇ Download PDF
+        </Button>
+      </div>
+      <p className="text-xs text-gray-400">Print at <strong>Actual Size / 100%</strong>. Disable "Print headers and footers" in your browser's print dialog.</p>
+    </div>
+  );
+
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// SHELF TALKER — MAIN PAGE
+// ═══════════════════════════════════════════════════════════════
+function ShelfTalkerPage({ isAdmin, userStoreId }) {
+  const [tab,      setTab]      = useState(isAdmin ? 'admin' : 'create');
+  const [editTpl,  setEditTpl]  = useState(null);
+  const [adminSub, setAdminSub] = useState('library'); // 'library'|'new'|'edit'
+  const [storeId,  setStoreId]  = useState(userStoreId || STORES[0].id);
+
+  const tabs = [
+    ...(isAdmin ? [{ id:'admin', label:'⚙️ Admin' }] : []),
+    { id:'create', label:'🏷 Create' },
+  ];
+
+  return (
+    <div>
+      <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 mb-5 flex-wrap gap-2">
+        <div className="flex">
+          {tabs.map(t=>(
+            <button key={t.id} onClick={()=>setTab(t.id)}
+              className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}>
+              {t.label}
+            </button>
+          ))}
+        </div>
+        {/* Store picker for manager (or admin creating) */}
+        {tab==='create' && !userStoreId && isAdmin && (
+          <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs mb-1">
+            {STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+          </Select>
+        )}
+      </div>
+
+      {tab==='admin' && isAdmin && (
+        <div className="space-y-4">
+          <div className="flex gap-2">
+            <Button variant={adminSub==='library'?'primary':'secondary'} size="sm" onClick={()=>{ setAdminSub('library'); setEditTpl(null); }}>
+              📚 Template Library
+            </Button>
+            <Button variant={adminSub==='new'?'primary':'secondary'} size="sm" onClick={()=>{ setAdminSub('new'); setEditTpl(null); }}>
+              + New Template
+            </Button>
+          </div>
+          {adminSub==='library' && (
+            <STAdminLibrary onEditTemplate={tpl=>{setEditTpl(tpl);setAdminSub('edit');}}/>
+          )}
+          {(adminSub==='new'||adminSub==='edit') && (
+            <Card>
+              <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4">
+                {adminSub==='edit' ? `Edit: ${editTpl?.name}` : 'New Template'}
+              </h3>
+              <STTemplateForm
+                initialTemplate={editTpl}
+                onSaved={()=>{ setAdminSub('library'); setEditTpl(null); }}
+              />
+            </Card>
+          )}
+        </div>
+      )}
+
+      {tab==='create' && (
+        <STCreator storeId={storeId} isAdmin={isAdmin}/>
+      )}
+    </div>
+  );
+}
+
 function BrandPage({ settings }) {
   const [tab,     setTab]     = useState('profile');
   const [storeId, setStoreId] = useState(STORES[0].id);
@@ -2694,6 +4053,7 @@ function BrandPage({ settings }) {
 // ─────────────────────────────────────────────
 function AuthenticatedApp({ user, dark, onDark }) {
   const toast = useToast();
+  const isAdmin = ADMIN_EMAILS.includes((user?.email||'').toLowerCase());
   const [page,           setPage]           = useState('posts');
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [settings,       setSettings]       = useState({
@@ -2732,16 +4092,25 @@ function AuthenticatedApp({ user, dark, onDark }) {
 
   const signOut = async () => {
     await getSB().auth.signOut();
-    ls.set('smm_sb_url',''); ls.set('smm_sb_key','');
-    _sb=null;
     window.location.reload();
   };
 
+  // Load store assignment for non-admin users
+  const [userStoreId, setUserStoreId] = useState(null);
+  useEffect(() => {
+    if (isAdmin || !user) return;
+    getSB()?.from('user_roles').select('store_id').eq('user_id', user.id).maybeSingle()
+      .then(({data}) => setUserStoreId(data?.store_id || null));
+  }, [isAdmin, user]);
+
   const nav = [
-    { id:'posts',    icon:'📝', label:'Posts' },
-    { id:'ads',      icon:'📣', label:'Ads' },
-    { id:'brand',    icon:'🎨', label:'Brand' },
-    { id:'settings', icon:'⚙️', label:'Settings' },
+    { id:'posts', icon:'📝', label:'Posts' },
+    { id:'shelf', icon:'🏷', label:'Shelf Talkers' },
+    ...(isAdmin ? [
+      { id:'ads',      icon:'📣', label:'Ads' },
+      { id:'brand',    icon:'🎨', label:'Brand' },
+      { id:'settings', icon:'⚙️', label:'Settings' },
+    ] : []),
   ];
 
   if (!settingsLoaded) return (
@@ -2773,10 +4142,11 @@ function AuthenticatedApp({ user, dark, onDark }) {
         </div>
       </header>
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
-        {page==='posts'    && <PostsPage    settings={settings}/>}
-        {page==='ads'      && <AdsPage      settings={settings}/>}
-        {page==='brand'    && <BrandPage    settings={settings}/>}
-        {page==='settings' && <SettingsPage settings={settings} onSave={saveSettings}/>}
+        {page==='posts'                  && <PostsPage       settings={settings}/>}
+        {page==='shelf'                  && <ShelfTalkerPage isAdmin={isAdmin} userStoreId={isAdmin ? null : userStoreId}/>}
+        {page==='ads'      && isAdmin    && <AdsPage         settings={settings}/>}
+        {page==='brand'    && isAdmin    && <BrandPage        settings={settings}/>}
+        {page==='settings' && isAdmin    && <SettingsPage     settings={settings} onSave={saveSettings}/>}
       </main>
       <footer className="text-center py-3 text-xs text-gray-300 dark:text-gray-600">
         Liquor Store Social · Supabase · Graph API v21.0 · {user?.email}
@@ -2789,10 +4159,9 @@ function AuthenticatedApp({ user, dark, onDark }) {
 // ROOT APP (auth routing)
 // ─────────────────────────────────────────────
 function App() {
-  const [dark,         setDark]         = useState(()=>ls.get('smm_dark',false));
-  const [sbReady,      setSbReady]      = useState(()=>!!(ls.get('smm_sb_url','')&&ls.get('smm_sb_key','')));
-  const [authState,    setAuthState]    = useState('checking');
-  const [user,         setUser]         = useState(null);
+  const [dark,      setDark]      = useState(()=>ls.get('smm_dark',false));
+  const [authState, setAuthState] = useState('checking');
+  const [user,      setUser]      = useState(null);
 
   useEffect(()=>{
     document.documentElement.classList.toggle('dark',dark);
@@ -2800,7 +4169,6 @@ function App() {
   },[dark]);
 
   useEffect(()=>{
-    if (!sbReady) return;
     const sb=getSB(); if(!sb) return;
     sb.auth.getSession().then(({data:{session}})=>{
       setUser(session?.user||null);
@@ -2811,13 +4179,7 @@ function App() {
       setAuthState(session?'authed':'anon');
     });
     return ()=>subscription.unsubscribe();
-  },[sbReady]);
-
-  if (!sbReady) return (
-    <ToastProvider>
-      <SetupScreen onSetup={()=>setSbReady(true)}/>
-    </ToastProvider>
-  );
+  },[]);
 
   if (authState==='checking') return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900">

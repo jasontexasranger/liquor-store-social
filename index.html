@@ -1179,6 +1179,42 @@ function useSTFields(templateId) {
   return { fields, loading, save, reload: load };
 }
 
+function useSavedTags(userId) {
+  const [saves,   setSaves]   = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!userId) return;
+    const sb = getSB(); if (!sb) return;
+    setLoading(true);
+    try {
+      const { data } = await sb.from('saved_shelf_talkers')
+        .select('*, shelf_talker_templates(name, file_data, category)')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false });
+      setSaves(data || []);
+    } finally { setLoading(false); }
+  }, [userId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const saveTag = async (name, templateId, values) => {
+    const sb = getSB(); if (!sb) return;
+    const { error } = await sb.from('saved_shelf_talkers')
+      .insert({ user_id: userId, template_id: templateId, name, values });
+    if (error) throw error;
+    await load();
+  };
+
+  const deleteTag = async (id) => {
+    const sb = getSB(); if (!sb) return;
+    await sb.from('saved_shelf_talkers').delete().eq('id', id);
+    await load();
+  };
+
+  return { saves, loading, saveTag, deleteTag, reload: load };
+}
+
 // ═══════════════════════════════════════════════════════════════
 // SETUP SCREEN (first-run Supabase config)
 // ═══════════════════════════════════════════════════════════════
@@ -3915,9 +3951,11 @@ function exportPDF(pages, filename='shelf-talkers.pdf') {
 // ═══════════════════════════════════════════════════════════════
 // SHELF TALKER — MANAGER CREATOR
 // ═══════════════════════════════════════════════════════════════
-function STCreator({ storeId, isAdmin }) {
+function STCreator({ storeId, isAdmin, userId }) {
   const toast = useToast();
   const { templates, loading:tplLoading } = useSTTemplates(storeId, isAdmin);
+  const { saves, saveTag, deleteTag } = useSavedTags(userId);
+  const [savingTag, setSavingTag] = useState(false);
   const [selected,   setSelected]   = useState(null);
   const [values,     setValues]     = useState({});
   const [layout,     setLayout]     = useState('4up');
@@ -4090,6 +4128,46 @@ function STCreator({ storeId, isAdmin }) {
   if (step==='browse') return (
     <div className="space-y-4">
       {queuePanel}
+
+      {/* Saved Tags */}
+      {saves.length > 0 && (
+        <div>
+          <h3 className="text-sm font-bold text-gray-700 dark:text-gray-200 mb-2">💾 Saved Tags</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            {saves.map(s => {
+              const tpl = s.shelf_talker_templates;
+              return (
+                <div key={s.id} className="flex items-center gap-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl p-2.5 shadow-sm">
+                  {tpl?.file_data && (
+                    <img src={tpl.file_data} alt={tpl.name} className="w-12 h-12 object-contain rounded-lg bg-gray-100 dark:bg-gray-900 shrink-0"/>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">{s.name}</p>
+                    <p className="text-xs text-gray-400 truncate">{tpl?.name}</p>
+                  </div>
+                  <div className="flex flex-col gap-1 shrink-0">
+                    <button
+                      onClick={() => {
+                        const tplObj = templates.find(t => t.id === s.template_id);
+                        if (tplObj) { setSelected(tplObj); setValues(s.values || {}); setStep('compose'); }
+                        else toast.error('Template no longer available');
+                      }}
+                      className="text-xs bg-indigo-600 text-white px-2 py-0.5 rounded hover:bg-indigo-700">
+                      Load
+                    </button>
+                    <button
+                      onClick={async () => { if(confirm('Delete this saved tag?')) await deleteTag(s.id); }}
+                      className="text-xs text-red-500 hover:text-red-700 px-2 py-0.5">
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-wrap gap-2">
         <Input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 Search…" className="max-w-xs"/>
         <Select value={catFilter} onChange={e=>setCatFilter(e.target.value)} className="w-auto">
@@ -4210,6 +4288,19 @@ function STCreator({ storeId, isAdmin }) {
               disabled={!canPrint || printQueue.length >= 4}
               title={printQueue.length>=4?'Queue is full (4/4)':'Add this tag to the mixed print queue'}>
               📋 {printQueue.length>=4 ? 'Queue Full' : `Add to Queue (${printQueue.length}/4)`}
+            </Button>
+            <Button variant="secondary" loading={savingTag} disabled={!selected}
+              onClick={async () => {
+                setSavingTag(true);
+                try {
+                  const firstName = fields[0] ? (values[fields[0].id] || '') : '';
+                  const name = selected.name + (firstName ? ` – ${firstName.substring(0,24)}` : '');
+                  await saveTag(name, selected.id, values);
+                  toast.success('Tag saved!');
+                } catch(e) { toast.error('Save failed: ' + e.message); }
+                finally { setSavingTag(false); }
+              }}>
+              💾 Save Tag
             </Button>
           </div>
           {(overflowIds.length>0||missingRequired.length>0) && (
@@ -4332,7 +4423,7 @@ function ShelfTalkerPage({ isAdmin, userStoreId }) {
       )}
 
       {tab==='create' && (
-        <STCreator storeId={storeId} isAdmin={isAdmin}/>
+        <STCreator storeId={storeId} isAdmin={isAdmin} userId={user?.id}/>
       )}
     </div>
   );

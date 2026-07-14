@@ -2639,7 +2639,28 @@ const FIELD_DEFAULTS = {
   required:false, multiline:false, max_lines:2, max_chars:null,
   align:'left', valign:'top', color:'#000000',
   max_font_size:48, min_font_size:8, bold:false, line_spacing:1.2, wrap:true,
+  formula: null,
 };
+
+// Evaluate a formula like "{PRICE 1} + {PRICE2} + {PRICE 3}"
+// References other fields by label; returns string result or '' on error.
+function evaluateFormula(formula, fields, values) {
+  if (!formula?.trim()) return '';
+  const expr = formula.replace(/\{([^}]+)\}/g, (_, label) => {
+    const f = fields.find(f => f.label.trim() === label.trim());
+    const n = parseFloat(values[f?.id] ?? '');
+    return isNaN(n) ? '0' : String(n);
+  });
+  // Only allow safe math characters
+  if (!/^[\d\s+\-*/.()]+$/.test(expr)) return '⚠ invalid';
+  try {
+    // eslint-disable-next-line no-new-func
+    const result = Function('"use strict";return(' + expr + ')')();
+    if (!isFinite(result) || isNaN(result)) return '';
+    // Round to 2 decimal places, strip trailing .00
+    return parseFloat(result.toFixed(2)).toString();
+  } catch { return '⚠ error'; }
+}
 
 function STFieldEditor({ templateDataUrl, fields, onChange }) {
   const containerRef = useRef();
@@ -2883,6 +2904,37 @@ function STFieldEditor({ templateDataUrl, fields, onChange }) {
                 <div><Label>Max Lines</Label>
                   <Input type="number" value={editField.max_lines} min={1} max={20}
                     onChange={e=>updateField(editField.id,{max_lines:+e.target.value})} className="text-xs py-1"/>
+                </div>
+              )}
+            </div>
+
+            {/* Formula */}
+            <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
+              <Label>
+                <input type="checkbox"
+                  checked={!!editField.formula}
+                  onChange={e=>updateField(editField.id,{formula: e.target.checked ? '' : null})}
+                  className="rounded mr-1.5"/>
+                Calculated field (formula)
+              </Label>
+              {editField.formula !== null && editField.formula !== undefined && (
+                <div className="mt-1.5 space-y-1">
+                  <Input
+                    value={editField.formula||''}
+                    onChange={e=>updateField(editField.id,{formula:e.target.value})}
+                    placeholder='e.g. {PRICE 1} + {PRICE2} + {PRICE 3}'
+                    className="text-xs font-mono"/>
+                  <p className="text-xs text-gray-400">
+                    Use <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">&#123;Field Label&#125;</code> to reference other fields.
+                    Supports <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">+ - * /</code> and parentheses.
+                    Available: {fields.filter(f=>f.id!==editField.id).map(f=>`{${f.label}}`).join(', ')||'none'}
+                  </p>
+                  {editField.formula?.trim() && (
+                    <p className="text-xs text-indigo-500">
+                      Preview: {evaluateFormula(editField.formula, fields,
+                        Object.fromEntries(fields.map(f=>[f.id, f.sample_text||'0'])))}
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -3973,14 +4025,27 @@ function STCreator({ storeId, isAdmin }) {
           {!fLoading && fields.length===0 && <p className="text-xs text-gray-400 italic">No text fields configured for this template.</p>}
           <div className="space-y-3">
             {fields.map(f => {
+              const isFormula = !!f.formula;
+              const computedVal = isFormula ? evaluateFormula(f.formula, fields, values) : null;
+              // Keep computed value in sync with values state for rendering
+              if (isFormula && computedVal !== null && values[f.id] !== computedVal) {
+                // schedule a non-blocking update
+                setTimeout(() => setValues(v => ({ ...v, [f.id]: computedVal })), 0);
+              }
+              const displayVal = isFormula ? (computedVal ?? '') : (values[f.id] || '');
               const overflow = overflowIds.includes(f.id);
               const missing  = missingRequired.includes(f.id) && values[f.id]!==undefined;
               return (
                 <div key={f.id}>
                   <Label>
-                    {f.label}{f.required && <span className="text-red-500 ml-0.5">*</span>}
+                    {f.label}
+                    {f.required && <span className="text-red-500 ml-0.5">*</span>}
+                    {isFormula && <span className="ml-1.5 text-xs text-indigo-500 font-normal">= {f.formula}</span>}
                   </Label>
-                  {f.multiline
+                  {isFormula ? (
+                    <Input value={displayVal} readOnly
+                      className="bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 cursor-default"/>
+                  ) : f.multiline
                     ? <Textarea value={values[f.id]||''} onChange={e=>setValues(v=>({...v,[f.id]:e.target.value}))}
                         placeholder={f.placeholder} rows={Math.min(f.max_lines||2, 4)}
                         className={overflow||missing?'border-red-400 focus:ring-red-400':''}/>

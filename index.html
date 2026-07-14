@@ -3692,6 +3692,45 @@ function buildPrintPages(stCanvas, layout, qty) {
   return { pages, dw, dh };
 }
 
+// Build ONE print page from an array of different canvases (mixed layout)
+function buildMixedPrintPage(canvases) {
+  const count = canvases.length;
+  let cols, rows;
+  if (count === 1)      { cols=1; rows=1; }
+  else if (count === 2) { cols=2; rows=1; }
+  else                  { cols=2; rows=2; }
+
+  const cellW = (PAGE_W - MARGIN*(cols+1)) / cols;
+  const cellH = (PAGE_H - MARGIN*(rows+1)) / rows;
+
+  const page = document.createElement('canvas');
+  page.width=PAGE_W; page.height=PAGE_H;
+  const ctx=page.getContext('2d');
+  ctx.fillStyle='#ffffff';
+  ctx.fillRect(0,0,PAGE_W,PAGE_H);
+  ctx.save();
+  ctx.strokeStyle='#999999';
+  ctx.lineWidth=0.75;
+
+  canvases.forEach((stCanvas, i) => {
+    const col=i%cols, row=Math.floor(i/cols);
+    const cellX = MARGIN + col*(cellW+MARGIN);
+    const cellY = MARGIN + row*(cellH+MARGIN);
+    const scale = Math.min(cellW/stCanvas.width, cellH/stCanvas.height, 1);
+    const dw = Math.round(stCanvas.width*scale);
+    const dh = Math.round(stCanvas.height*scale);
+    const cx = cellX + (cellW-dw)/2;
+    const cy = cellY + (cellH-dh)/2;
+    ctx.drawImage(stCanvas, cx, cy, dw, dh);
+    drawCropMark(ctx, cx,    cy,    -1, -1);
+    drawCropMark(ctx, cx+dw, cy,     1, -1);
+    drawCropMark(ctx, cx,    cy+dh, -1,  1);
+    drawCropMark(ctx, cx+dw, cy+dh,  1,  1);
+  });
+  ctx.restore();
+  return page;
+}
+
 // Export pages as a jsPDF document and trigger download
 function exportPDF(pages, filename='shelf-talkers.pdf') {
   if (!window.jspdf?.jsPDF) { alert('jsPDF not loaded'); return; }
@@ -3716,9 +3755,13 @@ function STCreator({ storeId, isAdmin }) {
   const [layout,     setLayout]     = useState('4up');
   const [qty,        setQty]        = useState(4);
   const [step,       setStep]       = useState('browse'); // browse|compose|preview
-  const [printing,   setPrinting]   = useState(false);
-  const [printPages, setPrintPages] = useState([]);
-  const [printDims,  setPrintDims]  = useState(null);
+  const [printing,      setPrinting]      = useState(false);
+  const [printPages,    setPrintPages]    = useState([]);
+  const [printDims,     setPrintDims]     = useState(null);
+  const [printMode,     setPrintMode]     = useState('single'); // 'single'|'queue'
+  const [printQueue,    setPrintQueue]    = useState([]);       // [{id,label,canvas}]
+  const [addingToQueue, setAddingToQueue] = useState(false);
+  const [queuePrinting, setQueuePrinting] = useState(false);
   const { fields, loading:fLoading } = useSTFields(selected?.id);
   const [catFilter,  setCatFilter]  = useState('all');
   const [search,     setSearch]     = useState('');
@@ -3751,6 +3794,32 @@ function STCreator({ storeId, isAdmin }) {
       setStep('preview');
     } catch(e) { toast.error('Preview failed: '+e.message); }
     finally { setPrinting(false); }
+  };
+
+  const addToQueue = async () => {
+    if (!canPrint || printQueue.length >= 4) return;
+    setAddingToQueue(true);
+    try {
+      const stCanvas = await renderSTCanvas(selected, fields, values);
+      const firstVal = values[fields[0]?.id] || '';
+      const label = selected.name + (firstVal ? ` – ${firstVal.substring(0,18)}` : '');
+      setPrintQueue(q => [...q, { id: Date.now(), canvas: stCanvas, label }]);
+      toast.success(`Added to queue (${printQueue.length+1}/4)`);
+    } catch(e) { toast.error('Error: '+e.message); }
+    finally { setAddingToQueue(false); }
+  };
+
+  const printQueueSheet = async () => {
+    if (!printQueue.length) return;
+    setQueuePrinting(true);
+    try {
+      const page = buildMixedPrintPage(printQueue.map(q=>q.canvas));
+      setPrintPages([page]);
+      setPrintDims({ dw: PAGE_W, dh: PAGE_H });
+      setPrintMode('queue');
+      setStep('preview');
+    } catch(e) { toast.error('Error: '+e.message); }
+    finally { setQueuePrinting(false); }
   };
 
   const printSheet = () => {
@@ -3794,9 +3863,45 @@ function STCreator({ storeId, isAdmin }) {
     return true;
   });
 
+  // ── Print Queue Panel (shown on browse + compose steps) ───
+  const queuePanel = printQueue.length > 0 && (
+    <div className="rounded-2xl border border-indigo-200 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-950 p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+        <h3 className="text-sm font-bold text-indigo-900 dark:text-indigo-200">
+          📋 Print Queue — {printQueue.length} of 4 tags
+        </h3>
+        <div className="flex gap-2">
+          <button onClick={()=>setPrintQueue([])} className="text-xs text-indigo-500 hover:text-red-500 underline">Clear all</button>
+          <Button size="sm" onClick={printQueueSheet} loading={queuePrinting}>
+            🖨 Print Sheet ({printQueue.length}-up)
+          </Button>
+          <Button size="sm" variant="secondary" onClick={()=>{ const p=buildMixedPrintPage(printQueue.map(q=>q.canvas)); exportPDF([p],'queue-sheet.pdf'); }}>
+            ⬇ PDF
+          </Button>
+        </div>
+      </div>
+      <div className="flex gap-3 flex-wrap">
+        {printQueue.map((item,i)=>(
+          <div key={item.id} className="relative group">
+            <div className="w-16 h-20 rounded-lg overflow-hidden border border-indigo-200 dark:border-indigo-600 bg-white flex items-center justify-center">
+              <canvas ref={el=>{ if(el){ el.width=item.canvas.width; el.height=item.canvas.height; el.getContext('2d').drawImage(item.canvas,0,0); }}} className="w-full h-full object-contain"/>
+            </div>
+            <p className="text-xs text-indigo-700 dark:text-indigo-300 mt-1 w-16 truncate">{item.label}</p>
+            <button onClick={()=>setPrintQueue(q=>q.filter((_,j)=>j!==i))}
+              className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-500 text-white text-xs leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">×</button>
+          </div>
+        ))}
+        {printQueue.length < 4 && (
+          <div className="w-16 h-20 rounded-lg border-2 border-dashed border-indigo-300 dark:border-indigo-600 flex items-center justify-center text-indigo-300 text-2xl select-none">+</div>
+        )}
+      </div>
+    </div>
+  );
+
   // ── Browse step ────────────────────────────────────────────
   if (step==='browse') return (
     <div className="space-y-4">
+      {queuePanel}
       <div className="flex flex-wrap gap-2">
         <Input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 Search…" className="max-w-xs"/>
         <Select value={catFilter} onChange={e=>setCatFilter(e.target.value)} className="w-auto">
@@ -3839,6 +3944,7 @@ function STCreator({ storeId, isAdmin }) {
   // ── Compose step ───────────────────────────────────────────
   if (step==='compose') return (
     <div className="space-y-4">
+      {queuePanel}
       <div className="flex items-center gap-3">
         <button onClick={()=>setStep('browse')} className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline">← Back to Templates</button>
         <Badge color="indigo">{selected?.category}</Badge>
@@ -3897,9 +4003,14 @@ function STCreator({ storeId, isAdmin }) {
           <p className="text-xs text-gray-400 mt-2">
             {Math.ceil(qty/(layout==='4up'?4:2))} page{Math.ceil(qty/(layout==='4up'?4:2))>1?'s':''} · Print at <strong>Actual Size / 100%</strong>, disable headers & footers
           </p>
-          <div className="flex gap-2 mt-4">
+          <div className="flex gap-2 mt-4 flex-wrap">
             <Button onClick={buildPreview} loading={printing} disabled={!canPrint} className="flex-1">
-              👁 Preview Print Sheet
+              👁 Preview Copies
+            </Button>
+            <Button variant="secondary" onClick={addToQueue} loading={addingToQueue}
+              disabled={!canPrint || printQueue.length >= 4}
+              title={printQueue.length>=4?'Queue is full (4/4)':'Add this tag to the mixed print queue'}>
+              📋 {printQueue.length>=4 ? 'Queue Full' : `Add to Queue (${printQueue.length}/4)`}
             </Button>
           </div>
           {(overflowIds.length>0||missingRequired.length>0) && (
@@ -3922,8 +4033,12 @@ function STCreator({ storeId, isAdmin }) {
   if (step==='preview') return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
-        <button onClick={()=>setStep('compose')} className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline">← Back to Edit</button>
-        <span className="text-sm font-semibold text-gray-900 dark:text-white">{selected?.name} · {layout==='4up'?'4-up':'2-up'} · {qty} copies</span>
+        <button onClick={()=>{ setStep(printMode==='queue'?'browse':'compose'); setPrintMode('single'); }} className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline">← Back</button>
+        <span className="text-sm font-semibold text-gray-900 dark:text-white">
+          {printMode==='queue'
+            ? `Mixed Sheet · ${printQueue.length} different tags`
+            : `${selected?.name} · ${layout==='4up'?'4-up':'2-up'} · ${qty} copies`}
+        </span>
         {printDims && (
           <span className="text-xs text-gray-400">
             Actual print size: {(printDims.dw/PX_PER_IN).toFixed(2)}″ × {(printDims.dh/PX_PER_IN).toFixed(2)}″
@@ -3946,7 +4061,7 @@ function STCreator({ storeId, isAdmin }) {
 
       <div className="flex gap-3">
         <Button onClick={printSheet} size="lg">🖨 Print</Button>
-        <Button variant="secondary" size="lg" onClick={()=>exportPDF(printPages, `${selected?.name||'shelf-talkers'}.pdf`)}>
+        <Button variant="secondary" size="lg" onClick={()=>exportPDF(printPages, printMode==='queue'?'mixed-sheet.pdf':`${selected?.name||'shelf-talkers'}.pdf`)}>
           ⬇ Download PDF
         </Button>
       </div>

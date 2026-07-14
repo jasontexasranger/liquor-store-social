@@ -3906,6 +3906,19 @@ function STCreator({ storeId, isAdmin }) {
     w.print();
   };
 
+  // Sync formula-computed values into state whenever inputs change
+  useEffect(() => {
+    const formulaFields = fields.filter(f => f.formula);
+    if (!formulaFields.length) return;
+    const updates = {};
+    formulaFields.forEach(f => {
+      const computed = evaluateFormula(f.formula, fields, values);
+      if (computed !== null && values[f.id] !== computed) updates[f.id] = computed;
+    });
+    if (Object.keys(updates).length) setValues(v => ({ ...v, ...updates }));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fields, ...fields.filter(f=>!f.formula).map(f=>values[f.id])]);
+
   // Live preview canvas
   const livePreviewRef = useRef();
   useEffect(() => {
@@ -4027,11 +4040,6 @@ function STCreator({ storeId, isAdmin }) {
             {fields.map(f => {
               const isFormula = !!f.formula;
               const computedVal = isFormula ? evaluateFormula(f.formula, fields, values) : null;
-              // Keep computed value in sync with values state for rendering
-              if (isFormula && computedVal !== null && values[f.id] !== computedVal) {
-                // schedule a non-blocking update
-                setTimeout(() => setValues(v => ({ ...v, [f.id]: computedVal })), 0);
-              }
               const displayVal = isFormula ? (computedVal ?? '') : (values[f.id] || '');
               const overflow = overflowIds.includes(f.id);
               const missing  = missingRequired.includes(f.id) && values[f.id]!==undefined;

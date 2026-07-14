@@ -1019,15 +1019,19 @@ function fitText(text, boxW, boxH, settings={}) {
     const words = text.split(/\s+/);
     const lines = [];
     let cur='';
+    let maxLineW = 0;
     for (const w of words) {
       const test = cur ? cur+' '+w : w;
-      if (ctx.measureText(test).width > boxW && cur) { lines.push(cur); cur=w; }
-      else cur=test;
+      if (ctx.measureText(test).width > boxW && cur) {
+        maxLineW = Math.max(maxLineW, ctx.measureText(cur).width);
+        lines.push(cur); cur=w;
+      } else cur=test;
     }
-    if (cur) lines.push(cur);
+    if (cur) { maxLineW = Math.max(maxLineW, ctx.measureText(cur).width); lines.push(cur); }
     const limit = maxLines || 99;
     const totalH = lines.length * fontSize * lineSpacing;
-    return { lines, fits: lines.length<=limit && totalH<=boxH };
+    // Also check that every line (including single long words) fits within boxW
+    return { lines, fits: lines.length<=limit && totalH<=boxH && maxLineW<=boxW };
   };
 
   let lo=minFontSize, hi=maxFontSize, best=null;

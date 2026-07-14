@@ -2639,7 +2639,7 @@ const FIELD_DEFAULTS = {
   required:false, multiline:false, max_lines:2, max_chars:null,
   align:'left', valign:'top', color:'#000000',
   max_font_size:48, min_font_size:8, bold:false, line_spacing:1.2, wrap:true,
-  formula: null, formula_prefix: '',
+  formula: null, prefix: '',
 };
 
 function STFieldEditor({ templateDataUrl, fields, onChange }) {
@@ -2830,6 +2830,9 @@ function STFieldEditor({ templateDataUrl, fields, onChange }) {
               <div><Label>Placeholder</Label>
                 <Input value={editField.placeholder} onChange={e=>updateField(editField.id,{placeholder:e.target.value})} placeholder="Hint text…" className="text-xs py-1"/>
               </div>
+              <div><Label>Prefix (e.g. $)</Label>
+                <Input value={editField.prefix||''} onChange={e=>updateField(editField.id,{prefix:e.target.value})} placeholder="optional" className="text-xs py-1 w-24 font-mono"/>
+              </div>
               <div><Label>Sample Preview Text</Label>
                 <Input value={editField.sample_text} onChange={e=>updateField(editField.id,{sample_text:e.target.value})} className="text-xs py-1"/>
               </div>
@@ -2924,13 +2927,7 @@ function STFieldEditor({ templateDataUrl, fields, onChange }) {
                           );
                         })
                     }
-                    <div className="flex items-center gap-2 mt-2 pt-2 border-t border-gray-100 dark:border-gray-700">
-                      <label className="text-xs text-gray-500 whitespace-nowrap">Prefix:</label>
-                      <Input value={editField.formula_prefix || ''}
-                        onChange={function(e){ updateField(editField.id, {formula_prefix: e.target.value}); }}
-                        placeholder="$ (optional)"
-                        className="text-xs py-0.5 w-20 font-mono"/>
-                    </div>
+                    <p className="text-xs text-gray-400 mt-1">Prefix is set above in field settings.</p>
                   </div>
                 )}
               </div>
@@ -3852,12 +3849,15 @@ function STCreator({ storeId, isAdmin }) {
   const [search,     setSearch]     = useState('');
   const previewRef = useRef();
 
-  // Derive formula-computed values (synchronous, no state mutation)
+  // Derive display values: apply formula and/or prefix for every field
   const computedValues = Object.assign({}, values);
   fields.forEach(function(f) {
+    const pfx = f.prefix || '';
     if (typeof f.formula === 'string' && f.formula.trim()) {
       const cv = evaluateFormula(f.formula, fields, values);
-      if (cv !== '') computedValues[f.id] = (f.formula_prefix || '') + cv;
+      if (cv !== '') computedValues[f.id] = pfx + cv;
+    } else if (pfx && values[f.id]) {
+      computedValues[f.id] = pfx + values[f.id];
     }
   });
 
@@ -4075,13 +4075,17 @@ function STCreator({ storeId, isAdmin }) {
                   {isFormula
                     ? <Input value={computedValues[f.id]||''} readOnly
                         className="bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 cursor-default text-center font-semibold"/>
-                    : f.multiline
-                      ? <Textarea value={values[f.id]||''} onChange={e=>setValues(v=>({...v,[f.id]:e.target.value}))}
-                          placeholder={f.placeholder} rows={Math.min(f.max_lines||2, 4)}
-                          className={overflow||missing?'border-red-400 focus:ring-red-400':''}/>
-                      : <Input value={values[f.id]||''} onChange={e=>setValues(v=>({...v,[f.id]:e.target.value}))}
-                          placeholder={f.placeholder} maxLength={f.max_chars||undefined}
-                          className={overflow||missing?'border-red-400 focus:ring-red-400':''}/>
+                    : <div className={f.prefix ? 'flex items-center gap-1' : ''}>
+                        {f.prefix && <span className="text-sm font-semibold text-gray-500 dark:text-gray-300 select-none">{f.prefix}</span>}
+                        {f.multiline
+                          ? <Textarea value={values[f.id]||''} onChange={e=>setValues(v=>({...v,[f.id]:e.target.value}))}
+                              placeholder={f.placeholder} rows={Math.min(f.max_lines||2, 4)}
+                              className={(overflow||missing?'border-red-400 focus:ring-red-400':'')+' flex-1'}/>
+                          : <Input value={values[f.id]||''} onChange={e=>setValues(v=>({...v,[f.id]:e.target.value}))}
+                              placeholder={f.placeholder} maxLength={f.max_chars||undefined}
+                              className={(overflow||missing?'border-red-400 focus:ring-red-400':'')+' flex-1'}/>
+                        }
+                      </div>
                   }
                   {overflow && <p className="text-xs text-red-500 mt-0.5">⚠ Text too long — please shorten</p>}
                   {missing  && <p className="text-xs text-amber-500 mt-0.5">This field is required</p>}

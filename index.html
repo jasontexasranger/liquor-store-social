@@ -3775,13 +3775,27 @@ function drawCropMark(ctx, cx, cy, dx, dy) {
   ctx.stroke();
 }
 
+// Rotate a canvas 90° clockwise and return new canvas.
+function rotateCanvas90(canvas) {
+  const r = document.createElement('canvas');
+  r.width = canvas.height; r.height = canvas.width;
+  const ctx = r.getContext('2d');
+  ctx.translate(r.width, 0);
+  ctx.rotate(Math.PI / 2);
+  ctx.drawImage(canvas, 0, 0);
+  return r;
+}
+
 // Arrange shelf-talker canvases into a print page. Returns array of page canvases.
 function buildPrintPages(stCanvas, layout, qty) {
   const perPage = layout==='4up' ? 4 : 2;
   const totalPages = Math.ceil(qty / perPage);
   const pages = [];
 
-  const stW = stCanvas.width, stH = stCanvas.height;
+  // Rotate landscape tags 90° for 4-up so each fills its quarter-page cell
+  const src = (layout === '4up' && stCanvas.width > stCanvas.height)
+    ? rotateCanvas90(stCanvas) : stCanvas;
+  const stW = src.width, stH = src.height;
   // Compute cell size
   let cols, rows;
   if (layout==='4up') { cols=2; rows=2; }
@@ -3824,7 +3838,7 @@ function buildPrintPages(stCanvas, layout, qty) {
       const cy = cellY + (cellH-dh)/2;
 
       // Draw shelf talker
-      ctx.drawImage(stCanvas, cx, cy, dw, dh);
+      ctx.drawImage(src, cx, cy, dw, dh);
 
       // Crop marks at 4 corners
       drawCropMark(ctx, cx,    cy,    -1, -1);
@@ -3858,7 +3872,10 @@ function buildMixedPrintPage(canvases) {
   ctx.strokeStyle='#999999';
   ctx.lineWidth=0.75;
 
-  canvases.forEach((stCanvas, i) => {
+  canvases.forEach((rawCanvas, i) => {
+    // Rotate landscape canvases 90° when placing in a 2×2 grid (4 items)
+    const stCanvas = (count === 4 && rawCanvas.width > rawCanvas.height)
+      ? rotateCanvas90(rawCanvas) : rawCanvas;
     const col=i%cols, row=Math.floor(i/cols);
     const cellX = MARGIN + col*(cellW+MARGIN);
     const cellY = MARGIN + row*(cellH+MARGIN);

@@ -2639,7 +2639,7 @@ const FIELD_DEFAULTS = {
   required:false, multiline:false, max_lines:2, max_chars:null,
   align:'left', valign:'top', color:'#000000',
   max_font_size:48, min_font_size:8, bold:false, line_spacing:1.2, wrap:true,
-  formula: null,
+  formula: null, formula_prefix: '',
 };
 
 function STFieldEditor({ templateDataUrl, fields, onChange }) {
@@ -2924,6 +2924,13 @@ function STFieldEditor({ templateDataUrl, fields, onChange }) {
                           );
                         })
                     }
+                    <div className="flex items-center gap-2 mt-2 pt-2 border-t border-gray-100 dark:border-gray-700">
+                      <label className="text-xs text-gray-500 whitespace-nowrap">Prefix:</label>
+                      <Input value={editField.formula_prefix || ''}
+                        onChange={function(e){ updateField(editField.id, {formula_prefix: e.target.value}); }}
+                        placeholder="$ (optional)"
+                        className="text-xs py-0.5 w-20 font-mono"/>
+                    </div>
                   </div>
                 )}
               </div>
@@ -3850,7 +3857,7 @@ function STCreator({ storeId, isAdmin }) {
   fields.forEach(function(f) {
     if (typeof f.formula === 'string' && f.formula.trim()) {
       const cv = evaluateFormula(f.formula, fields, values);
-      if (cv !== '') computedValues[f.id] = cv;
+      if (cv !== '') computedValues[f.id] = (f.formula_prefix || '') + cv;
     }
   });
 

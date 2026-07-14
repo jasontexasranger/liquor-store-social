@@ -2639,6 +2639,7 @@ const FIELD_DEFAULTS = {
   required:false, multiline:false, max_lines:2, max_chars:null,
   align:'left', valign:'top', color:'#000000',
   max_font_size:48, min_font_size:8, bold:false, line_spacing:1.2, wrap:true,
+  formula: null,
 };
 
 function STFieldEditor({ templateDataUrl, fields, onChange }) {
@@ -2885,6 +2886,47 @@ function STFieldEditor({ templateDataUrl, fields, onChange }) {
                     onChange={e=>updateField(editField.id,{max_lines:+e.target.value})} className="text-xs py-1"/>
                 </div>
               )}
+
+              {/* Auto-calculate formula */}
+              <div className="mt-3 pt-3 border-t border-gray-200 dark:border-gray-700">
+                <label className="flex items-center gap-1.5 text-xs font-medium cursor-pointer">
+                  <input type="checkbox"
+                    checked={typeof editField.formula === 'string'}
+                    onChange={function(e) { updateField(editField.id, {formula: e.target.checked ? '' : null}); }}
+                    className="rounded"/>
+                  Auto-calculate (sum other fields)
+                </label>
+                {typeof editField.formula === 'string' && (
+                  <div className="mt-2 space-y-1">
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Add these fields together:</p>
+                    {fields.filter(function(f){ return f.id !== editField.id; }).length === 0
+                      ? <p className="text-xs text-gray-400 italic">No other fields yet</p>
+                      : fields.filter(function(f){ return f.id !== editField.id; }).map(function(f) {
+                          const token = '{' + f.label + '}';
+                          const included = editField.formula.indexOf(token) !== -1;
+                          return (
+                            <label key={f.id} className="flex items-center gap-2 text-xs cursor-pointer py-0.5">
+                              <input type="checkbox" className="rounded accent-indigo-600"
+                                checked={included}
+                                onChange={function(e) {
+                                  var newParts = fields
+                                    .filter(function(ff){ return ff.id !== editField.id; })
+                                    .filter(function(ff){
+                                      var t = '{' + ff.label + '}';
+                                      if (ff.id === f.id) return e.target.checked;
+                                      return editField.formula.indexOf(t) !== -1;
+                                    })
+                                    .map(function(ff){ return '{' + ff.label + '}'; });
+                                  updateField(editField.id, {formula: newParts.join('+')});
+                                }}/>
+                              {f.label}
+                            </label>
+                          );
+                        })
+                    }
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -3589,6 +3631,33 @@ const MARGIN  = Math.round(0.25 * PX_PER_IN); // 37px = 0.25"
 const CROP_LEN = 18;  // px length of crop mark lines
 const CROP_GAP = 6;   // px gap between artwork and crop mark
 
+// Evaluate a formula string like "{PRICE 1}+{PRICE 2}+{PRICE 3}"
+// using the current field values. Returns a string result or ''.
+function evaluateFormula(formula, fields, values) {
+  if (!formula || !formula.trim()) return '';
+  var expr = formula;
+  for (var fi = 0; fi < fields.length; fi++) {
+    var field = fields[fi];
+    var token = '{' + field.label + '}';
+    if (expr.indexOf(token) !== -1) {
+      var rawVal = values[field.id] || '0';
+      var num = parseFloat(rawVal);
+      if (isNaN(num)) num = 0;
+      expr = expr.split(token).join(String(num));
+    }
+  }
+  try {
+    // eslint-disable-next-line no-new-func
+    var result = (new Function('return (' + expr + ')'))();
+    if (typeof result === 'number' && isFinite(result)) {
+      return String(Math.round(result * 100) / 100);
+    }
+    return '';
+  } catch(evalErr) {
+    return '';
+  }
+}
+
 // Render completed shelf-talker to an off-screen canvas.
 // Returns a canvas element at (widthIn×heightIn×PX_PER_IN) px.
 async function renderSTCanvas(template, fields, values) {
@@ -3776,9 +3845,19 @@ function STCreator({ storeId, isAdmin }) {
   const [search,     setSearch]     = useState('');
   const previewRef = useRef();
 
+  // Derive formula-computed values (synchronous, no state mutation)
+  const computedValues = Object.assign({}, values);
+  fields.forEach(function(f) {
+    if (typeof f.formula === 'string' && f.formula.trim()) {
+      const cv = evaluateFormula(f.formula, fields, values);
+      if (cv !== '') computedValues[f.id] = cv;
+    }
+  });
+
   // Field overflow validation — use actual box pixel dims from the template
   const overflowIds = fields.filter(f => {
-    const text = values[f.id]||'';
+    if (typeof f.formula === 'string' && f.formula.trim()) return false; // auto fields can't overflow
+    const text = computedValues[f.id]||'';
     if (!text) return false;
     const tplW = Math.round((selected?.width_in  || 4.25) * PX_PER_IN);
     const tplH = Math.round((selected?.height_in || 5.5)  * PX_PER_IN);
@@ -3791,7 +3870,10 @@ function STCreator({ storeId, isAdmin }) {
     });
     return overflow;
   }).map(f=>f.id);
-  const missingRequired = fields.filter(f=>f.required && !values[f.id]?.trim()).map(f=>f.id);
+  const missingRequired = fields.filter(f => {
+    if (typeof f.formula === 'string') return false; // formula fields are never "missing"
+    return f.required && !(values[f.id] && values[f.id].trim());
+  }).map(f=>f.id);
   const canPrint = overflowIds.length===0 && missingRequired.length===0 && selected;
 
   const selectTemplate = (tpl) => { setSelected(tpl); setValues({}); setStep('compose'); };
@@ -3800,7 +3882,7 @@ function STCreator({ storeId, isAdmin }) {
     if (!canPrint) return;
     setPrinting(true);
     try {
-      const stCanvas = await renderSTCanvas(selected, fields, values);
+      const stCanvas = await renderSTCanvas(selected, fields, computedValues);
       const { pages, dw, dh } = buildPrintPages(stCanvas, layout, qty);
       setPrintPages(pages);
       setPrintDims({ dw, dh, scale: PX_PER_IN });
@@ -3813,8 +3895,8 @@ function STCreator({ storeId, isAdmin }) {
     if (!canPrint || printQueue.length >= 4) return;
     setAddingToQueue(true);
     try {
-      const stCanvas = await renderSTCanvas(selected, fields, values);
-      const firstVal = values[fields[0]?.id] || '';
+      const stCanvas = await renderSTCanvas(selected, fields, computedValues);
+      const firstVal = computedValues[fields[0]?.id] || '';
       const label = selected.name + (firstVal ? ` – ${firstVal.substring(0,18)}` : '');
       setPrintQueue(q => [...q, { id: Date.now(), canvas: stCanvas, label }]);
       toast.success(`Added to queue (${printQueue.length+1}/4)`);
@@ -3861,7 +3943,7 @@ function STCreator({ storeId, isAdmin }) {
     let cancelled = false;
     (async () => {
       const canvas = livePreviewRef.current;
-      const stCanvas = await renderSTCanvas(selected, fields, values);
+      const stCanvas = await renderSTCanvas(selected, fields, computedValues);
       if (cancelled) return;
       canvas.width  = stCanvas.width;
       canvas.height = stCanvas.height;
@@ -3973,22 +4055,26 @@ function STCreator({ storeId, isAdmin }) {
           {!fLoading && fields.length===0 && <p className="text-xs text-gray-400 italic">No text fields configured for this template.</p>}
           <div className="space-y-3">
             {fields.map(f => {
-              const displayVal = values[f.id] || '';
+              const isFormula = typeof f.formula === 'string' && !!f.formula.trim();
               const overflow = overflowIds.includes(f.id);
               const missing  = missingRequired.includes(f.id) && values[f.id]!==undefined;
               return (
                 <div key={f.id}>
                   <Label>
                     {f.label}
-                    {f.required && <span className="text-red-500 ml-0.5">*</span>}
+                    {f.required && !isFormula && <span className="text-red-500 ml-0.5">*</span>}
+                    {isFormula && <span className="ml-1.5 text-xs font-normal text-indigo-500">auto</span>}
                   </Label>
-                  {f.multiline
-                    ? <Textarea value={values[f.id]||''} onChange={e=>setValues(v=>({...v,[f.id]:e.target.value}))}
-                        placeholder={f.placeholder} rows={Math.min(f.max_lines||2, 4)}
-                        className={overflow||missing?'border-red-400 focus:ring-red-400':''}/>
-                    : <Input value={values[f.id]||''} onChange={e=>setValues(v=>({...v,[f.id]:e.target.value}))}
-                        placeholder={f.placeholder} maxLength={f.max_chars||undefined}
-                        className={overflow||missing?'border-red-400 focus:ring-red-400':''}/>
+                  {isFormula
+                    ? <Input value={computedValues[f.id]||''} readOnly
+                        className="bg-indigo-50 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 cursor-default text-center font-semibold"/>
+                    : f.multiline
+                      ? <Textarea value={values[f.id]||''} onChange={e=>setValues(v=>({...v,[f.id]:e.target.value}))}
+                          placeholder={f.placeholder} rows={Math.min(f.max_lines||2, 4)}
+                          className={overflow||missing?'border-red-400 focus:ring-red-400':''}/>
+                      : <Input value={values[f.id]||''} onChange={e=>setValues(v=>({...v,[f.id]:e.target.value}))}
+                          placeholder={f.placeholder} maxLength={f.max_chars||undefined}
+                          className={overflow||missing?'border-red-400 focus:ring-red-400':''}/>
                   }
                   {overflow && <p className="text-xs text-red-500 mt-0.5">⚠ Text too long — please shorten</p>}
                   {missing  && <p className="text-xs text-amber-500 mt-0.5">This field is required</p>}

@@ -1134,8 +1134,9 @@ function useSTFields(templateId) {
     if (fieldList.length) {
       const { error } = await sb.from('shelf_talker_fields').insert(
         fieldList.map((f,i) => {
-          const { id, ...rest } = f;
-          return { ...rest, template_id: templateId, field_order: i };
+          // eslint-disable-next-line no-unused-vars
+          const { id: _dropId, created_at: _dropCa, ...rest } = f;
+          return { id: crypto.randomUUID(), ...rest, template_id: templateId, field_order: i };
         })
       );
       if (error) throw error;
@@ -2965,10 +2966,7 @@ function STTemplateForm({ onSaved, initialTemplate=null }) {
     if (!savedId) { toast.error('Save template info first'); return; }
     setSaving(true);
     try {
-      await saveFields(fields.map(({ id:_id, ...f }) => ({
-        ...f,
-        id: String(_id).startsWith('new_') ? undefined : _id,
-      })));
+      await saveFields(fields.map(({ id:_id, ...f }) => ({ ...f })));
       toast.success('Fields saved!');
       onSaved?.();
     } catch(e) { toast.error(e.message); }

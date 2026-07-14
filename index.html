@@ -1052,7 +1052,8 @@ function fitText(text, boxW, boxH, settings={}) {
 // box: { x, y, w, h } in canvas pixels
 function drawTextField(ctx, text, box, settings={}, fit=null) {
   const { align='left', valign='top', color='#000000', bold=false,
-          lineSpacing=1.2, minFontSize=8, maxFontSize=48, wrap=true, maxLines=null } = settings;
+          lineSpacing=1.2, minFontSize=8, maxFontSize=48, wrap=true, maxLines=null,
+          suffix='' } = settings;
   const r = fit || fitText(text, box.w, box.h, { align, bold, lineSpacing, wrap, maxLines, maxFontSize, minFontSize });
   const { fontSize, lines } = r;
 
@@ -1062,7 +1063,6 @@ function drawTextField(ctx, text, box, settings={}, fit=null) {
   ctx.rect(box.x, box.y, box.w, box.h);
   ctx.clip();
 
-  ctx.font = `${bold?'bold ':''} ${fontSize}px Arial,sans-serif`;
   ctx.fillStyle = color;
   ctx.textBaseline = 'top';
 
@@ -1074,6 +1074,7 @@ function drawTextField(ctx, text, box, settings={}, fit=null) {
   else if (valign==='bottom') startY = box.y + box.h - totalH;
 
   for (let i=0; i<lines.length; i++) {
+    ctx.font = `${bold?'bold ':''} ${fontSize}px Arial,sans-serif`;
     let x = box.x;
     if (align==='center') {
       ctx.textAlign='center'; x=box.x+box.w/2;
@@ -1084,6 +1085,28 @@ function drawTextField(ctx, text, box, settings={}, fit=null) {
     }
     ctx.fillText(lines[i], x, startY + i*lineH);
   }
+
+  // Draw suffix at 20% of font size after the last line
+  if (suffix && lines.length > 0) {
+    const suffixSize = Math.max(6, Math.round(fontSize * 0.2));
+    const lastLine = lines[lines.length - 1];
+    const lastLineY = startY + (lines.length - 1) * lineH;
+
+    // Measure last line width at full font size
+    ctx.font = `${bold?'bold ':''} ${fontSize}px Arial,sans-serif`;
+    const lastLineW = ctx.measureText(lastLine).width;
+
+    // Find the right edge of the last line based on alignment
+    let suffixX;
+    if (align === 'center') suffixX = box.x + box.w / 2 + lastLineW / 2;
+    else if (align === 'right') suffixX = box.x + box.w;
+    else suffixX = box.x + lastLineW;
+
+    ctx.font = `${bold?'bold ':''} ${suffixSize}px Arial,sans-serif`;
+    ctx.textAlign = 'left';
+    ctx.fillText(suffix, suffixX, lastLineY);
+  }
+
   ctx.restore();
   return r;
 }
@@ -2639,7 +2662,7 @@ const FIELD_DEFAULTS = {
   required:false, multiline:false, max_lines:2, max_chars:null,
   align:'left', valign:'top', color:'#000000',
   max_font_size:48, min_font_size:8, bold:false, line_spacing:1.2, wrap:true,
-  formula: null, prefix: '',
+  formula: null, prefix: '', suffix: '',
 };
 
 function STFieldEditor({ templateDataUrl, fields, onChange }) {
@@ -2830,8 +2853,13 @@ function STFieldEditor({ templateDataUrl, fields, onChange }) {
               <div><Label>Placeholder</Label>
                 <Input value={editField.placeholder} onChange={e=>updateField(editField.id,{placeholder:e.target.value})} placeholder="Hint text…" className="text-xs py-1"/>
               </div>
-              <div><Label>Prefix (e.g. $)</Label>
-                <Input value={editField.prefix||''} onChange={e=>updateField(editField.id,{prefix:e.target.value})} placeholder="optional" className="text-xs py-1 w-24 font-mono"/>
+              <div className="grid grid-cols-2 gap-2">
+                <div><Label>Prefix (e.g. $)</Label>
+                  <Input value={editField.prefix||''} onChange={e=>updateField(editField.id,{prefix:e.target.value})} placeholder="optional" className="text-xs py-1 font-mono"/>
+                </div>
+                <div><Label>Suffix (20% size)</Label>
+                  <Input value={editField.suffix||''} onChange={e=>updateField(editField.id,{suffix:e.target.value})} placeholder="e.g. ea" className="text-xs py-1 font-mono"/>
+                </div>
               </div>
               <div><Label>Sample Preview Text</Label>
                 <Input value={editField.sample_text} onChange={e=>updateField(editField.id,{sample_text:e.target.value})} className="text-xs py-1"/>
@@ -3696,6 +3724,7 @@ async function renderSTCanvas(template, fields, values) {
       bold: f.bold, lineSpacing: f.line_spacing,
       wrap: f.wrap, maxLines: f.multiline ? f.max_lines : 1,
       maxFontSize: f.max_font_size, minFontSize: f.min_font_size,
+      suffix: f.suffix || '',
     });
   }
   return canvas;

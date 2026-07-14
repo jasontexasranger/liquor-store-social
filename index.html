@@ -2645,21 +2645,20 @@ const FIELD_DEFAULTS = {
 // Evaluate a formula like "{PRICE 1} + {PRICE2} + {PRICE 3}"
 // References other fields by label; returns string result or '' on error.
 function evaluateFormula(formula, fields, values) {
-  if (!formula?.trim()) return '';
-  const expr = formula.replace(/\{([^}]+)\}/g, (_, label) => {
-    const f = fields.find(f => f.label.trim() === label.trim());
-    const n = parseFloat(values[f?.id] ?? '');
+  if (!formula || !formula.trim()) return '';
+  const expr = formula.replace(/\{([^}]+)\}/g, function(_, label) {
+    const f = fields.find(function(f) { return f.label.trim() === label.trim(); });
+    const n = parseFloat(f ? (values[f.id] || '') : '');
     return isNaN(n) ? '0' : String(n);
   });
   // Only allow safe math characters
-  if (!/^[\d\s+\-*/.()]+$/.test(expr)) return '⚠ invalid';
+  if (!/^[\d\s+\-*/.()]+$/.test(expr)) return 'err';
   try {
     // eslint-disable-next-line no-new-func
     const result = Function('"use strict";return(' + expr + ')')();
     if (!isFinite(result) || isNaN(result)) return '';
-    // Round to 2 decimal places, strip trailing .00
     return parseFloat(result.toFixed(2)).toString();
-  } catch { return '⚠ error'; }
+  } catch(e) { return ''; }
 }
 
 function STFieldEditor({ templateDataUrl, fields, onChange }) {
@@ -2925,14 +2924,14 @@ function STFieldEditor({ templateDataUrl, fields, onChange }) {
                     placeholder='e.g. {PRICE 1} + {PRICE2} + {PRICE 3}'
                     className="text-xs font-mono"/>
                   <p className="text-xs text-gray-400">
-                    Use <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">&#123;Field Label&#125;</code> to reference other fields.
-                    Supports <code className="bg-gray-100 dark:bg-gray-800 px-1 rounded">+ - * /</code> and parentheses.
-                    Available: {fields.filter(f=>f.id!==editField.id).map(f=>`{${f.label}}`).join(', ')||'none'}
+                    Use {'{Field Label}'} to reference other fields.
+                    Supports + - * / and parentheses.
+                    Available: {fields.filter(function(f){return f.id!==editField.id;}).map(function(f){return '{'+f.label+'}';}).join(', ')||'none'}
                   </p>
-                  {editField.formula?.trim() && (
+                  {editField.formula && editField.formula.trim() && (
                     <p className="text-xs text-indigo-500">
                       Preview: {evaluateFormula(editField.formula, fields,
-                        Object.fromEntries(fields.map(f=>[f.id, f.sample_text||'0'])))}
+                        Object.fromEntries(fields.map(function(f){return [f.id, f.sample_text||'0'];})))}
                     </p>
                   )}
                 </div>
@@ -3906,18 +3905,20 @@ function STCreator({ storeId, isAdmin }) {
     w.print();
   };
 
-  // Sync formula-computed values into state whenever inputs change
-  useEffect(() => {
-    const formulaFields = fields.filter(f => f.formula);
+  // Sync formula-computed values into state whenever any value changes
+  useEffect(function() {
+    var formulaFields = fields.filter(function(f) { return f.formula && f.formula.trim(); });
     if (!formulaFields.length) return;
-    const updates = {};
-    formulaFields.forEach(f => {
-      const computed = evaluateFormula(f.formula, fields, values);
-      if (computed !== null && values[f.id] !== computed) updates[f.id] = computed;
+    setValues(function(cur) {
+      var updates = Object.assign({}, cur);
+      var changed = false;
+      formulaFields.forEach(function(f) {
+        var computed = evaluateFormula(f.formula, fields, cur);
+        if (computed !== null && cur[f.id] !== computed) { updates[f.id] = computed; changed = true; }
+      });
+      return changed ? updates : cur;
     });
-    if (Object.keys(updates).length) setValues(v => ({ ...v, ...updates }));
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fields, ...fields.filter(f=>!f.formula).map(f=>values[f.id])]);
+  }, [fields, values]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Live preview canvas
   const livePreviewRef = useRef();
@@ -4038,9 +4039,9 @@ function STCreator({ storeId, isAdmin }) {
           {!fLoading && fields.length===0 && <p className="text-xs text-gray-400 italic">No text fields configured for this template.</p>}
           <div className="space-y-3">
             {fields.map(f => {
-              const isFormula = !!f.formula;
+              const isFormula = !!(f.formula && f.formula.trim());
               const computedVal = isFormula ? evaluateFormula(f.formula, fields, values) : null;
-              const displayVal = isFormula ? (computedVal ?? '') : (values[f.id] || '');
+              const displayVal = isFormula ? (computedVal || '') : (values[f.id] || '');
               const overflow = overflowIds.includes(f.id);
               const missing  = missingRequired.includes(f.id) && values[f.id]!==undefined;
               return (

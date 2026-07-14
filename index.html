@@ -2974,10 +2974,10 @@ function STFieldEditor({ templateDataUrl, fields, onChange }) {
                                 onChange={e => updateField(editField.id, {formula: rebuild(e.target.checked, coeff)})}/>
                               <span className="text-xs flex-1 text-gray-700 dark:text-gray-300 truncate">{f.label}</span>
                               {included && (
-                                <Input type="number" key={coeff} defaultValue={coeff} step="1"
-                                  onBlur={e => {
+                                <Input type="number" key={coeff} defaultValue={coeff} step="1" min="-9999" max="9999"
+                                  onChange={e => {
                                     const val = parseFloat(e.target.value);
-                                    if (!isNaN(val) && val !== 0) updateField(editField.id, {formula: rebuild(true, val)});
+                                    if (!isNaN(val)) updateField(editField.id, {formula: rebuild(true, val)});
                                   }}
                                   className="text-xs py-0.5 w-16 text-right"/>
                               )}

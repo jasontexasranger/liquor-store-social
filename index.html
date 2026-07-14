@@ -3349,18 +3349,21 @@ function STAdminLibrary({ onEditTemplate }) {
 // ─────────────────────────────────────────────
 function UserAccountsSection() {
   const toast = useToast();
-  const [users,      setUsers]      = useState([]);
-  const [loading,    setLoading]    = useState(true);
-  const [email,      setEmail]      = useState('');
-  const [password,   setPassword]   = useState('');
-  const [role,       setRole]       = useState('store');
-  const [storeId,    setStoreId]    = useState(STORES[0].id);
-  const [creating,   setCreating]   = useState(false);
-  const [deletingId, setDeletingId] = useState(null);
-  const [showPw,     setShowPw]     = useState(false);
-  const [resetId,    setResetId]    = useState(null);
-  const [newPw,      setNewPw]      = useState('');
-  const [resetting,  setResetting]  = useState(false);
+  const [users,        setUsers]        = useState([]);
+  const [loading,      setLoading]      = useState(true);
+  const [email,        setEmail]        = useState('');
+  const [password,     setPassword]     = useState('');
+  const [role,         setRole]         = useState('store');
+  const [newStoreIds,  setNewStoreIds]  = useState([]);
+  const [creating,     setCreating]     = useState(false);
+  const [deletingId,   setDeletingId]   = useState(null);
+  const [showPw,       setShowPw]       = useState(false);
+  const [resetId,      setResetId]      = useState(null);
+  const [newPw,        setNewPw]        = useState('');
+  const [resetting,    setResetting]    = useState(false);
+  const [editStoresId, setEditStoresId] = useState(null);
+  const [editStoreIds, setEditStoreIds] = useState([]);
+  const [savingStores, setSavingStores] = useState(false);
 
   const callAdmin = async (body) => {
     const { data: { session } } = await getSB().auth.getSession();
@@ -3382,39 +3385,74 @@ function UserAccountsSection() {
     setLoading(true);
     try {
       const { users: u } = await callAdmin({ action: 'list' });
-      setUsers((u || []).filter(x => !ADMIN_EMAILS.includes((x.email||'').toLowerCase())));
+      const filtered = (u || []).filter(function(x) { return !ADMIN_EMAILS.includes((x.email||'').toLowerCase()); });
+      const userIds = filtered.map(function(x) { return x.user_id; }).filter(Boolean);
+      if (userIds.length > 0) {
+        const sb = getSB();
+        if (sb) {
+          const rolesResult = await sb.from('user_roles').select('user_id, store_id, store_ids').in('user_id', userIds);
+          const rolesData = rolesResult.data || [];
+          const rolesMap = {};
+          rolesData.forEach(function(r) { rolesMap[r.user_id] = r; });
+          filtered.forEach(function(x) {
+            const r = rolesMap[x.user_id];
+            if (r) {
+              x.store_id = r.store_id;
+              x.store_ids = (r.store_ids && r.store_ids.length > 0) ? r.store_ids : (r.store_id ? [r.store_id] : []);
+            } else {
+              x.store_ids = x.store_id ? [x.store_id] : [];
+            }
+          });
+        }
+      }
+      setUsers(filtered);
     } catch(e) { toast.error(e.message); }
     finally { setLoading(false); }
   }, []);
 
   useEffect(() => { loadUsers(); }, [loadUsers]);
 
+  const toggleNewStore = (sid) => {
+    setNewStoreIds(function(prev) {
+      return prev.indexOf(sid) !== -1 ? prev.filter(function(x) { return x !== sid; }) : prev.concat(sid);
+    });
+  };
+
+  const toggleEditStore = (sid) => {
+    setEditStoreIds(function(prev) {
+      return prev.indexOf(sid) !== -1 ? prev.filter(function(x) { return x !== sid; }) : prev.concat(sid);
+    });
+  };
+
   const createUser = async () => {
-    if (!email.trim())      { toast.error('Enter an email address'); return; }
+    if (!email.trim())       { toast.error('Enter an email address'); return; }
     if (password.length < 8) { toast.error('Password must be at least 8 characters'); return; }
+    if (role === 'store' && newStoreIds.length === 0) { toast.error('Select at least one store'); return; }
     setCreating(true);
     try {
       await callAdmin({ action: 'create', email: email.trim(), password, role });
-      // Set store_id in user_roles after creation (list call returns user_id)
       const { users: fresh } = await callAdmin({ action: 'list' });
-      const newU = fresh?.find(u => u.email === email.trim());
-      if (newU?.user_id && role==='store') {
-        await getSB().from('user_roles').update({ store_id: storeId }).eq('user_id', newU.user_id);
+      const newU = fresh && fresh.find(function(x) { return x.email === email.trim(); });
+      if (newU && newU.user_id && role === 'store') {
+        await getSB().from('user_roles').update({
+          store_id: newStoreIds[0] || null,
+          store_ids: newStoreIds,
+        }).eq('user_id', newU.user_id);
       }
-      toast.success(`Account created for ${email.trim()}`);
-      setEmail(''); setPassword('');
+      toast.success('Account created for ' + email.trim());
+      setEmail(''); setPassword(''); setNewStoreIds([]);
       await loadUsers();
     } catch(e) { toast.error(e.message); }
     finally { setCreating(false); }
   };
 
   const deleteUser = async (userId, userEmail) => {
-    if (!confirm(`Delete account for ${userEmail}?\nThis cannot be undone.`)) return;
+    if (!confirm('Delete account for ' + userEmail + '?\nThis cannot be undone.')) return;
     setDeletingId(userId);
     try {
       await callAdmin({ action: 'delete', userId });
       toast.success('Account deleted');
-      setUsers(p => p.filter(u => u.user_id !== userId));
+      setUsers(function(p) { return p.filter(function(x) { return x.user_id !== userId; }); });
     } catch(e) { toast.error(e.message); }
     finally { setDeletingId(null); }
   };
@@ -3430,13 +3468,33 @@ function UserAccountsSection() {
     finally { setResetting(false); }
   };
 
+  const openEditStores = (u) => {
+    setEditStoresId(u.user_id);
+    setEditStoreIds(u.store_ids || []);
+    setResetId(null);
+  };
+
+  const saveStores = async (userId) => {
+    setSavingStores(true);
+    try {
+      await getSB().from('user_roles').update({
+        store_id: editStoreIds[0] || null,
+        store_ids: editStoreIds,
+      }).eq('user_id', userId);
+      toast.success('Stores updated');
+      setEditStoresId(null);
+      await loadUsers();
+    } catch(e) { toast.error(e.message); }
+    finally { setSavingStores(false); }
+  };
+
   return (
     <Card>
       <h2 className="text-base font-bold text-gray-900 dark:text-white mb-1">👥 Store User Accounts</h2>
-      <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">Create logins for store staff. Store accounts see Posts and Shelf Talkers for their assigned location.</p>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">Create logins for store staff. Store accounts can be assigned to one or more locations.</p>
 
       {/* Create form */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
         <div>
           <Label>Email</Label>
           <Input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="staff@hideaway.com"/>
@@ -3450,17 +3508,22 @@ function UserAccountsSection() {
         </div>
         <div>
           <Label>Role</Label>
-          <Select value={role} onChange={e=>setRole(e.target.value)}>
+          <Select value={role} onChange={e=>{ setRole(e.target.value); setNewStoreIds([]); }}>
             <option value="store">Store (Posts + Shelf Talkers)</option>
             <option value="admin">Admin (Full access)</option>
           </Select>
         </div>
         {role==='store' && (
           <div>
-            <Label>Assigned Store</Label>
-            <Select value={storeId} onChange={e=>setStoreId(e.target.value)}>
-              {STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-            </Select>
+            <Label>Assigned Stores</Label>
+            <div className="flex flex-wrap gap-x-4 gap-y-2 mt-1">
+              {STORES.map(s => (
+                <label key={s.id} className="flex items-center gap-1.5 text-sm cursor-pointer text-gray-700 dark:text-gray-300">
+                  <input type="checkbox" checked={newStoreIds.indexOf(s.id) !== -1} onChange={()=>toggleNewStore(s.id)} className="accent-indigo-600"/>
+                  {s.name.split(' ')[0]}
+                </label>
+              ))}
+            </div>
           </div>
         )}
       </div>
@@ -3475,16 +3538,25 @@ function UserAccountsSection() {
           <p className="text-xs text-gray-400 italic">No store accounts yet.</p>
         ) : (
           <div className="space-y-2">
-            {users.map(u => (
+            {users.map(function(u) { return (
               <div key={u.user_id} className="rounded-xl bg-gray-50 dark:bg-gray-700/50 border border-gray-100 dark:border-gray-700 overflow-hidden">
-                <div className="flex items-center justify-between px-3 py-2.5">
-                  <div className="flex items-center gap-2">
+                <div className="flex items-center justify-between px-3 py-2.5 flex-wrap gap-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-medium text-gray-900 dark:text-white">{u.email}</span>
                     <span className={`text-xs px-1.5 py-0.5 rounded font-semibold ${u.role==='admin'?'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300':'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'}`}>{u.role}</span>
-                    {u.store_id && <span className="text-xs text-gray-500">{STORES.find(s=>s.id===u.store_id)?.name?.split(' ')[0]}</span>}
+                    {(u.store_ids || []).map(function(sid) {
+                      var s = STORES.find(function(st) { return st.id === sid; });
+                      if (!s) return null;
+                      return <span key={sid} className="text-xs text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 rounded px-1.5 py-0.5">{s.name.split(' ')[0]}</span>;
+                    })}
                   </div>
                   <div className="flex items-center gap-2">
-                    <button onClick={()=>{ setResetId(resetId===u.user_id?null:u.user_id); setNewPw(''); }} className="text-xs text-indigo-500 hover:text-indigo-700 font-semibold">
+                    {u.role === 'store' && (
+                      <button onClick={()=>{ if(editStoresId===u.user_id){ setEditStoresId(null); } else { openEditStores(u); } }} className="text-xs text-green-600 hover:text-green-800 dark:text-green-400 font-semibold">
+                        {editStoresId===u.user_id ? 'Cancel' : '🏪 Stores'}
+                      </button>
+                    )}
+                    <button onClick={()=>{ setResetId(resetId===u.user_id?null:u.user_id); setNewPw(''); setEditStoresId(null); }} className="text-xs text-indigo-500 hover:text-indigo-700 font-semibold">
                       {resetId===u.user_id ? 'Cancel' : '🔑 Reset PW'}
                     </button>
                     <button onClick={()=>deleteUser(u.user_id, u.email)} disabled={deletingId===u.user_id} className="text-xs text-red-500 hover:text-red-700 font-semibold disabled:opacity-40">
@@ -3492,14 +3564,28 @@ function UserAccountsSection() {
                     </button>
                   </div>
                 </div>
+                {editStoresId===u.user_id && (
+                  <div className="px-3 pb-3 border-t border-gray-100 dark:border-gray-700 pt-2">
+                    <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-2">Assign Stores</p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-2 mb-3">
+                      {STORES.map(function(s) { return (
+                        <label key={s.id} className="flex items-center gap-1.5 text-sm cursor-pointer text-gray-700 dark:text-gray-300">
+                          <input type="checkbox" checked={editStoreIds.indexOf(s.id) !== -1} onChange={()=>toggleEditStore(s.id)} className="accent-indigo-600"/>
+                          {s.name}
+                        </label>
+                      ); })}
+                    </div>
+                    <Button size="sm" loading={savingStores} onClick={()=>saveStores(u.user_id)}>Save Stores</Button>
+                  </div>
+                )}
                 {resetId===u.user_id && (
-                  <div className="flex gap-2 px-3 pb-2.5">
+                  <div className="flex gap-2 px-3 pb-2.5 border-t border-gray-100 dark:border-gray-700 pt-2">
                     <Input type="password" value={newPw} onChange={e=>setNewPw(e.target.value)} placeholder="New password (min 8 chars)" className="flex-1 text-sm"/>
                     <Button size="sm" loading={resetting} onClick={()=>resetPassword(u.user_id)}>Save</Button>
                   </div>
                 )}
               </div>
-            ))}
+            ); })}
           </div>
         )}
       </div>
@@ -3524,6 +3610,7 @@ function SettingsPage({ settings, onSave }) {
 
   return (
     <div className="space-y-4 max-w-2xl">
+      <UserAccountsSection/>
       <Card>
         <h2 className="text-base font-bold text-gray-900 dark:text-white mb-1">Facebook Page Access Tokens</h2>
         <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">Generate long-lived page tokens in the <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener" className="text-indigo-600 dark:text-indigo-400 underline">Graph API Explorer</a>. Requires <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">pages_manage_posts</code>, <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">pages_read_engagement</code> permissions.</p>
@@ -3552,7 +3639,6 @@ function SettingsPage({ settings, onSave }) {
         <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">Used client-side with DALL-E 3 (images) and GPT-4o Mini Vision (product analysis).<br/>Get yours at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener" className="text-indigo-600 dark:text-indigo-400 underline">platform.openai.com</a>.</p>
         <Input type="password" value={form.openaiKey||''} onChange={e=>setForm(f=>({...f,openaiKey:e.target.value}))} placeholder="sk-xxxxx…"/>
       </Card>
-      <UserAccountsSection/>
       <Button onClick={save} loading={saving} size="lg" className="w-full">Save All Settings</Button>
       <p className="text-xs text-center text-gray-400 dark:text-gray-500">All keys are encrypted at rest in Supabase and protected by Row Level Security — only authenticated users can read them.</p>
     </div>
@@ -4365,11 +4451,14 @@ function STCreator({ storeId, isAdmin, userId }) {
 // ═══════════════════════════════════════════════════════════════
 // SHELF TALKER — MAIN PAGE
 // ═══════════════════════════════════════════════════════════════
-function ShelfTalkerPage({ isAdmin, userStoreId }) {
+function ShelfTalkerPage({ isAdmin, userStoreIds }) {
   const [tab,      setTab]      = useState(isAdmin ? 'admin' : 'create');
   const [editTpl,  setEditTpl]  = useState(null);
   const [adminSub, setAdminSub] = useState('library'); // 'library'|'new'|'edit'
-  const [storeId,  setStoreId]  = useState(userStoreId || STORES[0].id);
+  const defaultStore = (userStoreIds && userStoreIds.length > 0) ? userStoreIds[0] : STORES[0].id;
+  const [storeId,  setStoreId]  = useState(defaultStore);
+  const availableStores = isAdmin ? STORES : STORES.filter(function(s) { return userStoreIds && userStoreIds.indexOf(s.id) !== -1; });
+  const canPickStore = isAdmin || (userStoreIds && userStoreIds.length > 1);
 
   const tabs = [
     ...(isAdmin ? [{ id:'admin', label:'⚙️ Admin' }] : []),
@@ -4387,10 +4476,10 @@ function ShelfTalkerPage({ isAdmin, userStoreId }) {
             </button>
           ))}
         </div>
-        {/* Store picker for manager (or admin creating) */}
-        {tab==='create' && !userStoreId && isAdmin && (
+        {/* Store picker for admin (all stores) or manager with multiple stores */}
+        {tab==='create' && canPickStore && (
           <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs mb-1">
-            {STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+            {availableStores.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
           </Select>
         )}
       </div>
@@ -4501,12 +4590,25 @@ function AuthenticatedApp({ user, dark, onDark }) {
     window.location.reload();
   };
 
-  // Load store assignment for non-admin users
-  const [userStoreId, setUserStoreId] = useState(null);
+  // Load store assignment(s) for non-admin users
+  const [userStoreIds, setUserStoreIds] = useState([]);
   useEffect(() => {
     if (isAdmin || !user) return;
-    getSB()?.from('user_roles').select('store_id').eq('user_id', user.id).maybeSingle()
-      .then(({data}) => setUserStoreId(data?.store_id || null));
+    var sb = getSB();
+    if (!sb) return;
+    sb.from('user_roles').select('store_id, store_ids').eq('user_id', user.id).maybeSingle()
+      .then(function(result) {
+        var data = result.data;
+        var ids = [];
+        if (data) {
+          if (data.store_ids && data.store_ids.length > 0) {
+            ids = data.store_ids;
+          } else if (data.store_id) {
+            ids = [data.store_id];
+          }
+        }
+        setUserStoreIds(ids);
+      });
   }, [isAdmin, user]);
 
   const nav = [
@@ -4549,7 +4651,7 @@ function AuthenticatedApp({ user, dark, onDark }) {
       </header>
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
         {page==='posts'                  && <PostsPage       settings={settings}/>}
-        {page==='shelf'                  && <ShelfTalkerPage isAdmin={isAdmin} userStoreId={isAdmin ? null : userStoreId}/>}
+        {page==='shelf'                  && <ShelfTalkerPage isAdmin={isAdmin} userStoreIds={isAdmin ? [] : userStoreIds}/>}
         {page==='ads'      && isAdmin    && <AdsPage         settings={settings}/>}
         {page==='brand'    && isAdmin    && <BrandPage        settings={settings}/>}
         {page==='settings' && isAdmin    && <SettingsPage     settings={settings} onSave={saveSettings}/>}

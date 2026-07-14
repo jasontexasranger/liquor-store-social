@@ -2662,7 +2662,7 @@ const FIELD_DEFAULTS = {
   required:false, multiline:false, max_lines:2, max_chars:null,
   align:'left', valign:'top', color:'#000000',
   max_font_size:48, min_font_size:8, bold:false, line_spacing:1.2, wrap:true,
-  formula: null, prefix: '', suffix: '',
+  formula: null, prefix: '', suffix: '', uppercase: false,
 };
 
 function STFieldEditor({ templateDataUrl, fields, onChange }) {
@@ -2909,6 +2909,10 @@ function STFieldEditor({ templateDataUrl, fields, onChange }) {
                 <label className="flex items-center gap-1 cursor-pointer">
                   <input type="checkbox" checked={editField.wrap} onChange={e=>updateField(editField.id,{wrap:e.target.checked})} className="rounded"/>
                   Word Wrap
+                </label>
+                <label className="flex items-center gap-1 cursor-pointer">
+                  <input type="checkbox" checked={!!editField.uppercase} onChange={e=>updateField(editField.id,{uppercase:e.target.checked})} className="rounded"/>
+                  All Caps
                 </label>
               </div>
               {editField.multiline && (
@@ -4138,10 +4142,10 @@ function STCreator({ storeId, isAdmin }) {
                     : <div className={f.prefix ? 'flex items-center gap-1' : ''}>
                         {f.prefix && <span className="text-sm font-semibold text-gray-500 dark:text-gray-300 select-none">{f.prefix}</span>}
                         {f.multiline
-                          ? <Textarea value={values[f.id]||''} onChange={e=>setValues(v=>({...v,[f.id]:e.target.value}))}
+                          ? <Textarea value={values[f.id]||''} onChange={e=>setValues(v=>({...v,[f.id]:f.uppercase?e.target.value.toUpperCase():e.target.value}))}
                               placeholder={f.placeholder} rows={Math.min(f.max_lines||2, 4)}
                               className={(overflow||missing?'border-red-400 focus:ring-red-400':'')+' flex-1'}/>
-                          : <Input value={values[f.id]||''} onChange={e=>setValues(v=>({...v,[f.id]:e.target.value}))}
+                          : <Input value={values[f.id]||''} onChange={e=>setValues(v=>({...v,[f.id]:f.uppercase?e.target.value.toUpperCase():e.target.value}))}
                               placeholder={f.placeholder} maxLength={f.max_chars||undefined}
                               className={(overflow||missing?'border-red-400 focus:ring-red-400':'')+' flex-1'}/>
                         }

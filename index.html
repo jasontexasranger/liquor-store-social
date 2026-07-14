@@ -3012,7 +3012,8 @@ function STTemplateForm({ onSaved, initialTemplate=null }) {
   const [brands,     setBrands]     = useState(initialTemplate?.shelf_talker_template_brands?.map(b=>b.store_id)||[]);
   const [widthIn,    setWidthIn]    = useState(initialTemplate?.width_in||4.25);
   const [heightIn,   setHeightIn]   = useState(initialTemplate?.height_in||5.5);
-  const [isActive,   setIsActive]   = useState(initialTemplate?.is_active ?? true);
+  const [isActive,     setIsActive]     = useState(initialTemplate?.is_active ?? true);
+  const [isLandscape,  setIsLandscape]  = useState(initialTemplate?.is_landscape ?? false);
   const [fileData,   setFileData]   = useState(initialTemplate?.file_data||null);
   const [fileType,   setFileType]   = useState(initialTemplate?.file_type||'png');
   const [saving,     setSaving]     = useState(false);
@@ -3056,7 +3057,7 @@ function STTemplateForm({ onSaved, initialTemplate=null }) {
       const payload = {
         name: name.trim(), description: desc.trim(), file_data: fileData,
         file_type: fileType, width_in: +widthIn, height_in: +heightIn,
-        scope, category, is_active: isActive,
+        scope, category, is_active: isActive, is_landscape: isLandscape,
         updated_at: new Date().toISOString(),
       };
       let id = savedId;
@@ -3144,6 +3145,10 @@ function STTemplateForm({ onSaved, initialTemplate=null }) {
                 </div>
               </div>
             )}
+            <label className="flex items-center gap-2 text-sm cursor-pointer">
+              <input type="checkbox" checked={isLandscape} onChange={e=>setIsLandscape(e.target.checked)} className="accent-indigo-600 rounded"/>
+              Landscape orientation (rotate 90° when printing 4-up)
+            </label>
             <label className="flex items-center gap-2 text-sm cursor-pointer">
               <input type="checkbox" checked={isActive} onChange={e=>setIsActive(e.target.checked)} className="accent-indigo-600 rounded"/>
               Active (visible to store managers)
@@ -3787,13 +3792,13 @@ function rotateCanvas90(canvas) {
 }
 
 // Arrange shelf-talker canvases into a print page. Returns array of page canvases.
-function buildPrintPages(stCanvas, layout, qty) {
+function buildPrintPages(stCanvas, layout, qty, isLandscape=false) {
   const perPage = layout==='4up' ? 4 : 2;
   const totalPages = Math.ceil(qty / perPage);
   const pages = [];
 
   // Rotate landscape tags 90° for 4-up so each fills its quarter-page cell
-  const src = (layout === '4up' && stCanvas.width > stCanvas.height)
+  const src = (layout === '4up' && isLandscape)
     ? rotateCanvas90(stCanvas) : stCanvas;
   const stW = src.width, stH = src.height;
   // Compute cell size
@@ -3971,7 +3976,7 @@ function STCreator({ storeId, isAdmin }) {
     setPrinting(true);
     try {
       const stCanvas = await renderSTCanvas(selected, fields, computedValues);
-      const { pages, dw, dh } = buildPrintPages(stCanvas, layout, qty);
+      const { pages, dw, dh } = buildPrintPages(stCanvas, layout, qty, !!selected.is_landscape);
       setPrintPages(pages);
       setPrintDims({ dw, dh, scale: PX_PER_IN });
       setStep('preview');

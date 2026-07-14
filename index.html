@@ -1053,6 +1053,11 @@ function drawTextField(ctx, text, box, settings={}, fit=null) {
   const { fontSize, lines } = r;
 
   ctx.save();
+  // Hard-clip to box bounds — text never bleeds outside its field
+  ctx.beginPath();
+  ctx.rect(box.x, box.y, box.w, box.h);
+  ctx.clip();
+
   ctx.font = `${bold?'bold ':''} ${fontSize}px Arial,sans-serif`;
   ctx.fillStyle = color;
   ctx.textBaseline = 'top';
@@ -3767,11 +3772,15 @@ function STCreator({ storeId, isAdmin }) {
   const [search,     setSearch]     = useState('');
   const previewRef = useRef();
 
-  // Field overflow validation
+  // Field overflow validation — use actual box pixel dims from the template
   const overflowIds = fields.filter(f => {
     const text = values[f.id]||'';
     if (!text) return false;
-    const { overflow } = fitText(text, 999, 999, {
+    const tplW = Math.round((selected?.width_in  || 4.25) * PX_PER_IN);
+    const tplH = Math.round((selected?.height_in || 5.5)  * PX_PER_IN);
+    const boxW = Math.round(f.w_pct / 100 * tplW);
+    const boxH = Math.round(f.h_pct / 100 * tplH);
+    const { overflow } = fitText(text, boxW, boxH, {
       maxFontSize:f.max_font_size, minFontSize:f.min_font_size,
       bold:f.bold, lineSpacing:f.line_spacing, wrap:f.wrap,
       maxLines:f.multiline?f.max_lines:1,

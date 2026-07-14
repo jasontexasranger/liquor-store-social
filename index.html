@@ -4183,7 +4183,7 @@ function BrandPage({ settings }) {
 function AuthenticatedApp({ user, dark, onDark }) {
   const toast = useToast();
   const isAdmin = ADMIN_EMAILS.includes((user?.email||'').toLowerCase());
-  const [page,           setPage]           = useState('posts');
+  const [page,           setPage]           = useState('shelf');
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [settings,       setSettings]       = useState({
     tokens: Object.fromEntries(STORES.map(s=>[s.id,''])),
@@ -4233,9 +4233,9 @@ function AuthenticatedApp({ user, dark, onDark }) {
   }, [isAdmin, user]);
 
   const nav = [
-    { id:'posts', icon:'📝', label:'Posts' },
     { id:'shelf', icon:'🏷', label:'Shelf Talkers' },
     ...(isAdmin ? [
+      { id:'posts',    icon:'📝', label:'Posts' },
       { id:'ads',      icon:'📣', label:'Ads' },
       { id:'brand',    icon:'🎨', label:'Brand' },
       { id:'settings', icon:'⚙️', label:'Settings' },

@@ -2928,34 +2928,62 @@ function STFieldEditor({ templateDataUrl, fields, onChange }) {
                   Auto-calculate (sum other fields)
                 </label>
                 {typeof editField.formula === 'string' && (
-                  <div className="mt-2 space-y-1">
-                    <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Add these fields together:</p>
-                    {fields.filter(function(f){ return f.id !== editField.id; }).length === 0
+                  <div className="mt-2 space-y-1.5">
+                    <div className="grid grid-cols-3 text-xs text-gray-400 font-medium px-0.5">
+                      <span className="col-span-1"></span>
+                      <span className="col-span-1">Field</span>
+                      <span className="text-right">Multiplier</span>
+                    </div>
+                    {fields.filter(f => f.id !== editField.id).length === 0
                       ? <p className="text-xs text-gray-400 italic">No other fields yet</p>
-                      : fields.filter(function(f){ return f.id !== editField.id; }).map(function(f) {
+                      : fields.filter(f => f.id !== editField.id).map(f => {
                           const token = '{' + f.label + '}';
-                          const included = editField.formula.indexOf(token) !== -1;
+                          const idx = editField.formula.indexOf(token);
+                          const included = idx !== -1;
+                          const afterToken = included ? editField.formula.slice(idx + token.length) : '';
+                          const coeffMatch = afterToken.match(/^\*(-?[\d.]+)/);
+                          const coeff = coeffMatch ? parseFloat(coeffMatch[1]) : 1;
+
+                          const rebuild = (newIncluded, newCoeff) => {
+                            const parts = fields
+                              .filter(ff => ff.id !== editField.id)
+                              .filter(ff => {
+                                if (ff.id === f.id) return newIncluded;
+                                return editField.formula.indexOf('{' + ff.label + '}') !== -1;
+                              })
+                              .map(ff => {
+                                let c;
+                                if (ff.id === f.id) {
+                                  c = newCoeff;
+                                } else {
+                                  const t = '{' + ff.label + '}';
+                                  const i = editField.formula.indexOf(t);
+                                  const a = i !== -1 ? editField.formula.slice(i + t.length) : '';
+                                  const m = a.match(/^\*(-?[\d.]+)/);
+                                  c = m ? parseFloat(m[1]) : 1;
+                                }
+                                return c === 1 ? ('{' + ff.label + '}') : ('{' + ff.label + '}*' + c);
+                              });
+                            return parts.join('+');
+                          };
+
                           return (
-                            <label key={f.id} className="flex items-center gap-2 text-xs cursor-pointer py-0.5">
-                              <input type="checkbox" className="rounded accent-indigo-600"
+                            <div key={f.id} className="flex items-center gap-2">
+                              <input type="checkbox" className="rounded accent-indigo-600 shrink-0"
                                 checked={included}
-                                onChange={function(e) {
-                                  var newParts = fields
-                                    .filter(function(ff){ return ff.id !== editField.id; })
-                                    .filter(function(ff){
-                                      var t = '{' + ff.label + '}';
-                                      if (ff.id === f.id) return e.target.checked;
-                                      return editField.formula.indexOf(t) !== -1;
-                                    })
-                                    .map(function(ff){ return '{' + ff.label + '}'; });
-                                  updateField(editField.id, {formula: newParts.join('+')});
-                                }}/>
-                              {f.label}
-                            </label>
+                                onChange={e => updateField(editField.id, {formula: rebuild(e.target.checked, coeff)})}/>
+                              <span className="text-xs flex-1 text-gray-700 dark:text-gray-300 truncate">{f.label}</span>
+                              {included && (
+                                <Input type="number" value={coeff} step="1"
+                                  onChange={e => updateField(editField.id, {formula: rebuild(true, parseFloat(e.target.value) || 1)})}
+                                  className="text-xs py-0.5 w-16 text-right"/>
+                              )}
+                              {!included && <span className="w-16"/>}
+                            </div>
                           );
                         })
                     }
-                    <p className="text-xs text-gray-400 mt-1">Prefix is set above in field settings.</p>
+                    <p className="text-xs text-gray-400 pt-1">Use negative multipliers to subtract. Prefix is set above.</p>
                   </div>
                 )}
               </div>

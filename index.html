@@ -4087,6 +4087,7 @@ function STCreator({ storeId, isAdmin }) {
                         }
                       </div>
                   }
+                  {!isFormula && f.prefix && <p className="text-xs text-gray-400 mt-0.5">"{f.prefix}" is added automatically — just enter the number</p>}
                   {overflow && <p className="text-xs text-red-500 mt-0.5">⚠ Text too long — please shorten</p>}
                   {missing  && <p className="text-xs text-amber-500 mt-0.5">This field is required</p>}
                 </div>

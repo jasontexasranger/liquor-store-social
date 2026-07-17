@@ -4548,7 +4548,8 @@ function BrandPage({ settings }) {
 // ─────────────────────────────────────────────
 function AuthenticatedApp({ user, dark, onDark }) {
   const toast = useToast();
-  const isAdmin = ADMIN_EMAILS.includes((user?.email||'').toLowerCase());
+  const hardcodedAdmin = ADMIN_EMAILS.includes((user && user.email ? user.email : '').toLowerCase());
+  const [isAdmin,        setIsAdmin]        = useState(hardcodedAdmin);
   const [page,           setPage]           = useState('shelf');
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [settings,       setSettings]       = useState({
@@ -4556,19 +4557,35 @@ function AuthenticatedApp({ user, dark, onDark }) {
     metaToken:'', anthropicKey:'', openaiKey:'',
   });
 
-  // Load settings from Supabase on mount
-  useEffect(()=>{
-    const sb=getSB(); if(!sb) return;
+  // Load settings + role from Supabase on mount
+  useEffect(function() {
+    var sb = getSB(); if (!sb) return;
+    // Load settings
     Promise.all([
       sb.from('store_tokens').select('store_id,page_token'),
       sb.from('api_keys').select('key_name,key_value'),
-    ]).then(([{data:tokens},{data:keys}])=>{
-      const tMap=Object.fromEntries(STORES.map(s=>[s.id,'']));
-      (tokens||[]).forEach(r=>{ if(r.store_id in tMap) tMap[r.store_id]=r.page_token||''; });
-      const kMap=Object.fromEntries((keys||[]).map(r=>[r.key_name,r.key_value||'']));
+    ]).then(function(results) {
+      var tokens = results[0].data;
+      var keys   = results[1].data;
+      var tMap = Object.fromEntries(STORES.map(function(s) { return [s.id, '']; }));
+      (tokens||[]).forEach(function(r) { if (r.store_id in tMap) tMap[r.store_id] = r.page_token||''; });
+      var kMap = Object.fromEntries((keys||[]).map(function(r) { return [r.key_name, r.key_value||'']; }));
       setSettings({ tokens:tMap, metaToken:kMap.meta_token||'', anthropicKey:kMap.anthropic_key||'', openaiKey:kMap.openai_key||'' });
-    }).catch(()=>{}).finally(()=>setSettingsLoaded(true));
-  },[]);
+    }).catch(function() {}).finally(function() { setSettingsLoaded(true); });
+    // Check DB role (catches admin accounts not in hardcoded list)
+    if (!hardcodedAdmin && user) {
+      sb.from('user_roles').select('role, store_id, store_ids').eq('user_id', user.id).maybeSingle()
+        .then(function(result) {
+          var data = result.data;
+          if (data && data.role === 'admin') {
+            setIsAdmin(true);
+          } else if (data) {
+            var ids = (data.store_ids && data.store_ids.length > 0) ? data.store_ids : (data.store_id ? [data.store_id] : []);
+            setUserStoreIds(ids);
+          }
+        });
+    }
+  }, []);
 
   const saveSettings = async (s) => {
     const sb=getSB(); if(!sb) throw new Error('Supabase not connected');
@@ -4590,26 +4607,8 @@ function AuthenticatedApp({ user, dark, onDark }) {
     window.location.reload();
   };
 
-  // Load store assignment(s) for non-admin users
+  // Store assignments for non-hardcoded non-admin users (loaded above in combined effect)
   const [userStoreIds, setUserStoreIds] = useState([]);
-  useEffect(() => {
-    if (isAdmin || !user) return;
-    var sb = getSB();
-    if (!sb) return;
-    sb.from('user_roles').select('store_id, store_ids').eq('user_id', user.id).maybeSingle()
-      .then(function(result) {
-        var data = result.data;
-        var ids = [];
-        if (data) {
-          if (data.store_ids && data.store_ids.length > 0) {
-            ids = data.store_ids;
-          } else if (data.store_id) {
-            ids = [data.store_id];
-          }
-        }
-        setUserStoreIds(ids);
-      });
-  }, [isAdmin, user]);
 
   const nav = [
     { id:'shelf', icon:'🏷', label:'Shelf Talkers' },

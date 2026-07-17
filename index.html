@@ -112,7 +112,7 @@ const SUPABASE_URL = 'https://yyveikxfomxmedlxsulh.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl5dmVpa3hmb214bWVkbHhzdWxoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2MTk0MDksImV4cCI6MjA5OTE5NTQwOX0.bBuyIp-LS9X2mPiY0fbgjS5urw0Ke-YZbE56SgYgpt4';
 
 // Admin emails — full access to all tabs
-const ADMIN_EMAILS = ['jasontexasranger@gmail.com', 'jason@vwdevelopments.com'];
+const ADMIN_EMAILS = ['jasontexasranger@gmail.com', 'jason@vwdevelopments.com', 'tim@vwdevelopments.com'];
 
 const _sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true } });
 const getSB = () => _sb;
@@ -4451,7 +4451,7 @@ function STCreator({ storeId, isAdmin, userId }) {
 // ═══════════════════════════════════════════════════════════════
 // SHELF TALKER — MAIN PAGE
 // ═══════════════════════════════════════════════════════════════
-function ShelfTalkerPage({ isAdmin, userStoreIds }) {
+function ShelfTalkerPage({ isAdmin, userStoreIds, userId }) {
   const [tab,      setTab]      = useState(isAdmin ? 'admin' : 'create');
   const [editTpl,  setEditTpl]  = useState(null);
   const [adminSub, setAdminSub] = useState('library'); // 'library'|'new'|'edit'
@@ -4512,7 +4512,7 @@ function ShelfTalkerPage({ isAdmin, userStoreIds }) {
       )}
 
       {tab==='create' && (
-        <STCreator storeId={storeId} isAdmin={isAdmin} userId={user?.id}/>
+        <STCreator storeId={storeId} isAdmin={isAdmin} userId={userId}/>
       )}
     </div>
   );
@@ -4651,7 +4651,7 @@ function AuthenticatedApp({ user, dark, onDark }) {
       </header>
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
         {page==='posts'                  && <PostsPage       settings={settings}/>}
-        {page==='shelf'                  && <ShelfTalkerPage isAdmin={isAdmin} userStoreIds={isAdmin ? [] : userStoreIds}/>}
+        {page==='shelf'                  && <ShelfTalkerPage isAdmin={isAdmin} userStoreIds={isAdmin ? [] : userStoreIds} userId={user ? user.id : null}/>}
         {page==='ads'      && isAdmin    && <AdsPage         settings={settings}/>}
         {page==='brand'    && isAdmin    && <BrandPage        settings={settings}/>}
         {page==='settings' && isAdmin    && <SettingsPage     settings={settings} onSave={saveSettings}/>}

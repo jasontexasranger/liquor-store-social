@@ -4546,7 +4546,7 @@ function BrandPage({ settings }) {
 // ─────────────────────────────────────────────
 // AUTHENTICATED APP (main shell)
 // ─────────────────────────────────────────────
-function AuthenticatedApp({ user, dark, onDark }) {
+function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
   const toast = useToast();
   const hardcodedAdmin = ADMIN_EMAILS.includes((user && user.email ? user.email : '').toLowerCase());
   const [isAdmin,        setIsAdmin]        = useState(hardcodedAdmin);
@@ -4607,6 +4607,26 @@ function AuthenticatedApp({ user, dark, onDark }) {
     window.location.reload();
   };
 
+  // Change-password modal (also auto-opens when arriving via reset email link)
+  const [showChangePw,   setShowChangePw]   = useState(openChangePw || false);
+  const [changePwVal,    setChangePwVal]     = useState('');
+  const [changePwConf,   setChangePwConf]   = useState('');
+  const [changePwSaving, setChangePwSaving] = useState(false);
+  const [showUserMenu,   setShowUserMenu]   = useState(false);
+
+  const doChangePassword = async () => {
+    if (changePwVal.length < 8)          { toast.error('Password must be at least 8 characters'); return; }
+    if (changePwVal !== changePwConf)    { toast.error('Passwords do not match'); return; }
+    setChangePwSaving(true);
+    try {
+      const { error } = await getSB().auth.updateUser({ password: changePwVal });
+      if (error) throw error;
+      toast.success('Password updated!');
+      setShowChangePw(false); setChangePwVal(''); setChangePwConf('');
+    } catch(e) { toast.error(e.message); }
+    finally { setChangePwSaving(false); }
+  };
+
   // Store assignments for non-hardcoded non-admin users (loaded above in combined effect)
   const [userStoreIds, setUserStoreIds] = useState([]);
 
@@ -4644,10 +4664,51 @@ function AuthenticatedApp({ user, dark, onDark }) {
               </button>
             ))}
             <button onClick={()=>onDark(d=>!d)} className="ml-1 p-2 rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" title="Toggle dark mode">{dark?'☀️':'🌙'}</button>
-            <button onClick={signOut} className="ml-1 p-2 rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" title={`Sign out (${user?.email})`}>👤</button>
+            {/* User menu */}
+            <div className="relative ml-1">
+              <button onClick={()=>setShowUserMenu(function(v){return !v;})} className="p-2 rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">👤</button>
+              {showUserMenu && (
+                <div className="absolute right-0 top-full mt-1 w-52 bg-white dark:bg-gray-800 rounded-xl shadow-xl border border-gray-100 dark:border-gray-700 z-50 overflow-hidden">
+                  <div className="px-3 py-2 border-b border-gray-100 dark:border-gray-700">
+                    <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{user ? user.email : ''}</p>
+                  </div>
+                  <button onClick={()=>{setShowUserMenu(false);setShowChangePw(true);}} className="w-full text-left px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">
+                    🔑 Change Password
+                  </button>
+                  <button onClick={()=>{setShowUserMenu(false);signOut();}} className="w-full text-left px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-50 dark:hover:bg-gray-700">
+                    Sign Out
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </header>
+
+      {/* Change Password Modal */}
+      {showChangePw && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={()=>setShowChangePw(false)}>
+          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl p-6 w-full max-w-sm" onClick={function(e){e.stopPropagation();}}>
+            <h2 className="text-base font-bold text-gray-900 dark:text-white mb-4">Change Password</h2>
+            <div className="space-y-3">
+              <div>
+                <Label>New Password</Label>
+                <Input type="password" value={changePwVal} onChange={function(e){setChangePwVal(e.target.value);}} placeholder="Min 8 characters"/>
+              </div>
+              <div>
+                <Label>Confirm Password</Label>
+                <Input type="password" value={changePwConf} onChange={function(e){setChangePwConf(e.target.value);}} placeholder="Re-enter new password"
+                  onKeyDown={function(e){if(e.key==='Enter') doChangePassword();}}/>
+              </div>
+            </div>
+            <div className="flex gap-2 mt-5">
+              <Button onClick={doChangePassword} loading={changePwSaving} className="flex-1">Save Password</Button>
+              <Button variant="secondary" onClick={()=>setShowChangePw(false)} className="flex-1">Cancel</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
         {page==='posts'                  && <PostsPage       settings={settings}/>}
         {page==='shelf'                  && <ShelfTalkerPage isAdmin={isAdmin} userStoreIds={isAdmin ? [] : userStoreIds} userId={user ? user.id : null}/>}
@@ -4669,6 +4730,7 @@ function App() {
   const [dark,      setDark]      = useState(()=>ls.get('smm_dark',false));
   const [authState, setAuthState] = useState('checking');
   const [user,      setUser]      = useState(null);
+  const [recovery,  setRecovery]  = useState(false);
 
   useEffect(()=>{
     document.documentElement.classList.toggle('dark',dark);
@@ -4677,15 +4739,23 @@ function App() {
 
   useEffect(()=>{
     const sb=getSB(); if(!sb) return;
-    sb.auth.getSession().then(({data:{session}})=>{
-      setUser(session?.user||null);
-      setAuthState(session?'authed':'anon');
+    sb.auth.getSession().then(function(res) {
+      var session = res.data.session;
+      setUser(session ? session.user : null);
+      setAuthState(session ? 'authed' : 'anon');
     });
-    const {data:{subscription}}=sb.auth.onAuthStateChange((_,session)=>{
-      setUser(session?.user||null);
-      setAuthState(session?'authed':'anon');
+    const sub = sb.auth.onAuthStateChange(function(event, session) {
+      if (event === 'PASSWORD_RECOVERY') {
+        setRecovery(true);
+        setUser(session ? session.user : null);
+        setAuthState('authed');
+        return;
+      }
+      setUser(session ? session.user : null);
+      setAuthState(session ? 'authed' : 'anon');
+      if (event === 'USER_UPDATED') setRecovery(false);
     });
-    return ()=>subscription.unsubscribe();
+    return function() { sub.data.subscription.unsubscribe(); };
   },[]);
 
   if (authState==='checking') return (
@@ -4702,7 +4772,7 @@ function App() {
 
   return (
     <ToastProvider>
-      <AuthenticatedApp user={user} dark={dark} onDark={setDark}/>
+      <AuthenticatedApp user={user} dark={dark} onDark={setDark} openChangePw={recovery}/>
     </ToastProvider>
   );
 }

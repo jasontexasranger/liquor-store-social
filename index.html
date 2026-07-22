@@ -4107,11 +4107,16 @@ function STCreator({ storeId, isAdmin, userId }) {
   const computedValues = Object.assign({}, values);
   fields.forEach(function(f) {
     const pfx = f.prefix || '';
+    const isPricePfx = pfx.indexOf('$') !== -1;
     if (typeof f.formula === 'string' && f.formula.trim()) {
       const cv = evaluateFormula(f.formula, fields, values);
-      if (cv !== '') computedValues[f.id] = pfx + cv;
+      if (cv !== '') {
+        var fmtCv = isPricePfx ? (function(){ var n = parseFloat(cv); return !isNaN(n) ? n.toFixed(2) : cv; }()) : cv;
+        computedValues[f.id] = pfx + fmtCv;
+      }
     } else if (pfx && values[f.id]) {
-      computedValues[f.id] = pfx + values[f.id];
+      var fmtVal = isPricePfx ? (function(){ var n = parseFloat(values[f.id]); return !isNaN(n) ? n.toFixed(2) : values[f.id]; }()) : values[f.id];
+      computedValues[f.id] = pfx + fmtVal;
     }
   });
 

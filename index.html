@@ -4081,7 +4081,7 @@ function exportPDF(pages, filename='shelf-talkers.pdf') {
 // ═══════════════════════════════════════════════════════════════
 // SHELF TALKER — MANAGER CREATOR
 // ═══════════════════════════════════════════════════════════════
-function STCreator({ storeId, isAdmin, userId }) {
+function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
   const toast = useToast();
   const { templates, loading:tplLoading } = useSTTemplates(storeId, isAdmin);
   const { saves, saveTag, deleteTag } = useSavedTags(userId);
@@ -4102,6 +4102,21 @@ function STCreator({ storeId, isAdmin, userId }) {
   const [catFilter,  setCatFilter]  = useState('all');
   const [search,     setSearch]     = useState('');
   const previewRef = useRef();
+
+  // When a saved tag is loaded from the library, pre-populate template + values
+  useEffect(function() {
+    if (!pendingLoad || tplLoading || !templates.length) return;
+    var tpl = templates.find(function(t) { return t.id === pendingLoad.templateId; });
+    if (tpl) {
+      setSelected(tpl);
+      setValues(pendingLoad.values || {});
+      setStep('compose');
+      if (onLoadComplete) onLoadComplete();
+    } else {
+      toast.error('Template no longer available');
+      if (onLoadComplete) onLoadComplete();
+    }
+  }, [pendingLoad, templates, tplLoading]);
 
   // Derive display values: apply formula and/or prefix for every field
   const computedValues = Object.assign({}, values);
@@ -4500,18 +4515,82 @@ function STCreator({ storeId, isAdmin, userId }) {
 // ═══════════════════════════════════════════════════════════════
 // SHELF TALKER — MAIN PAGE
 // ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// SHELF TALKER — SAVED TAG LIBRARY
+// ═══════════════════════════════════════════════════════════════
+function STSavedLibrary({ userId, onLoad }) {
+  const { saves, loading, deleteTag } = useSavedTags(userId);
+
+  if (loading) return <p className="text-sm text-gray-400 animate-pulse py-8 text-center">Loading your library…</p>;
+
+  if (!saves.length) return (
+    <div className="text-center py-16 text-gray-400 dark:text-gray-500">
+      <p className="text-5xl mb-3">🏷</p>
+      <p className="text-sm font-semibold">No saved tags yet</p>
+      <p className="text-xs mt-1">Create a shelf talker and click <strong>Save Tag</strong> to build your library</p>
+    </div>
+  );
+
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+      {saves.map(function(s) {
+        var tpl = s.shelf_talker_templates;
+        return (
+          <div key={s.id} className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden flex flex-col">
+            {/* Thumbnail */}
+            <div className="aspect-video bg-gray-100 dark:bg-gray-700 flex items-center justify-center overflow-hidden">
+              {tpl && tpl.file_data
+                ? <img src={tpl.file_data} alt={tpl.name} className="w-full h-full object-cover"/>
+                : <span className="text-4xl">🏷</span>
+              }
+            </div>
+            {/* Info */}
+            <div className="p-2.5 flex-1">
+              <p className="text-sm font-semibold text-gray-900 dark:text-white truncate" title={s.name}>{s.name}</p>
+              {tpl && tpl.category && (
+                <span className="text-xs text-indigo-600 dark:text-indigo-400 font-medium">{tpl.category}</span>
+              )}
+              <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{fmtDate(s.created_at)}</p>
+            </div>
+            {/* Actions */}
+            <div className="flex gap-1.5 px-2.5 pb-2.5">
+              <button
+                onClick={function() { onLoad(s.template_id, s.values); }}
+                className="flex-1 text-xs bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white font-semibold py-1.5 rounded-lg transition-colors">
+                ✏️ Edit &amp; Print
+              </button>
+              <button
+                onClick={async function() { if(confirm('Delete "' + s.name + '"?')) await deleteTag(s.id); }}
+                className="text-xs text-red-500 hover:text-red-700 dark:text-red-400 border border-red-200 dark:border-red-700 rounded-lg px-2.5 py-1.5 transition-colors">
+                🗑
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function ShelfTalkerPage({ isAdmin, userStoreIds, userId }) {
-  const [tab,      setTab]      = useState(isAdmin ? 'admin' : 'create');
-  const [editTpl,  setEditTpl]  = useState(null);
-  const [adminSub, setAdminSub] = useState('library'); // 'library'|'new'|'edit'
+  const [tab,         setTab]         = useState(isAdmin ? 'admin' : 'create');
+  const [editTpl,     setEditTpl]     = useState(null);
+  const [adminSub,    setAdminSub]    = useState('library'); // 'library'|'new'|'edit'
+  const [pendingLoad, setPendingLoad] = useState(null); // { templateId, values }
   const defaultStore = (userStoreIds && userStoreIds.length > 0) ? userStoreIds[0] : STORES[0].id;
   const [storeId,  setStoreId]  = useState(defaultStore);
   const availableStores = isAdmin ? STORES : STORES.filter(function(s) { return userStoreIds && userStoreIds.indexOf(s.id) !== -1; });
   const canPickStore = isAdmin || (userStoreIds && userStoreIds.length > 1);
 
+  const handleLibraryLoad = function(templateId, values) {
+    setPendingLoad({ templateId: templateId, values: values || {} });
+    setTab('create');
+  };
+
   const tabs = [
     ...(isAdmin ? [{ id:'admin', label:'⚙️ Admin' }] : []),
     { id:'create', label:'🏷 Create' },
+    { id:'saved',  label:'💾 My Library' },
   ];
 
   return (
@@ -4561,7 +4640,12 @@ function ShelfTalkerPage({ isAdmin, userStoreIds, userId }) {
       )}
 
       {tab==='create' && (
-        <STCreator storeId={storeId} isAdmin={isAdmin} userId={userId}/>
+        <STCreator storeId={storeId} isAdmin={isAdmin} userId={userId}
+          pendingLoad={pendingLoad} onLoadComplete={function(){ setPendingLoad(null); }}/>
+      )}
+
+      {tab==='saved' && (
+        <STSavedLibrary userId={userId} onLoad={handleLibraryLoad}/>
       )}
     </div>
   );

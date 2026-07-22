@@ -514,7 +514,7 @@ function compositeProductAndLogo(bgDataUrl, productDataUrl, logoDataUrl, priceOp
 
         // ── SAVE BADGE (above price block) ──
         if (saveText) {
-          const saveVal  = saveText.startsWith('$') ? `SAVE ${saveText}` : `SAVE $${saveText}`;
+          const saveVal  = (function(){ var raw = saveText.replace(/^\$/, ''); var n = parseFloat(raw); return 'SAVE $' + (!isNaN(n) ? n.toFixed(2) : raw); }());
           const saveFs   = Math.round(H * 0.052);
           const innerPad = Math.round(W * 0.025);
 
@@ -686,7 +686,7 @@ async function renderRetailTemplate(tplId, { productDataUrl, logoDataUrl, brandP
 
   // SAVE badge
   if (saveText) {
-    const label = saveText.startsWith('$') ? `SAVE ${saveText}` : `SAVE $${saveText}`;
+    const label = (function(){ var raw = saveText.replace(/^\$/, ''); var n = parseFloat(raw); return 'SAVE $' + (!isNaN(n) ? n.toFixed(2) : raw); }());
     ctx.font = `bold ${FS_SAVE}px -apple-system,Arial,sans-serif`;
     const tw = ctx.measureText(label).width;
     const bw = tw + IPH_SAVE * 2, bh = FS_SAVE + IPV_SAVE * 2;

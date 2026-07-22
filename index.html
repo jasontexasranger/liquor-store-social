@@ -4067,13 +4067,22 @@ function buildMixedPrintPage(canvases) {
 
 // Export pages as a jsPDF document and trigger download
 function exportPDF(pages, filename='shelf-talkers.pdf') {
-  if (!window.jspdf?.jsPDF) { alert('jsPDF not loaded'); return; }
+  if (!window.jspdf || !window.jspdf.jsPDF) { alert('jsPDF not loaded'); return; }
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF({ orientation:'portrait', unit:'in', format:'letter' });
-  pages.forEach((page,i) => {
-    if (i>0) doc.addPage('letter','portrait');
-    const imgData = page.toDataURL('image/jpeg', 0.92);
-    doc.addImage(imgData, 'JPEG', 0, 0, 8.5, 11);
+  // Fit canvas (8.5×11 proportions) within a 0.25" margin on all sides
+  var MRG = 0.25;
+  var availW = 8.5 - MRG * 2;  // 8.0"
+  var availH = 11  - MRG * 2;  // 10.5"
+  var scale  = Math.min(availW / 8.5, availH / 11);
+  var imgW   = 8.5 * scale;
+  var imgH   = 11  * scale;
+  var imgX   = (8.5 - imgW) / 2;
+  var imgY   = (11  - imgH) / 2;
+  pages.forEach(function(page, i) {
+    if (i > 0) doc.addPage('letter', 'portrait');
+    var imgData = page.toDataURL('image/jpeg', 0.92);
+    doc.addImage(imgData, 'JPEG', imgX, imgY, imgW, imgH);
   });
   doc.save(filename);
 }
@@ -4203,9 +4212,9 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
     const w = window.open('','_blank');
     w.document.write(`<!DOCTYPE html><html><head><title>Shelf Talkers</title>
       <style>
-        @page{size:letter portrait;margin:0;}
+        @page{size:letter portrait;margin:0.25in;}
         body{margin:0;padding:0;background:#fff;}
-        img{display:block;width:8.5in;height:11in;page-break-after:always;}
+        img{display:block;width:100%;height:auto;page-break-after:always;}
         img:last-child{page-break-after:avoid;}
       </style></head><body>`);
     printPages.forEach(p => {
@@ -4416,7 +4425,7 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
               <div className="flex gap-2 mt-1">
                 {['2up','4up','6up'].map(l=>(
                   <label key={l} className="flex items-center gap-1.5 text-sm cursor-pointer">
-                    <input type="radio" checked={layout===l} onChange={()=>setLayout(l)} className="accent-indigo-600"/>
+                    <input type="radio" checked={layout===l} onChange={()=>{ setLayout(l); setQty(l==='6up'?6:l==='4up'?4:2); }} className="accent-indigo-600"/>
                     {l==='2up'?'2-up':l==='4up'?'4-up':'6-up (Small)'}
                   </label>
                 ))}
@@ -4428,7 +4437,7 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
             </div>
           </div>
           <p className="text-xs text-gray-400 mt-2">
-            {Math.ceil(qty/(layout==='6up'?6:layout==='4up'?4:2))} page{Math.ceil(qty/(layout==='6up'?6:layout==='4up'?4:2))>1?'s':''} · Print at <strong>Actual Size / 100%</strong>, disable headers & footers
+            {Math.ceil(qty/(layout==='6up'?6:layout==='4up'?4:2))} page{Math.ceil(qty/(layout==='6up'?6:layout==='4up'?4:2))>1?'s':''} · ¼″ margin · disable headers &amp; footers
           </p>
           <div className="flex gap-2 mt-4 flex-wrap">
             <Button onClick={buildPreview} loading={printing} disabled={!canPrint} className="flex-1">
@@ -4505,7 +4514,7 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
           ⬇ Download PDF
         </Button>
       </div>
-      <p className="text-xs text-gray-400">Print at <strong>Actual Size / 100%</strong>. Disable "Print headers and footers" in your browser's print dialog.</p>
+      <p className="text-xs text-gray-400">Pages include a ¼″ margin. Disable "Print headers and footers" in your browser's print dialog.</p>
     </div>
   );
 

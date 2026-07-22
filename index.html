@@ -1179,29 +1179,32 @@ function useSTFields(templateId) {
   return { fields, loading, save, reload: load };
 }
 
-function useSavedTags(userId) {
+function useSavedTags(userId, isAdmin) {
   const [saves,   setSaves]   = useState([]);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
-    if (!userId) return;
     const sb = getSB(); if (!sb) return;
+    if (!isAdmin && !userId) return;
     setLoading(true);
     try {
-      const { data } = await sb.from('saved_shelf_talkers')
+      var query = sb.from('saved_shelf_talkers')
         .select('*, shelf_talker_templates(name, file_data, category)')
-        .eq('user_id', userId)
         .order('created_at', { ascending: false });
+      if (!isAdmin) query = query.eq('user_id', userId);
+      const { data } = await query;
       setSaves(data || []);
     } finally { setLoading(false); }
-  }, [userId]);
+  }, [userId, isAdmin]);
 
-  useEffect(() => { load(); }, [load]);
+  useEffect(function() { load(); }, [load]);
 
-  const saveTag = async (name, templateId, values) => {
+  const saveTag = async (name, templateId, values, storeId) => {
     const sb = getSB(); if (!sb) return;
+    var userEmail = null;
+    try { var r = await sb.auth.getUser(); userEmail = r.data.user ? r.data.user.email : null; } catch(e) {}
     const { error } = await sb.from('saved_shelf_talkers')
-      .insert({ user_id: userId, template_id: templateId, name, values });
+      .insert({ user_id: userId, template_id: templateId, name, values, store_id: storeId || null, user_email: userEmail });
     if (error) throw error;
     await load();
   };
@@ -4454,7 +4457,7 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
                 try {
                   const firstName = fields[0] ? (values[fields[0].id] || '') : '';
                   const name = selected.name + (firstName ? ` – ${firstName.substring(0,24)}` : '');
-                  await saveTag(name, selected.id, values);
+                  await saveTag(name, selected.id, values, storeId);
                   toast.success('Tag saved!');
                 } catch(e) { toast.error('Save failed: ' + e.message); }
                 finally { setSavingTag(false); }
@@ -4527,56 +4530,94 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
 // ═══════════════════════════════════════════════════════════════
 // SHELF TALKER — SAVED TAG LIBRARY
 // ═══════════════════════════════════════════════════════════════
-function STSavedLibrary({ userId, onLoad }) {
-  const { saves, loading, deleteTag } = useSavedTags(userId);
+function STSavedLibrary({ userId, isAdmin, onLoad }) {
+  const { saves, loading, deleteTag } = useSavedTags(userId, isAdmin);
+  const [storeFilter, setStoreFilter] = useState('all');
+  const [userFilter,  setUserFilter]  = useState('all');
 
-  if (loading) return <p className="text-sm text-gray-400 animate-pulse py-8 text-center">Loading your library…</p>;
+  // Derive filter options from data
+  const storeOptions = STORES.filter(function(st) {
+    return saves.some(function(s) { return s.store_id === st.id; });
+  });
+  const userOptions = isAdmin ? Array.from(new Set(saves.map(function(s) { return s.user_email; }).filter(Boolean))) : [];
 
-  if (!saves.length) return (
-    <div className="text-center py-16 text-gray-400 dark:text-gray-500">
-      <p className="text-5xl mb-3">🏷</p>
-      <p className="text-sm font-semibold">No saved tags yet</p>
-      <p className="text-xs mt-1">Create a shelf talker and click <strong>Save Tag</strong> to build your library</p>
-    </div>
-  );
+  const displayed = saves.filter(function(s) {
+    if (storeFilter !== 'all' && s.store_id !== storeFilter) return false;
+    if (userFilter  !== 'all' && s.user_email !== userFilter)  return false;
+    return true;
+  });
+
+  if (loading) return <p className="text-sm text-gray-400 animate-pulse py-8 text-center">Loading library…</p>;
 
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
-      {saves.map(function(s) {
-        var tpl = s.shelf_talker_templates;
-        return (
-          <div key={s.id} className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden flex flex-col">
-            {/* Thumbnail */}
-            <div className="aspect-video bg-gray-100 dark:bg-gray-700 flex items-center justify-center overflow-hidden">
-              {tpl && tpl.file_data
-                ? <img src={tpl.file_data} alt={tpl.name} className="w-full h-full object-cover"/>
-                : <span className="text-4xl">🏷</span>
-              }
+    <div className="space-y-4">
+      {/* Filters — admin only */}
+      {isAdmin && (
+        <div className="flex gap-2 flex-wrap">
+          <Select value={storeFilter} onChange={function(e){ setStoreFilter(e.target.value); }} className="w-auto text-xs">
+            <option value="all">All Stores</option>
+            {storeOptions.map(function(st) { return <option key={st.id} value={st.id}>{st.name}</option>; })}
+          </Select>
+          <Select value={userFilter} onChange={function(e){ setUserFilter(e.target.value); }} className="w-auto text-xs">
+            <option value="all">All Users</option>
+            {userOptions.map(function(email) { return <option key={email} value={email}>{email}</option>; })}
+          </Select>
+          <span className="text-xs text-gray-400 self-center">{displayed.length} tag{displayed.length!==1?'s':''}</span>
+        </div>
+      )}
+
+      {!displayed.length && (
+        <div className="text-center py-16 text-gray-400 dark:text-gray-500">
+          <p className="text-5xl mb-3">🏷</p>
+          <p className="text-sm font-semibold">{saves.length ? 'No tags match the filters' : 'No saved tags yet'}</p>
+          {!saves.length && <p className="text-xs mt-1">Create a shelf talker and click <strong>Save Tag</strong> to build your library</p>}
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+        {displayed.map(function(s) {
+          var tpl = s.shelf_talker_templates;
+          var storeName = s.store_id ? (function(){ var st = STORES.find(function(x){ return x.id===s.store_id; }); return st ? st.name.split(' ')[0] : null; }()) : null;
+          return (
+            <div key={s.id} className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden flex flex-col">
+              {/* Thumbnail */}
+              <div className="aspect-video bg-gray-100 dark:bg-gray-700 flex items-center justify-center overflow-hidden relative">
+                {tpl && tpl.file_data
+                  ? <img src={tpl.file_data} alt={tpl.name} className="w-full h-full object-cover"/>
+                  : <span className="text-4xl">🏷</span>
+                }
+                {storeName && (
+                  <span className="absolute top-1.5 right-1.5 text-xs bg-indigo-600 text-white px-1.5 py-0.5 rounded-md font-semibold">{storeName}</span>
+                )}
+              </div>
+              {/* Info */}
+              <div className="p-2.5 flex-1">
+                <p className="text-sm font-semibold text-gray-900 dark:text-white truncate" title={s.name}>{s.name}</p>
+                {tpl && tpl.category && (
+                  <span className="text-xs text-indigo-600 dark:text-indigo-400 font-medium">{tpl.category}</span>
+                )}
+                {isAdmin && s.user_email && (
+                  <p className="text-xs text-gray-400 dark:text-gray-500 truncate mt-0.5" title={s.user_email}>{s.user_email}</p>
+                )}
+                <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{fmtDate(s.created_at)}</p>
+              </div>
+              {/* Actions */}
+              <div className="flex gap-1.5 px-2.5 pb-2.5">
+                <button
+                  onClick={function() { onLoad(s.template_id, s.values); }}
+                  className="flex-1 text-xs bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white font-semibold py-1.5 rounded-lg transition-colors">
+                  ✏️ Edit &amp; Print
+                </button>
+                <button
+                  onClick={async function() { if(confirm('Delete "' + s.name + '"?')) await deleteTag(s.id); }}
+                  className="text-xs text-red-500 hover:text-red-700 dark:text-red-400 border border-red-200 dark:border-red-700 rounded-lg px-2.5 py-1.5 transition-colors">
+                  🗑
+                </button>
+              </div>
             </div>
-            {/* Info */}
-            <div className="p-2.5 flex-1">
-              <p className="text-sm font-semibold text-gray-900 dark:text-white truncate" title={s.name}>{s.name}</p>
-              {tpl && tpl.category && (
-                <span className="text-xs text-indigo-600 dark:text-indigo-400 font-medium">{tpl.category}</span>
-              )}
-              <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">{fmtDate(s.created_at)}</p>
-            </div>
-            {/* Actions */}
-            <div className="flex gap-1.5 px-2.5 pb-2.5">
-              <button
-                onClick={function() { onLoad(s.template_id, s.values); }}
-                className="flex-1 text-xs bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white font-semibold py-1.5 rounded-lg transition-colors">
-                ✏️ Edit &amp; Print
-              </button>
-              <button
-                onClick={async function() { if(confirm('Delete "' + s.name + '"?')) await deleteTag(s.id); }}
-                className="text-xs text-red-500 hover:text-red-700 dark:text-red-400 border border-red-200 dark:border-red-700 rounded-lg px-2.5 py-1.5 transition-colors">
-                🗑
-              </button>
-            </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -4654,7 +4695,7 @@ function ShelfTalkerPage({ isAdmin, userStoreIds, userId }) {
       )}
 
       {tab==='saved' && (
-        <STSavedLibrary userId={userId} onLoad={handleLibraryLoad}/>
+        <STSavedLibrary userId={userId} isAdmin={isAdmin} onLoad={handleLibraryLoad}/>
       )}
     </div>
   );

@@ -3933,7 +3933,7 @@ function rotateCanvas90(canvas) {
 
 // Arrange shelf-talker canvases into a print page. Returns array of page canvases.
 function buildPrintPages(stCanvas, layout, qty, isLandscape=false) {
-  const perPage = layout==='4up' ? 4 : 2;
+  const perPage = layout==='4up' ? 4 : layout==='6up' ? 6 : 2;
   const totalPages = Math.ceil(qty / perPage);
   const pages = [];
 
@@ -3942,9 +3942,13 @@ function buildPrintPages(stCanvas, layout, qty, isLandscape=false) {
     ? rotateCanvas90(stCanvas) : stCanvas;
   const stW = src.width, stH = src.height;
   // Compute cell size
-  let cols, rows;
-  if (layout==='4up') { cols=2; rows=2; }
-  else {
+  let cols, rows, cellW, cellH, useMargin;
+  if (layout==='4up') {
+    cols=2; rows=2; useMargin=true;
+  } else if (layout==='6up') {
+    // 6-up: 2 cols × 3 rows, no margin — fills page edge to edge (4.25" × 3.667" each at 150dpi)
+    cols=2; rows=3; useMargin=false;
+  } else {
     // 2-up: pick orientation that maximises shelf talker size
     const horizW = (PAGE_W - MARGIN*3) / 2;
     const horizH = PAGE_H - MARGIN*2;
@@ -3953,10 +3957,17 @@ function buildPrintPages(stCanvas, layout, qty, isLandscape=false) {
     const hScale = Math.min(horizW/stW, horizH/stH);
     const vScale = Math.min(vertW/stW,  vertH/stH);
     if (hScale >= vScale) { cols=2; rows=1; } else { cols=1; rows=2; }
+    useMargin=true;
   }
 
-  const cellW = (PAGE_W - MARGIN*(cols+1)) / cols;
-  const cellH = (PAGE_H - MARGIN*(rows+1)) / rows;
+  if (useMargin) {
+    cellW = (PAGE_W - MARGIN*(cols+1)) / cols;
+    cellH = (PAGE_H - MARGIN*(rows+1)) / rows;
+  } else {
+    cellW = PAGE_W / cols;
+    cellH = PAGE_H / rows;
+  }
+
   const scale = Math.min(cellW/stW, cellH/stH, 1); // never upscale beyond natural
   const dw = Math.round(stW * scale);
   const dh = Math.round(stH * scale);
@@ -3972,13 +3983,28 @@ function buildPrintPages(stCanvas, layout, qty, isLandscape=false) {
     ctx.strokeStyle='#999999';
     ctx.lineWidth=0.75;
 
+    // 6-up: draw full-page dashed cut guides before images
+    if (layout==='6up') {
+      ctx.save();
+      ctx.strokeStyle='#bbbbbb';
+      ctx.lineWidth=0.5;
+      ctx.setLineDash([5, 5]);
+      // vertical cut guide at centre
+      ctx.beginPath(); ctx.moveTo(cellW, 0); ctx.lineTo(cellW, PAGE_H); ctx.stroke();
+      // horizontal cut guides at 1/3 and 2/3
+      ctx.beginPath(); ctx.moveTo(0, cellH); ctx.lineTo(PAGE_W, cellH); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, cellH*2); ctx.lineTo(PAGE_W, cellH*2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+    }
+
     const startIdx = p*perPage;
     const endIdx   = Math.min(startIdx+perPage, qty);
 
     for (let i=0; i<(endIdx-startIdx); i++) {
       const col=i%cols, row=Math.floor(i/cols);
-      const cellX = MARGIN + col*(cellW+MARGIN);
-      const cellY = MARGIN + row*(cellH+MARGIN);
+      const cellX = useMargin ? MARGIN + col*(cellW+MARGIN) : col*cellW;
+      const cellY = useMargin ? MARGIN + row*(cellH+MARGIN) : row*cellH;
       const cx = cellX + (cellW-dw)/2;
       const cy = cellY + (cellH-dh)/2;
 
@@ -4368,10 +4394,10 @@ function STCreator({ storeId, isAdmin, userId }) {
             <div>
               <Label>Layout</Label>
               <div className="flex gap-2 mt-1">
-                {['2up','4up'].map(l=>(
+                {['2up','4up','6up'].map(l=>(
                   <label key={l} className="flex items-center gap-1.5 text-sm cursor-pointer">
                     <input type="radio" checked={layout===l} onChange={()=>setLayout(l)} className="accent-indigo-600"/>
-                    {l==='2up'?'2-up':'4-up'}
+                    {l==='2up'?'2-up':l==='4up'?'4-up':'6-up (Small)'}
                   </label>
                 ))}
               </div>
@@ -4382,7 +4408,7 @@ function STCreator({ storeId, isAdmin, userId }) {
             </div>
           </div>
           <p className="text-xs text-gray-400 mt-2">
-            {Math.ceil(qty/(layout==='4up'?4:2))} page{Math.ceil(qty/(layout==='4up'?4:2))>1?'s':''} · Print at <strong>Actual Size / 100%</strong>, disable headers & footers
+            {Math.ceil(qty/(layout==='6up'?6:layout==='4up'?4:2))} page{Math.ceil(qty/(layout==='6up'?6:layout==='4up'?4:2))>1?'s':''} · Print at <strong>Actual Size / 100%</strong>, disable headers & footers
           </p>
           <div className="flex gap-2 mt-4 flex-wrap">
             <Button onClick={buildPreview} loading={printing} disabled={!canPrint} className="flex-1">

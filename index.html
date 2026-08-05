@@ -3839,6 +3839,118 @@ function ScheduledPostsPanel() {
 }
 
 // ─────────────────────────────────────────────
+// STORE ANALYTICS COMPONENT
+// ─────────────────────────────────────────────
+function StoreInsightsCard({ store, days }) {
+  const toast = useToast();
+  const [data,    setData]    = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error,   setError]   = useState(null);
+
+  useEffect(function() {
+    var cancelled = false;
+    setLoading(true); setData(null); setError(null);
+    callEdge('meta-social', 'getPageInsights', { storeId: store.id, days: days })
+      .then(function(res) { if (!cancelled) setData(res); })
+      .catch(function(e)  { if (!cancelled) setError(e.message); })
+      .finally(function() { if (!cancelled) setLoading(false); });
+    return function() { cancelled = true; };
+  }, [store.id, days]);
+
+  var ins = data ? data.insights : null;
+
+  var metrics = ins ? [
+    { label: 'Reach',       value: ins.page_impressions_unique, icon: '👥', desc: 'Unique people reached' },
+    { label: 'Impressions', value: ins.page_impressions,        icon: '👁',  desc: 'Total content views' },
+    { label: 'Engagement',  value: ins.page_engaged_users,      icon: '💬', desc: 'Unique people who engaged' },
+    { label: 'Page Views',  value: ins.page_views_total,        icon: '📄', desc: 'Profile page visits' },
+    { label: 'New Likes',   value: ins.page_fan_adds,           icon: '❤️',  desc: 'New page likes' },
+    { label: 'Total Fans',  value: ins.page_fans,               icon: '⭐', desc: 'Total page followers' },
+  ] : [];
+
+  var recentPosts = data ? (data.recentPosts || []) : [];
+
+  return (
+    <Card className="mb-5">
+      <div className="flex items-center gap-2 mb-4">
+        <h3 className="text-base font-bold text-gray-900 dark:text-white flex-1">{store.name}</h3>
+        {loading && <span className="text-xs text-gray-400 animate-pulse">Loading…</span>}
+      </div>
+
+      {error && (
+        <div className="text-sm text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg p-3 mb-3">
+          ⚠️ {error.includes('read_insights') || error.includes('permissions') || error.includes('OAuthException')
+            ? 'Insights permission not available for this page. The page token may need the read_insights permission.'
+            : error}
+        </div>
+      )}
+
+      {!loading && !error && ins && (
+        <>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
+            {metrics.map(function(m) {
+              return (
+                <div key={m.label} className="bg-gray-50 dark:bg-gray-800/50 rounded-xl p-3 text-center">
+                  <div className="text-xl mb-0.5">{m.icon}</div>
+                  <div className="text-lg font-bold text-gray-900 dark:text-white">{m.value != null ? m.value.toLocaleString() : '—'}</div>
+                  <div className="text-xs font-medium text-gray-600 dark:text-gray-400">{m.label}</div>
+                </div>
+              );
+            })}
+          </div>
+
+          {recentPosts.length > 0 && (
+            <div>
+              <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">Recent Post Engagement</p>
+              <div className="space-y-1.5">
+                {recentPosts.map(function(p) {
+                  return (
+                    <div key={p.id} className="flex items-center gap-3 text-xs text-gray-600 dark:text-gray-400 py-1.5 border-b border-gray-100 dark:border-gray-700 last:border-0">
+                      <span className="text-gray-400 dark:text-gray-500 flex-shrink-0 w-20">{fmtDate(p.created_time)}</span>
+                      <span className="flex items-center gap-1">👍 {p.likes}</span>
+                      <span className="flex items-center gap-1">💬 {p.comments}</span>
+                      {p.shares > 0 && <span className="flex items-center gap-1">🔄 {p.shares}</span>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {!loading && !error && !ins && (
+        <div className="text-center py-8 text-gray-400 dark:text-gray-500 text-sm">No data available</div>
+      )}
+    </Card>
+  );
+}
+
+function StoreAnalytics({ visibleStores }) {
+  const [days, setDays] = useState(28);
+  return (
+    <div>
+      <div className="flex items-center gap-3 mb-5">
+        <h2 className="text-base font-bold text-gray-900 dark:text-white flex-1">📊 Page Analytics</h2>
+        <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
+          {[7, 28].map(function(d) {
+            return (
+              <button key={d} onClick={function(){setDays(d);}}
+                className={'px-3 py-1 text-xs font-semibold rounded-md transition-colors ' + (days===d ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200')}>
+                Last {d} days
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      {visibleStores.map(function(store) {
+        return <StoreInsightsCard key={store.id + '-' + days} store={store} days={days}/>;
+      })}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
 // PAGE CONTAINERS
 // ─────────────────────────────────────────────
 function PostsPage({ settings, userStoreIds, isAdmin }) {
@@ -3857,7 +3969,7 @@ function PostsPage({ settings, userStoreIds, isAdmin }) {
   return (
     <div>
       <div className="flex border-b border-gray-200 dark:border-gray-700 mb-5">
-        {[{id:'compose',label:'✏️ Compose'},{id:'history',label:'📋 History'},{id:'scheduled',label:'📅 Scheduled'},{id:'images',label:'🖼 Image Generator'}].map(t=>(
+        {[{id:'compose',label:'✏️ Compose'},{id:'history',label:'📋 History'},{id:'scheduled',label:'📅 Scheduled'},{id:'images',label:'🖼 Image Generator'},{id:'analytics',label:'📊 Analytics'}].map(t=>(
           <button key={t.id} onClick={()=>setTab(t.id)} className={`px-4 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}>
             {t.label}{t.id==='compose'&&pendingImage?' 🟢':''}
           </button>
@@ -3869,9 +3981,10 @@ function PostsPage({ settings, userStoreIds, isAdmin }) {
           <PostHistory  settings={settings} visibleStores={visibleStores}/>
         </div>
       )}
-      {tab==='scheduled' && <ScheduledPostsPanel/>}
-      {tab==='history' && <PostHistory settings={settings} visibleStores={visibleStores}/>}
-      {tab==='images'  && <ImageGenerator settings={settings} onUseInPost={handleUseInPost}/>}
+      {tab==='scheduled'  && <ScheduledPostsPanel/>}
+      {tab==='history'    && <PostHistory settings={settings} visibleStores={visibleStores}/>}
+      {tab==='images'     && <ImageGenerator settings={settings} onUseInPost={handleUseInPost}/>}
+      {tab==='analytics'  && <StoreAnalytics visibleStores={visibleStores}/>}
     </div>
   );
 }

@@ -405,6 +405,73 @@ Deno.serve(async (req) => {
       return Response.json({ igAccountId: igId }, { headers: corsHeaders });
     }
 
+    // ── getPageInsights ──────────────────────────────────────────────────────
+    if (action === 'getPageInsights') {
+      const { storeId, days } = params as { storeId: string; days?: number };
+      if (!storeId) throw new Error('storeId required');
+
+      if (!userInfo.isAdmin && userInfo.storeIds.length > 0 && !userInfo.storeIds.includes(storeId)) {
+        throw new Error('Not authorized for this store');
+      }
+
+      const { data: acct } = await sb
+        .from('meta_accounts')
+        .select('fb_page_id')
+        .eq('store_id', storeId)
+        .single();
+      if (!acct) throw new Error('Store not found in meta_accounts');
+
+      const pageToken = await getPageToken(acct.fb_page_id);
+      const numDays = days ?? 28;
+      const until = Math.floor(Date.now() / 1000);
+      const since = until - numDays * 24 * 60 * 60;
+
+      const metricNames = [
+        'page_impressions',
+        'page_impressions_unique',
+        'page_engaged_users',
+        'page_views_total',
+        'page_fan_adds',
+        'page_fans',
+      ];
+
+      const data = await gGet(`/${acct.fb_page_id}/insights`, {
+        metric: metricNames.join(','),
+        period: 'day',
+        since: String(since),
+        until: String(until),
+      }, pageToken);
+
+      // Aggregate: sum cumulative metrics, snapshot page_fans (latest value)
+      const result: Record<string, number> = {};
+      for (const metric of (data.data ?? [])) {
+        const values: number[] = (metric.values ?? []).map((v: { value: number | Record<string, number> }) =>
+          typeof v.value === 'object' ? 0 : (Number(v.value) || 0)
+        );
+        if (metric.name === 'page_fans') {
+          result[metric.name] = values[values.length - 1] ?? 0;
+        } else {
+          result[metric.name] = values.reduce((a: number, b: number) => a + b, 0);
+        }
+      }
+
+      // Also fetch recent posts for engagement summary
+      const postsData = await gGet(`/${acct.fb_page_id}/feed`, {
+        fields: 'id,created_time,likes.summary(true),comments.summary(true),shares',
+        limit: '10',
+      }, pageToken);
+
+      const recentPosts = (postsData.data ?? []).map((p: Record<string, unknown>) => ({
+        id: p.id,
+        created_time: p.created_time,
+        likes: (p.likes as { summary?: { total_count?: number } } | undefined)?.summary?.total_count ?? 0,
+        comments: (p.comments as { summary?: { total_count?: number } } | undefined)?.summary?.total_count ?? 0,
+        shares: (p.shares as { count?: number } | undefined)?.count ?? 0,
+      }));
+
+      return Response.json({ insights: result, recentPosts, days: numDays }, { headers: corsHeaders });
+    }
+
     throw new Error(`Unknown action: ${action}`);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

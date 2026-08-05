@@ -406,6 +406,8 @@ Deno.serve(async (req) => {
     }
 
     // ── getPageInsights ──────────────────────────────────────────────────────
+    // Note: Most Page Insights API metrics were deprecated in Graph API v18+.
+    // We derive analytics from page info + post engagement instead.
     if (action === 'getPageInsights') {
       const { storeId, days } = params as { storeId: string; days?: number };
       if (!storeId) throw new Error('storeId required');
@@ -423,53 +425,55 @@ Deno.serve(async (req) => {
 
       const pageToken = await getPageToken(acct.fb_page_id);
       const numDays = days ?? 28;
-      const until = Math.floor(Date.now() / 1000);
-      const since = until - numDays * 24 * 60 * 60;
+      const since = Math.floor(Date.now() / 1000) - numDays * 24 * 60 * 60;
 
-      const metricNames = [
-        'page_impressions',
-        'page_impressions_unique',
-        'page_engaged_users',
-        'page_views_total',
-        'page_fan_adds',
-        'page_fans',
-      ];
-
-      const data = await gGet(`/${acct.fb_page_id}/insights`, {
-        metric: metricNames.join(','),
-        period: 'day',
-        since: String(since),
-        until: String(until),
+      // Fetch page-level info (followers, fans)
+      const pageInfo = await gGet(`/${acct.fb_page_id}`, {
+        fields: 'fan_count,followers_count',
       }, pageToken);
 
-      // Aggregate: sum cumulative metrics, snapshot page_fans (latest value)
-      const result: Record<string, number> = {};
-      for (const metric of (data.data ?? [])) {
-        const values: number[] = (metric.values ?? []).map((v: { value: number | Record<string, number> }) =>
-          typeof v.value === 'object' ? 0 : (Number(v.value) || 0)
-        );
-        if (metric.name === 'page_fans') {
-          result[metric.name] = values[values.length - 1] ?? 0;
-        } else {
-          result[metric.name] = values.reduce((a: number, b: number) => a + b, 0);
-        }
+      // Fetch posts within the date window with engagement data
+      const postsData = await gGet(`/${acct.fb_page_id}/feed`, {
+        fields: 'id,message,created_time,likes.summary(true),comments.summary(true),shares,full_picture',
+        limit: '50',
+        since: String(since),
+      }, pageToken);
+
+      const posts = (postsData.data ?? []) as Array<Record<string, unknown>>;
+
+      let totalLikes = 0, totalComments = 0, totalShares = 0;
+      for (const p of posts) {
+        totalLikes    += (p.likes    as { summary?: { total_count?: number } } | undefined)?.summary?.total_count ?? 0;
+        totalComments += (p.comments as { summary?: { total_count?: number } } | undefined)?.summary?.total_count ?? 0;
+        totalShares   += (p.shares   as { count?: number } | undefined)?.count ?? 0;
       }
 
-      // Also fetch recent posts for engagement summary
-      const postsData = await gGet(`/${acct.fb_page_id}/feed`, {
-        fields: 'id,created_time,likes.summary(true),comments.summary(true),shares',
-        limit: '10',
-      }, pageToken);
+      const avgEngagement = posts.length > 0
+        ? Math.round((totalLikes + totalComments + totalShares) / posts.length)
+        : 0;
 
-      const recentPosts = (postsData.data ?? []).map((p: Record<string, unknown>) => ({
-        id: p.id,
-        created_time: p.created_time,
-        likes: (p.likes as { summary?: { total_count?: number } } | undefined)?.summary?.total_count ?? 0,
-        comments: (p.comments as { summary?: { total_count?: number } } | undefined)?.summary?.total_count ?? 0,
-        shares: (p.shares as { count?: number } | undefined)?.count ?? 0,
-      }));
-
-      return Response.json({ insights: result, recentPosts, days: numDays }, { headers: corsHeaders });
+      return Response.json({
+        insights: {
+          fan_count:        pageInfo.fan_count ?? 0,
+          followers_count:  pageInfo.followers_count ?? 0,
+          post_count:       posts.length,
+          total_likes:      totalLikes,
+          total_comments:   totalComments,
+          total_shares:     totalShares,
+          avg_engagement:   avgEngagement,
+        },
+        recentPosts: posts.slice(0, 10).map(function(p) {
+          return {
+            id:           p.id,
+            created_time: p.created_time,
+            likes:    (p.likes    as { summary?: { total_count?: number } } | undefined)?.summary?.total_count ?? 0,
+            comments: (p.comments as { summary?: { total_count?: number } } | undefined)?.summary?.total_count ?? 0,
+            shares:   (p.shares   as { count?: number } | undefined)?.count ?? 0,
+            has_image: !!(p.full_picture),
+          };
+        }),
+        days: numDays,
+      }, { headers: corsHeaders });
     }
 
     throw new Error(`Unknown action: ${action}`);

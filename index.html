@@ -3860,12 +3860,12 @@ function StoreInsightsCard({ store, days }) {
   var ins = data ? data.insights : null;
 
   var metrics = ins ? [
-    { label: 'Reach',       value: ins.page_impressions_unique, icon: '👥', desc: 'Unique people reached' },
-    { label: 'Impressions', value: ins.page_impressions,        icon: '👁',  desc: 'Total content views' },
-    { label: 'Engagement',  value: ins.page_engaged_users,      icon: '💬', desc: 'Unique people who engaged' },
-    { label: 'Page Views',  value: ins.page_views_total,        icon: '📄', desc: 'Profile page visits' },
-    { label: 'New Likes',   value: ins.page_fan_adds,           icon: '❤️',  desc: 'New page likes' },
-    { label: 'Total Fans',  value: ins.page_fans,               icon: '⭐', desc: 'Total page followers' },
+    { label: 'Followers',      value: ins.followers_count, icon: '👥', desc: 'Total page followers' },
+    { label: 'Page Likes',     value: ins.fan_count,       icon: '❤️',  desc: 'Total page likes' },
+    { label: 'Posts',          value: ins.post_count,      icon: '📝', desc: 'Posts in period' },
+    { label: 'Total Likes',    value: ins.total_likes,     icon: '👍', desc: 'Likes across all posts' },
+    { label: 'Total Comments', value: ins.total_comments,  icon: '💬', desc: 'Comments across all posts' },
+    { label: 'Avg Engagement', value: ins.avg_engagement,  icon: '⭐', desc: 'Avg likes+comments+shares per post' },
   ] : [];
 
   var recentPosts = data ? (data.recentPosts || []) : [];
@@ -3879,9 +3879,7 @@ function StoreInsightsCard({ store, days }) {
 
       {error && (
         <div className="text-sm text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg p-3 mb-3">
-          ⚠️ {error.includes('read_insights') || error.includes('permissions') || error.includes('OAuthException')
-            ? 'Insights permission not available for this page. The page token may need the read_insights permission.'
-            : error}
+          ⚠️ {error}
         </div>
       )}
 

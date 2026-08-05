@@ -1877,9 +1877,17 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
         });
         setResults(res);
         res.forEach(function(r) {
-          if (r.success) toast.success(r.store + ': Published!');
-          else toast.error(r.store + ': ' + r.error);
-          if (r.igError) toast.error(r.store + ' IG: ' + r.igError);
+          if (r.success) {
+            var where = (r.postId && r.igPostId) ? 'Facebook + Instagram'
+                      : r.postId ? 'Facebook'
+                      : 'Instagram';
+            toast.success(r.store + ': Published to ' + where);
+          } else if (r.error) {
+            toast.error(r.store + ': ' + r.error);
+          }
+          // Channel-level warnings never contradict the success toast above.
+          if (r.success && r.error) toast.error(r.store + ' Facebook: ' + r.error);
+          if (r.igError) toast.error(r.store + ' Instagram: ' + r.igError);
         });
       }
       setCaption(''); setImgFile(null); setImgPrev(null); setGenImgUrl(null); setSchedule('');
@@ -1978,11 +1986,21 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
           {results.map((r,i) => (
             <div key={i} className={`flex flex-col gap-1 text-sm p-3 rounded-xl ${r.success?'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300':'bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400'}`}>
               <div className="flex items-center justify-between">
-                <span>{r.success?'✓':'✗'} {r.store} — {r.success?(r.scheduled?'Scheduled':'Published'):r.error}</span>
-                {r.success&&r.postId && <a href={fbPostUrl(r.postId)} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline ml-3 whitespace-nowrap">FB →</a>}
-                {r.success&&r.igPostId && <a href={'https://www.instagram.com/p/'+r.igPostId} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-pink-600 dark:text-pink-400 hover:underline ml-1 whitespace-nowrap">IG →</a>}
+                <span>
+                  {r.success?'✓':'✗'} {r.store} — {
+                    !r.success ? r.error
+                    : r.scheduled ? 'Scheduled'
+                    : (r.postId && r.igPostId) ? 'Published to Facebook + Instagram'
+                    : r.postId ? 'Published to Facebook'
+                    : r.igPostId ? 'Published to Instagram'
+                    : 'Published'
+                  }
+                </span>
+                {r.postId && <a href={fbPostUrl(r.postId)} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline ml-3 whitespace-nowrap">FB →</a>}
+                {r.igPostId && <a href={'https://www.instagram.com/p/'+r.igPostId} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-pink-600 dark:text-pink-400 hover:underline ml-1 whitespace-nowrap">IG →</a>}
               </div>
-              {r.igError && <p className="text-xs text-amber-600 dark:text-amber-400">⚠ IG: {r.igError}</p>}
+              {r.success && r.error && <p className="text-xs text-amber-600 dark:text-amber-400">⚠ Facebook: {r.error}</p>}
+              {r.igError && <p className="text-xs text-amber-600 dark:text-amber-400">⚠ Instagram: {r.igError}</p>}
             </div>
           ))}
         </div>

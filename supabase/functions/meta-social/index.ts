@@ -194,17 +194,34 @@ Deno.serve(async (req) => {
           continue;
         }
 
+        // Facebook and Instagram are published independently so that a failure on
+        // one channel never masks a success on the other. A live Facebook post must
+        // never be reported as a failure — that invites a duplicate re-post.
+        const postTo = publishTo ?? ['facebook'];
+        let fbPostId: string | null = null;
+        let igPostId: string | null = null;
+        let fbError: string | null = null;
+        let igError: string | null = null;
+        let pageToken: string | null = null;
+
         try {
-          const pageToken = await getPageToken(acct.fb_page_id);
-          const postTo = publishTo ?? ['facebook'];
-          let fbPostId: string | null = null;
-          let igPostId: string | null = null;
+          pageToken = await getPageToken(acct.fb_page_id);
+        } catch (e) {
+          // No token at all — nothing can be published for this store.
+          results.push({ storeId, success: false, error: (e as Error).message });
+          continue;
+        }
 
-          if (postTo.includes('facebook')) {
+        if (postTo.includes('facebook')) {
+          try {
             fbPostId = await publishToFacebook(acct.fb_page_id, pageToken, caption, imageUrl ?? null);
+          } catch (e) {
+            fbError = (e as Error).message;
           }
+        }
 
-          if (postTo.includes('instagram')) {
+        if (postTo.includes('instagram')) {
+          try {
             let igId = acct.ig_account_id;
             if (!igId) {
               igId = await getIgAccountId(acct.fb_page_id, pageToken);
@@ -216,16 +233,27 @@ Deno.serve(async (req) => {
               }
             }
             if (!igId) {
-              results.push({ storeId, fbPostId, success: true, igError: 'No Instagram account linked to this page' });
-              continue;
+              throw new Error(
+                'No Instagram Business account is linked to this Facebook Page. ' +
+                'Link one in Meta Business Suite → Settings → Instagram accounts.'
+              );
             }
             igPostId = await publishToInstagram(igId, pageToken, caption, imageUrl ?? null);
+          } catch (e) {
+            igError = (e as Error).message;
           }
-
-          results.push({ storeId, success: true, fbPostId, igPostId });
-        } catch (e) {
-          results.push({ storeId, success: false, error: (e as Error).message });
         }
+
+        // Success = at least one requested channel published.
+        const anyPublished = Boolean(fbPostId || igPostId);
+        results.push({
+          storeId,
+          success: anyPublished,
+          fbPostId,
+          igPostId,
+          ...(fbError ? { error: fbError } : {}),
+          ...(igError ? { igError } : {}),
+        });
       }
 
       return Response.json({ results }, { headers: corsHeaders });

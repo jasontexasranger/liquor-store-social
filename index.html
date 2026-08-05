@@ -1781,9 +1781,10 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
 // ─────────────────────────────────────────────
 // MODULE 1 — POST COMPOSER
 // ─────────────────────────────────────────────
-function PostComposer({ settings, pendingImage, onClearPending }) {
+function PostComposer({ settings, pendingImage, onClearPending, visibleStores }) {
   const toast = useToast();
-  const [selected,    setSelected]   = useState([STORES[0].id]);
+  var myStores = (visibleStores && visibleStores.length > 0) ? visibleStores : STORES;
+  const [selected,    setSelected]   = useState([myStores[0].id]);
   const [caption,     setCaption]    = useState('');
   const [imgFile,     setImgFile]    = useState(null);
   const [imgPrev,     setImgPrev]    = useState(null);
@@ -1889,7 +1890,7 @@ function PostComposer({ settings, pendingImage, onClearPending }) {
     setLoading(false);
   };
 
-  const activeStoreId = selected.length===1 ? selected[0] : STORES[0].id;
+  const activeStoreId = selected.length===1 ? selected[0] : myStores[0].id;
   const activeStore   = (STORES.find(s=>s.id===activeStoreId)||{}).name || 'our store';
 
   return (
@@ -1900,7 +1901,7 @@ function PostComposer({ settings, pendingImage, onClearPending }) {
       <div className="mb-4">
         <Label>Post to</Label>
         <div className="grid grid-cols-2 gap-2">
-          {STORES.map(s => (
+          {myStores.map(s => (
             <label key={s.id} className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer text-sm transition-all
               ${selected.includes(s.id)?'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-800 dark:text-indigo-200 shadow-sm':'border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:border-indigo-300'}`}>
               <input type="checkbox" className="rounded" checked={selected.includes(s.id)} onChange={()=>toggleStore(s.id)}/>
@@ -1994,9 +1995,10 @@ function PostComposer({ settings, pendingImage, onClearPending }) {
 // ─────────────────────────────────────────────
 // MODULE 1 — POST HISTORY
 // ─────────────────────────────────────────────
-function PostHistory({ settings }) {
+function PostHistory({ settings, visibleStores }) {
   const toast   = useToast();
-  const [storeId, setStoreId] = useState(STORES[0].id);
+  var myStores = (visibleStores && visibleStores.length > 0) ? visibleStores : STORES;
+  const [storeId, setStoreId] = useState(myStores[0].id);
   const [posts,   setPosts]   = useState([]);
   const [loading, setLoading] = useState(false);
   const [loaded,  setLoaded]  = useState(false);
@@ -2017,7 +2019,7 @@ function PostHistory({ settings }) {
     <Card>
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         <h2 className="text-base font-bold text-gray-900 dark:text-white flex-1">📋 Post History</h2>
-        <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs">{STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</Select>
+        <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs">{myStores.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</Select>
         <Button variant="secondary" size="sm" onClick={load} loading={loading}>{loaded?'Refresh':'Load Posts'}</Button>
       </div>
       {!loaded&&!loading && <div className="text-center py-10 text-gray-400 dark:text-gray-500 text-sm">Select a store and click Load Posts</div>}
@@ -3839,9 +3841,13 @@ function ScheduledPostsPanel() {
 // ─────────────────────────────────────────────
 // PAGE CONTAINERS
 // ─────────────────────────────────────────────
-function PostsPage({ settings }) {
+function PostsPage({ settings, userStoreIds, isAdmin }) {
   const [tab,          setTab]          = useState('compose');
   const [pendingImage, setPendingImage] = useState(null);
+
+  var visibleStores = (isAdmin || !userStoreIds || userStoreIds.length === 0)
+    ? STORES
+    : STORES.filter(function(s) { return userStoreIds.includes(s.id); });
 
   const handleUseInPost = (url) => {
     setPendingImage(url);
@@ -3859,12 +3865,12 @@ function PostsPage({ settings }) {
       </div>
       {tab==='compose' && (
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
-          <PostComposer settings={settings} pendingImage={pendingImage} onClearPending={()=>setPendingImage(null)}/>
-          <PostHistory  settings={settings}/>
+          <PostComposer settings={settings} pendingImage={pendingImage} onClearPending={()=>setPendingImage(null)} visibleStores={visibleStores}/>
+          <PostHistory  settings={settings} visibleStores={visibleStores}/>
         </div>
       )}
       {tab==='scheduled' && <ScheduledPostsPanel/>}
-      {tab==='history' && <PostHistory settings={settings}/>}
+      {tab==='history' && <PostHistory settings={settings} visibleStores={visibleStores}/>}
       {tab==='images'  && <ImageGenerator settings={settings} onUseInPost={handleUseInPost}/>}
     </div>
   );
@@ -5064,7 +5070,7 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
       )}
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
-        {page==='posts'                  && <PostsPage       settings={settings}/>}
+        {page==='posts'                  && <PostsPage       settings={settings} userStoreIds={isAdmin ? [] : userStoreIds} isAdmin={isAdmin}/>}
         {page==='shelf'                  && <ShelfTalkerPage isAdmin={isAdmin} userStoreIds={isAdmin ? [] : userStoreIds} userId={user ? user.id : null}/>}
         {page==='ads'      && isAdmin    && <AdsPage         settings={settings}/>}
         {page==='brand'    && isAdmin    && <BrandPage        settings={settings}/>}

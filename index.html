@@ -1795,6 +1795,7 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
   const [showImgGen,  setShowImgGen] = useState(false);
   const [lightbox,    setLightbox]   = useState(null);
   const [results,     setResults]    = useState([]);
+  const [postToFB,    setPostToFB]   = useState(true);
   const [postToIG,    setPostToIG]   = useState(false);
   const [uploading,   setUploading]  = useState(false);
 
@@ -1825,6 +1826,7 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
   const post = async () => {
     if (!caption.trim())     { toast.error('Write a caption first'); return; }
     if (selected.length===0) { toast.error('Select at least one store'); return; }
+    if (!postToFB && !postToIG) { toast.error('Choose Facebook, Instagram, or both'); return; }
     if (postToIG && !imgFile && !genImgUrl && !pendingImage) {
       toast.error('Instagram requires an image'); return;
     }
@@ -1848,8 +1850,13 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
       } finally { setUploading(false); }
     }
 
-    const publishTo = ['facebook'];
+    const publishTo = [];
+    if (postToFB) publishTo.push('facebook');
     if (postToIG && imageUrl) publishTo.push('instagram');
+    if (publishTo.length === 0) {
+      toast.error('Instagram needs an image — nothing to publish');
+      setLoading(false); return;
+    }
 
     try {
       if (schedule) {
@@ -1907,7 +1914,7 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
     <Card>
       <h2 className="text-base font-bold text-gray-900 dark:text-white mb-4">📝 Compose Post</h2>
       <div className="mb-4">
-        <Label>Post to</Label>
+        <Label>Stores</Label>
         <div className="grid grid-cols-2 gap-2">
           {myStores.map(s => (
             <label key={s.id} className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer text-sm transition-all
@@ -1917,12 +1924,27 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
             </label>
           ))}
         </div>
-        <div className="mt-2 flex items-center gap-3">
-          <label className="flex items-center gap-2 text-xs cursor-pointer select-none text-gray-600 dark:text-gray-400">
+      </div>
+      <div className="mb-4">
+        <Label>Publish to</Label>
+        <div className="grid grid-cols-2 gap-2">
+          <label className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer text-sm transition-all
+            ${postToFB?'border-blue-500 bg-blue-50 dark:bg-blue-950/50 text-blue-800 dark:text-blue-200 shadow-sm':'border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:border-blue-300'}`}>
+            <input type="checkbox" className="rounded accent-blue-600" checked={postToFB} onChange={e=>setPostToFB(e.target.checked)}/>
+            <span className="leading-tight">📘 Facebook</span>
+          </label>
+          <label className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer text-sm transition-all
+            ${postToIG?'border-pink-500 bg-pink-50 dark:bg-pink-950/50 text-pink-800 dark:text-pink-200 shadow-sm':'border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:border-pink-300'}`}>
             <input type="checkbox" className="rounded accent-pink-500" checked={postToIG} onChange={e=>setPostToIG(e.target.checked)}/>
-            <span>📸 Also post to Instagram <span className="text-gray-400">(requires image)</span></span>
+            <span className="leading-tight">📸 Instagram <span className="text-gray-400 text-xs">(needs image)</span></span>
           </label>
         </div>
+        {!postToFB && !postToIG && (
+          <p className="text-xs text-red-500 mt-1.5">Choose at least one destination.</p>
+        )}
+        {postToIG && !imgFile && !genImgUrl && !pendingImage && (
+          <p className="text-xs text-amber-600 dark:text-amber-400 mt-1.5">Instagram needs an image — add one below.</p>
+        )}
       </div>
       <div className="mb-3">
         <div className="flex items-center justify-between mb-1">

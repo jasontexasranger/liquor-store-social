@@ -129,25 +129,54 @@ Deno.serve(async (req) => {
     let igPostId: string | null = null;
     let errorMsg: string | null = null;
 
+    // Each channel publishes independently — a failure on one must never stop
+    // the other from being attempted, nor mask its success.
+    const publishTo: string[] = post.publish_to ?? ['facebook'];
+    const errors: string[] = [];
+    let pageToken: string | null = null;
+
     try {
-      const pageToken = await getPageToken(acct.fb_page_id);
-      const publishTo: string[] = post.publish_to ?? ['facebook'];
-
-      if (publishTo.includes('facebook')) {
-        fbPostId = await publishFB(acct.fb_page_id, pageToken, post.caption, post.image_url ?? null);
-      }
-
-      if (publishTo.includes('instagram') && post.image_url) {
-        const igId = acct.ig_account_id;
-        if (igId) {
-          igPostId = await publishIG(igId, pageToken, post.caption, post.image_url);
-        } else {
-          errorMsg = 'IG account ID not configured for this store';
-        }
-      }
+      pageToken = await getPageToken(acct.fb_page_id);
     } catch (e) {
       errorMsg = e instanceof Error ? e.message : String(e);
     }
+
+    if (pageToken) {
+      if (publishTo.includes('facebook')) {
+        try {
+          fbPostId = await publishFB(acct.fb_page_id, pageToken, post.caption, post.image_url ?? null);
+        } catch (e) {
+          errors.push('Facebook: ' + (e instanceof Error ? e.message : String(e)));
+        }
+      }
+
+      if (publishTo.includes('instagram')) {
+        try {
+          if (!post.image_url) throw new Error('Instagram requires an image');
+          let igId = acct.ig_account_id;
+          if (!igId) {
+            // Not cached yet — look it up from the linked Facebook Page.
+            const info = await gGet(
+              `/${acct.fb_page_id}`,
+              { fields: 'instagram_business_account' },
+              pageToken,
+            );
+            igId = info.instagram_business_account?.id ?? null;
+            if (igId) {
+              await sb.from('meta_accounts')
+                .update({ ig_account_id: igId })
+                .eq('store_id', post.store_id);
+            }
+          }
+          if (!igId) throw new Error('No Instagram Business account linked to this Page');
+          igPostId = await publishIG(igId, pageToken, post.caption, post.image_url);
+        } catch (e) {
+          errors.push('Instagram: ' + (e instanceof Error ? e.message : String(e)));
+        }
+      }
+    }
+
+    if (errors.length) errorMsg = [errorMsg, ...errors].filter(Boolean).join(' | ');
 
     await sb.from('scheduled_posts').update({
       status: errorMsg && !fbPostId && !igPostId ? 'failed' : 'published',

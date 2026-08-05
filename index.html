@@ -873,60 +873,24 @@ async function gPostForm(path, form) {
 // ─────────────────────────────────────────────
 // AI HELPERS
 // ─────────────────────────────────────────────
-async function callAI(prompt, apiKey, maxTokens=600) {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'anthropic-dangerous-direct-browser-access': 'true',
-    },
-    body: JSON.stringify({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: maxTokens,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
-  return data.content[0].text.trim();
+// Routed through the meta-social edge function so the Anthropic API key stays
+// in Edge Function secrets. It is never loaded into the browser.
+async function callAI(prompt, _unusedApiKey, maxTokens=600) {
+  const result = await callEdge('meta-social', 'aiWrite', { prompt, maxTokens });
+  return (result.text || '').trim();
 }
 
-async function openAIDescribeImage(base64, mime, apiKey) {
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify({
-      model: 'gpt-4o-mini',
-      max_tokens: 200,
-      messages: [{
-        role: 'user',
-        content: [
-          { type: 'image_url', image_url: { url: `data:${mime};base64,${base64}` } },
-          { type: 'text', text: 'Describe this product image in detail for a DALL-E image generation prompt. Focus on the product, packaging, label, colours, and visual characteristics. Be specific and vivid. Under 80 words, no intro text.' }
-        ]
-      }]
-    })
-  });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
-  return data.choices[0].message.content.trim();
+// Both OpenAI calls run server-side via the meta-social edge function so that
+// OPENAI_API_KEY never reaches the browser.
+async function openAIDescribeImage(base64, mime, _unusedApiKey) {
+  const result = await callEdge('meta-social', 'aiDescribeImage', { base64, mime });
+  return (result.text || '').trim();
 }
 
-async function openAIGenerateImage(prompt, dalleSize, apiKey) {
-  const res = await fetch('https://api.openai.com/v1/images/generations', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-    body: JSON.stringify({ model: 'gpt-image-1', prompt, n: 1, size: dalleSize, quality: 'medium' })
-  });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message);
-  // gpt-image-1 returns base64, convert to data URL
-  const item = data.data[0];
-  const url = item.url || (item.b64_json ? `data:image/png;base64,${item.b64_json}` : null);
-  if (!url) throw new Error('No image returned from API');
-  return { url, revised: item.revised_prompt || '' };
+async function openAIGenerateImage(prompt, dalleSize, _unusedApiKey) {
+  const result = await callEdge('meta-social', 'aiGenerateImage', { prompt, size: dalleSize });
+  if (!result.url) throw new Error('No image returned from API');
+  return { url: result.url, revised: result.revised || '' };
 }
 
 // ─────────────────────────────────────────────
@@ -1414,7 +1378,6 @@ function AIWriter({ storeName, apiKey, mode='caption', onResult }) {
   const [loading, setLoading] = useState(false);
 
   const generate = async () => {
-    if (!apiKey)       { toast.error('Add your Anthropic API key in Settings first'); return; }
     if (!topic.trim()) { toast.error('Enter a topic or promotion description'); return; }
     setLoading(true);
     try {
@@ -1538,8 +1501,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
 
   // ── LIFESTYLE MODE: AI background + composite ──
   const generateLifestyle = async () => {
-    const apiKey = settings.openaiKey;
-    if (!apiKey) { toast.error('Add your OpenAI API key in Settings'); return; }
+    const apiKey = null; // key is server-side; kept for signature compatibility
     const store    = STORES.find(s=>s.id===storeId);
     const storeName= store?.name || 'the store';
     const dalleSize= IMAGE_SIZES.find(s=>s.value===size)?.dalleSize || '1024x1024';
@@ -1955,7 +1917,7 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
         <p className="text-xs text-gray-400 mt-1 text-right">{caption.length} chars</p>
         <p className="text-xs text-gray-400 dark:text-gray-500 mt-1 italic">↳ <span className="text-gray-500 dark:text-gray-400">Auto-appended:</span> Prices exclude tax &amp; deposit - while supplies last</p>
       </div>
-      {showAI && <div className="mb-4"><AIWriter storeName={activeStore} apiKey={settings.anthropicKey} mode="caption" onResult={t=>setCaption(t)}/></div>}
+      {showAI && <div className="mb-4"><AIWriter storeName={activeStore} mode="caption" onResult={t=>setCaption(t)}/></div>}
 
       {/* Image section */}
       <div className="mb-4">
@@ -2210,7 +2172,7 @@ function CampaignBuilder({ settings }) {
           <h3 className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-wide">Ad Creative</h3>
           <button onClick={()=>setShowAI(v=>!v)} className="text-xs font-semibold text-violet-600 dark:text-violet-400 hover:underline">{showAI?'Hide AI ↑':'✨ AI Copy'}</button>
         </div>
-        {showAI && <div className="mb-4"><AIWriter storeName={store.name} apiKey={settings.anthropicKey} mode="ad" onResult={handleAI}/></div>}
+        {showAI && <div className="mb-4"><AIWriter storeName={store.name} mode="ad" onResult={handleAI}/></div>}
         <div className="space-y-3">
           <div><Label>Headline <span className="text-gray-400 font-normal normal-case">({headline.length}/25)</span></Label><Input value={headline} onChange={e=>setHeadline(e.target.value)} maxLength={25} placeholder="Shop Our Whiskey Sale"/></div>
           <div><Label>Primary Text</Label><Textarea value={bodyText} onChange={e=>setBodyText(e.target.value)} rows={3} placeholder="Discover amazing local spirits…"/></div>
@@ -2638,8 +2600,7 @@ function ImageGenerator({ settings, onUseInPost }) {
   };
 
   const assemblePrompt = async () => {
-    const apiKey=settings.openaiKey;
-    if (!apiKey) { toast.error('Add your OpenAI API key in Settings'); return null; }
+    const apiKey=null; // key is server-side
     let productDesc='';
     if (prodFile) {
       setGenStep('analyzing');
@@ -2665,8 +2626,7 @@ function ImageGenerator({ settings, onUseInPost }) {
   };
 
   const generate = async () => {
-    const apiKey=settings.openaiKey;
-    if (!apiKey) { toast.error('Add your OpenAI API key in Settings'); return; }
+    const apiKey=null; // key is server-side
     setResult(null);
     try {
       let prompt;
@@ -3756,35 +3716,33 @@ function SettingsPage({ settings, onSave, currentUserId }) {
     <div className="space-y-4 max-w-2xl">
       <UserAccountsSection currentUserId={currentUserId}/>
       <Card>
-        <h2 className="text-base font-bold text-gray-900 dark:text-white mb-1">Facebook Page Access Tokens</h2>
-        <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">Generate long-lived page tokens in the <a href="https://developers.facebook.com/tools/explorer/" target="_blank" rel="noopener" className="text-indigo-600 dark:text-indigo-400 underline">Graph API Explorer</a>. Requires <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">pages_manage_posts</code>, <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">pages_read_engagement</code> permissions.</p>
-        <div className="space-y-4">
+        <h2 className="text-base font-bold text-gray-900 dark:text-white mb-1">🔒 Credentials</h2>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+          API keys and page tokens are stored as <strong>Supabase Edge Function secrets</strong> and are
+          only ever used server-side. They are deliberately not readable or editable from this browser,
+          so there is nothing to enter here.
+        </p>
+        <div className="space-y-2 text-xs">
           {STORES.map(s=>(
-            <div key={s.id}>
-              <Label>{s.name}</Label>
-              <p className="text-xs text-gray-400 mb-1">Page ID: {s.pageId}</p>
-              <Input type="password" value={form.tokens[s.id]||''} onChange={e=>setForm(f=>({...f,tokens:{...f.tokens,[s.id]:e.target.value}}))} placeholder="EAAxxxxx…"/>
+            <div key={s.id} className="flex items-center justify-between p-2.5 rounded-xl border border-gray-200 dark:border-gray-700">
+              <span className="text-gray-700 dark:text-gray-300">{s.name}</span>
+              <code className="text-gray-400">PT_{s.pageId}</code>
             </div>
           ))}
+          <div className="flex items-center justify-between p-2.5 rounded-xl border border-gray-200 dark:border-gray-700">
+            <span className="text-gray-700 dark:text-gray-300">AI copy (Claude)</span>
+            <code className="text-gray-400">ANTHROPIC_API_KEY</code>
+          </div>
+          <div className="flex items-center justify-between p-2.5 rounded-xl border border-gray-200 dark:border-gray-700">
+            <span className="text-gray-700 dark:text-gray-300">AI images (OpenAI)</span>
+            <code className="text-gray-400">OPENAI_API_KEY</code>
+          </div>
         </div>
+        <p className="text-xs text-gray-400 dark:text-gray-500 mt-4">
+          To change one, edit it in the Supabase dashboard under
+          Edge Functions → Secrets.
+        </p>
       </Card>
-      <Card>
-        <h2 className="text-base font-bold text-gray-900 dark:text-white mb-1">Meta Ads</h2>
-        <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">User access token with <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">ads_management</code> and <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">ads_read</code> permissions.<br/>Ad Account: <code className="bg-gray-100 dark:bg-gray-700 px-1 rounded">{AD_ACCOUNT_ID}</code></p>
-        <Input type="password" value={form.metaToken||''} onChange={e=>setForm(f=>({...f,metaToken:e.target.value}))} placeholder="EAAxxxxx…"/>
-      </Card>
-      <Card>
-        <h2 className="text-base font-bold text-gray-900 dark:text-white mb-1">AI Copy Writer — Anthropic</h2>
-        <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">Used client-side with Claude Haiku to generate post captions and ad copy.<br/>Get yours at <a href="https://console.anthropic.com/" target="_blank" rel="noopener" className="text-indigo-600 dark:text-indigo-400 underline">console.anthropic.com</a>.</p>
-        <Input type="password" value={form.anthropicKey||''} onChange={e=>setForm(f=>({...f,anthropicKey:e.target.value}))} placeholder="sk-ant-xxxxx…"/>
-      </Card>
-      <Card>
-        <h2 className="text-base font-bold text-gray-900 dark:text-white mb-1">AI Image Generator — OpenAI</h2>
-        <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">Used client-side with DALL-E 3 (images) and GPT-4o Mini Vision (product analysis).<br/>Get yours at <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener" className="text-indigo-600 dark:text-indigo-400 underline">platform.openai.com</a>.</p>
-        <Input type="password" value={form.openaiKey||''} onChange={e=>setForm(f=>({...f,openaiKey:e.target.value}))} placeholder="sk-xxxxx…"/>
-      </Card>
-      <Button onClick={save} loading={saving} size="lg" className="w-full">Save All Settings</Button>
-      <p className="text-xs text-center text-gray-400 dark:text-gray-500">All keys are encrypted at rest in Supabase and protected by Row Level Security — only authenticated users can read them.</p>
     </div>
   );
 }
@@ -5071,18 +5029,12 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
   // Load settings + role from Supabase on mount
   useEffect(function() {
     var sb = getSB(); if (!sb) return;
-    // Load settings
-    Promise.all([
-      sb.from('store_tokens').select('store_id,page_token'),
-      sb.from('api_keys').select('key_name,key_value'),
-    ]).then(function(results) {
-      var tokens = results[0].data;
-      var keys   = results[1].data;
-      var tMap = Object.fromEntries(STORES.map(function(s) { return [s.id, '']; }));
-      (tokens||[]).forEach(function(r) { if (r.store_id in tMap) tMap[r.store_id] = r.page_token||''; });
-      var kMap = Object.fromEntries((keys||[]).map(function(r) { return [r.key_name, r.key_value||'']; }));
-      setSettings({ tokens:tMap, metaToken:kMap.meta_token||'', anthropicKey:kMap.anthropic_key||'', openaiKey:kMap.openai_key||'' });
-    }).catch(function() {}).finally(function() { setSettingsLoaded(true); });
+    // Secrets are NOT loaded into the browser. Page tokens live in Edge Function
+    // secrets (PT_{page_id}) and the Anthropic key is used server-side by the
+    // meta-social `aiWrite` action. Nothing here should ever hold a credential.
+    var tMap = Object.fromEntries(STORES.map(function(s) { return [s.id, '']; }));
+    setSettings({ tokens:tMap, metaToken:'', anthropicKey:'', openaiKey:'' });
+    setSettingsLoaded(true);
     // Check DB role (catches admin accounts not in hardcoded list)
     if (!hardcodedAdmin && user) {
       sb.from('user_roles').select('role, store_id, store_ids').eq('user_id', user.id).maybeSingle()
@@ -5098,18 +5050,10 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
     }
   }, []);
 
+  // Credentials are no longer written from the browser. Page tokens and API
+  // keys live in Supabase Edge Function secrets, so there is nothing sensitive
+  // to persist here.
   const saveSettings = async (s) => {
-    const sb=getSB(); if(!sb) throw new Error('Supabase not connected');
-    const [r1,r2]=await Promise.all([
-      sb.from('store_tokens').upsert(STORES.map(st=>({store_id:st.id,page_token:s.tokens[st.id]||''})),{onConflict:'store_id'}),
-      sb.from('api_keys').upsert([
-        {key_name:'meta_token',    key_value:s.metaToken    ||''},
-        {key_name:'anthropic_key', key_value:s.anthropicKey ||''},
-        {key_name:'openai_key',    key_value:s.openaiKey    ||''},
-      ],{onConflict:'key_name'}),
-    ]);
-    if(r1.error) throw r1.error;
-    if(r2.error) throw r2.error;
     setSettings(s);
   };
 

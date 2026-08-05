@@ -504,6 +504,97 @@ Deno.serve(async (req) => {
       }, { headers: corsHeaders });
     }
 
+    // ── aiWrite ──────────────────────────────────────────────────────────────
+    // Server-side Claude call. The Anthropic key stays in Edge Function secrets
+    // and is never sent to the browser.
+    if (action === 'aiWrite') {
+      const { prompt, maxTokens } = params as { prompt: string; maxTokens?: number };
+      if (!prompt?.trim()) throw new Error('prompt required');
+
+      const key = Deno.env.get('ANTHROPIC_API_KEY');
+      if (!key) throw new Error('ANTHROPIC_API_KEY is not configured in Edge Function secrets');
+
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5-20251001',
+          max_tokens: Math.min(Math.max(Number(maxTokens) || 600, 1), 2000),
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message ?? 'Claude API error');
+      return Response.json(
+        { text: (data.content?.[0]?.text ?? '').trim() },
+        { headers: corsHeaders },
+      );
+    }
+
+    // ── aiDescribeImage / aiGenerateImage ────────────────────────────────────
+    // Server-side OpenAI calls. OPENAI_API_KEY stays in Edge Function secrets.
+    if (action === 'aiDescribeImage' || action === 'aiGenerateImage') {
+      const key = Deno.env.get('OPENAI_API_KEY');
+      if (!key) throw new Error('OPENAI_API_KEY is not configured in Edge Function secrets');
+      const oaHeaders = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${key}`,
+      };
+
+      if (action === 'aiDescribeImage') {
+        const { base64, mime } = params as { base64: string; mime: string };
+        if (!base64) throw new Error('base64 image required');
+        const res = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: oaHeaders,
+          body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            max_tokens: 200,
+            messages: [{
+              role: 'user',
+              content: [
+                { type: 'image_url', image_url: { url: `data:${mime || 'image/jpeg'};base64,${base64}` } },
+                { type: 'text', text: 'Describe this product image in detail for a DALL-E image generation prompt. Focus on the product, packaging, label, colours, and visual characteristics. Be specific and vivid. Under 80 words, no intro text.' },
+              ],
+            }],
+          }),
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error.message ?? 'OpenAI error');
+        return Response.json(
+          { text: (data.choices?.[0]?.message?.content ?? '').trim() },
+          { headers: corsHeaders },
+        );
+      }
+
+      const { prompt, size } = params as { prompt: string; size?: string };
+      if (!prompt?.trim()) throw new Error('prompt required');
+      const res = await fetch('https://api.openai.com/v1/images/generations', {
+        method: 'POST',
+        headers: oaHeaders,
+        body: JSON.stringify({
+          model: 'gpt-image-1',
+          prompt,
+          n: 1,
+          size: size || '1024x1024',
+          quality: 'medium',
+        }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message ?? 'OpenAI error');
+      const item = data.data?.[0];
+      const url = item?.url || (item?.b64_json ? `data:image/png;base64,${item.b64_json}` : null);
+      if (!url) throw new Error('No image returned from API');
+      return Response.json(
+        { url, revised: item.revised_prompt || '' },
+        { headers: corsHeaders },
+      );
+    }
+
     throw new Error(`Unknown action: ${action}`);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

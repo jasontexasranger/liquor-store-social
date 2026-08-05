@@ -39,7 +39,7 @@ const STORES = [
 ];
 
 const AD_ACCOUNT_ID = 'act_813974741538881';
-const GRAPH_API     = 'https://graph.facebook.com/v21.0';
+const GRAPH_API     = 'https://graph.facebook.com/v25.0';
 
 const AD_OBJECTIVES = [
   { value: 'OUTCOME_AWARENESS', label: 'Awareness',  optGoal: 'REACH' },
@@ -116,6 +116,66 @@ const ADMIN_EMAILS = ['jasontexasranger@gmail.com', 'jason@vwdevelopments.com', 
 
 const _sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: true } });
 const getSB = () => _sb;
+
+// ─────────────────────────────────────────────
+// EDGE FUNCTION CALLER
+// All Meta API calls go through server-side edge functions so that
+// tokens / system-user secrets never touch the browser.
+// ─────────────────────────────────────────────
+async function callEdge(funcName, action, params) {
+  const sb = getSB();
+  var sessionData = await sb.auth.getSession();
+  var session = sessionData.data.session;
+  if (!session) throw new Error('Not authenticated');
+  var resp = await fetch(SUPABASE_URL + '/functions/v1/' + funcName, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + session.access_token,
+    },
+    body: JSON.stringify(Object.assign({ action: action }, params || {})),
+  });
+  var data = await resp.json();
+  if (data.error) throw new Error(data.error);
+  return data;
+}
+
+// Upload an image (File object or data-URL string) to Supabase Storage
+// and return the public URL.  Called from PostComposer before publishing.
+async function uploadImageToStorage(fileOrDataUrl) {
+  var sb = getSB();
+  var sessionData = await sb.auth.getSession();
+  var session = sessionData.data.session;
+  if (!session) throw new Error('Not authenticated');
+
+  var blob, ext;
+  if (typeof fileOrDataUrl === 'string' && fileOrDataUrl.startsWith('data:')) {
+    // Convert data URL to Blob
+    var arr = fileOrDataUrl.split(',');
+    var mime = arr[0].match(/:(.*?);/)[1];
+    var bstr = atob(arr[1]);
+    var n = bstr.length;
+    var u8 = new Uint8Array(n);
+    for (var i = 0; i < n; i++) u8[i] = bstr.charCodeAt(i);
+    blob = new Blob([u8], { type: mime });
+    ext = mime.split('/')[1] || 'jpg';
+  } else {
+    blob = fileOrDataUrl;
+    ext = (fileOrDataUrl.name || 'image').split('.').pop() || 'jpg';
+  }
+
+  var userId = session.user.id;
+  var filename = userId + '/' + Date.now() + '.' + ext;
+
+  var uploadResult = await sb.storage.from('post-images').upload(filename, blob, {
+    contentType: blob.type || 'image/jpeg',
+    upsert: false,
+  });
+  if (uploadResult.error) throw new Error(uploadResult.error.message);
+
+  var urlResult = sb.storage.from('post-images').getPublicUrl(filename);
+  return urlResult.data.publicUrl;
+}
 
 // ─────────────────────────────────────────────
 // TOAST CONTEXT
@@ -1723,17 +1783,19 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
 // ─────────────────────────────────────────────
 function PostComposer({ settings, pendingImage, onClearPending }) {
   const toast = useToast();
-  const [selected,   setSelected]   = useState([STORES[0].id]);
-  const [caption,    setCaption]    = useState('');
-  const [imgFile,    setImgFile]    = useState(null);
-  const [imgPrev,    setImgPrev]    = useState(null);
-  const [genImgUrl,  setGenImgUrl]  = useState(null);
-  const [schedule,   setSchedule]   = useState('');
-  const [loading,    setLoading]    = useState(false);
-  const [showAI,     setShowAI]     = useState(false);
-  const [showImgGen, setShowImgGen] = useState(false);
-  const [lightbox,   setLightbox]   = useState(null);
-  const [results,    setResults]    = useState([]);
+  const [selected,    setSelected]   = useState([STORES[0].id]);
+  const [caption,     setCaption]    = useState('');
+  const [imgFile,     setImgFile]    = useState(null);
+  const [imgPrev,     setImgPrev]    = useState(null);
+  const [genImgUrl,   setGenImgUrl]  = useState(null);
+  const [schedule,    setSchedule]   = useState('');
+  const [loading,     setLoading]    = useState(false);
+  const [showAI,      setShowAI]     = useState(false);
+  const [showImgGen,  setShowImgGen] = useState(false);
+  const [lightbox,    setLightbox]   = useState(null);
+  const [results,     setResults]    = useState([]);
+  const [postToIG,    setPostToIG]   = useState(false);
+  const [uploading,   setUploading]  = useState(false);
 
   useEffect(()=>{
     if (pendingImage) { setImgFile(null); setImgPrev(pendingImage); setGenImgUrl(pendingImage); setShowImgGen(false); }
@@ -1762,56 +1824,73 @@ function PostComposer({ settings, pendingImage, onClearPending }) {
   const post = async () => {
     if (!caption.trim())     { toast.error('Write a caption first'); return; }
     if (selected.length===0) { toast.error('Select at least one store'); return; }
-    const missing = selected.filter(id=>!settings.tokens[id]);
-    if (missing.length) { toast.error(`Missing token(s) for: ${missing.map(id=>STORES.find(s=>s.id===id)?.name).join(', ')}`); return; }
+    if (postToIG && !imgFile && !genImgUrl && !pendingImage) {
+      toast.error('Instagram requires an image'); return;
+    }
     if (schedule) {
       const ts = new Date(schedule).getTime();
       if (ts < Date.now()+10*60*1000) { toast.error('Scheduled time must be at least 10 minutes in the future'); return; }
     }
 
     setLoading(true); setResults([]);
-    const res = [];
-    const activeImgUrl = genImgUrl || (pendingImage&&!imgFile?pendingImage:null);
 
-    for (const storeId of selected) {
-      const store   = STORES.find(s=>s.id===storeId);
-      const token   = settings.tokens[storeId];
-      const schedTs = schedule ? Math.floor(new Date(schedule).getTime()/1000) : null;
+    // Upload image to Storage first if we have one (gives a stable public URL for Meta)
+    var imageUrl = null;
+    var activeImgUrl = genImgUrl || (pendingImage&&!imgFile?pendingImage:null);
+    if (imgFile || activeImgUrl) {
       try {
-        let postId;
-        if (imgFile) {
-          const form = new FormData();
-          form.append('caption', caption+POST_SUFFIX);
-          form.append('source', imgFile);
-          form.append('access_token', token);
-          if (schedTs) { form.append('published','false'); form.append('scheduled_publish_time',String(schedTs)); }
-          const r = await gPostForm(`/${store.pageId}/photos`, form);
-          postId = r.post_id||r.id;
-        } else if (activeImgUrl) {
-          const body = { url: activeImgUrl, caption: caption+POST_SUFFIX };
-          if (schedTs) { body.published=false; body.scheduled_publish_time=schedTs; }
-          const r = await gPost(`/${store.pageId}/photos`, body, token);
-          postId = r.post_id||r.id;
-        } else {
-          const body = { message: caption+POST_SUFFIX };
-          if (schedTs) { body.published=false; body.scheduled_publish_time=schedTs; }
-          const r = await gPost(`/${store.pageId}/feed`, body, token);
-          postId = r.id;
-        }
-        res.push({ store:store.name, success:true, postId, scheduled:!!schedTs });
-      } catch(e) {
-        res.push({ store:store.name, success:false, error:e.message });
-      }
+        setUploading(true);
+        imageUrl = await uploadImageToStorage(imgFile || activeImgUrl);
+      } catch(uploadErr) {
+        toast.error('Image upload failed: ' + uploadErr.message);
+        setLoading(false); setUploading(false); return;
+      } finally { setUploading(false); }
     }
 
-    setResults(res);
-    res.forEach(r => { if(r.success) toast.success(`${r.store}: ${r.scheduled?'Scheduled!':'Published!'}`); else toast.error(`${r.store}: ${r.error}`); });
-    if (res.some(r=>r.success)) { setCaption(''); setImgFile(null); setImgPrev(null); setGenImgUrl(null); setSchedule(''); if(onClearPending) onClearPending(); }
+    const publishTo = ['facebook'];
+    if (postToIG && imageUrl) publishTo.push('instagram');
+
+    try {
+      if (schedule) {
+        // Schedule via edge function + DB
+        var sched = await callEdge('meta-social', 'schedule', {
+          storeIds: selected,
+          caption: caption,
+          imageUrl: imageUrl,
+          publishTo: publishTo,
+          scheduledAt: new Date(schedule).toISOString(),
+        });
+        setResults(selected.map(id => ({ store: (STORES.find(s=>s.id===id)||{}).name||id, success:true, scheduled:true })));
+        toast.success('Post scheduled!');
+      } else {
+        // Publish now via edge function
+        var result = await callEdge('meta-social', 'publish', {
+          storeIds: selected,
+          caption: caption,
+          imageUrl: imageUrl,
+          publishTo: publishTo,
+        });
+        var res = (result.results || []).map(function(r) {
+          var storeName = (STORES.find(s=>s.id===r.storeId)||{}).name || r.storeId;
+          return { store: storeName, success: r.success, postId: r.fbPostId, igPostId: r.igPostId, error: r.error, igError: r.igError };
+        });
+        setResults(res);
+        res.forEach(function(r) {
+          if (r.success) toast.success(r.store + ': Published!');
+          else toast.error(r.store + ': ' + r.error);
+          if (r.igError) toast.error(r.store + ' IG: ' + r.igError);
+        });
+      }
+      setCaption(''); setImgFile(null); setImgPrev(null); setGenImgUrl(null); setSchedule('');
+      if (onClearPending) onClearPending();
+    } catch(e) {
+      toast.error('Failed: ' + e.message);
+    }
     setLoading(false);
   };
 
   const activeStoreId = selected.length===1 ? selected[0] : STORES[0].id;
-  const activeStore   = STORES.find(s=>s.id===activeStoreId)?.name || 'our store';
+  const activeStore   = (STORES.find(s=>s.id===activeStoreId)||{}).name || 'our store';
 
   return (
     <>
@@ -1828,6 +1907,12 @@ function PostComposer({ settings, pendingImage, onClearPending }) {
               <span className="leading-tight">{s.name}</span>
             </label>
           ))}
+        </div>
+        <div className="mt-2 flex items-center gap-3">
+          <label className="flex items-center gap-2 text-xs cursor-pointer select-none text-gray-600 dark:text-gray-400">
+            <input type="checkbox" className="rounded accent-pink-500" checked={postToIG} onChange={e=>setPostToIG(e.target.checked)}/>
+            <span>📸 Also post to Instagram <span className="text-gray-400">(requires image)</span></span>
+          </label>
         </div>
       </div>
       <div className="mb-3">
@@ -1882,6 +1967,7 @@ function PostComposer({ settings, pendingImage, onClearPending }) {
         <Label>Schedule (leave blank to post immediately)</Label>
         <Input type="datetime-local" value={schedule} onChange={e=>setSchedule(e.target.value)}/>
       </div>
+      {uploading && <p className="text-xs text-indigo-500 dark:text-indigo-400 mb-2 text-center">⬆ Uploading image…</p>}
       <Button onClick={post} loading={loading} className="w-full" size="lg">
         {schedule?'📅 Schedule Post':'🚀 Publish Now'}
       </Button>
@@ -1889,9 +1975,13 @@ function PostComposer({ settings, pendingImage, onClearPending }) {
         <div className="mt-4 space-y-2">
           <Divider label="Results"/>
           {results.map((r,i) => (
-            <div key={i} className={`flex items-center justify-between text-sm p-3 rounded-xl ${r.success?'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300':'bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400'}`}>
-              <span>{r.success?'✓':'✗'} {r.store} — {r.success?(r.scheduled?'Scheduled':'Published'):r.error}</span>
-              {r.success&&r.postId && <a href={fbPostUrl(r.postId)} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline ml-3 whitespace-nowrap">View post →</a>}
+            <div key={i} className={`flex flex-col gap-1 text-sm p-3 rounded-xl ${r.success?'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300':'bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400'}`}>
+              <div className="flex items-center justify-between">
+                <span>{r.success?'✓':'✗'} {r.store} — {r.success?(r.scheduled?'Scheduled':'Published'):r.error}</span>
+                {r.success&&r.postId && <a href={fbPostUrl(r.postId)} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline ml-3 whitespace-nowrap">FB →</a>}
+                {r.success&&r.igPostId && <a href={'https://www.instagram.com/p/'+r.igPostId} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-pink-600 dark:text-pink-400 hover:underline ml-1 whitespace-nowrap">IG →</a>}
+              </div>
+              {r.igError && <p className="text-xs text-amber-600 dark:text-amber-400">⚠ IG: {r.igError}</p>}
             </div>
           ))}
         </div>
@@ -1910,21 +2000,16 @@ function PostHistory({ settings }) {
   const [posts,   setPosts]   = useState([]);
   const [loading, setLoading] = useState(false);
   const [loaded,  setLoaded]  = useState(false);
-  const store = STORES.find(s=>s.id===storeId);
 
-  useEffect(()=>{setLoaded(false);setPosts([]);},[storeId]);
+  useEffect(function(){setLoaded(false);setPosts([]);},[storeId]);
 
   const load = async () => {
-    const token = settings.tokens[storeId];
-    if (!token) { toast.error('No page token for this store — add it in Settings'); return; }
     setLoading(true);
     try {
-      const data = await gGet(`/${store.pageId}/posts`,{
-        fields:'message,story,created_time,full_picture,permalink_url,likes.summary(true),comments.summary(true),shares',limit:12
-      },token);
-      setPosts(data.data||[]);
+      var result = await callEdge('meta-social', 'listPosts', { storeId: storeId });
+      setPosts(result.posts || []);
       setLoaded(true);
-    } catch(e) { toast.error(`Failed to load posts: ${e.message}`); }
+    } catch(e) { toast.error('Failed to load posts: ' + e.message); }
     finally    { setLoading(false); }
   };
 
@@ -1938,8 +2023,11 @@ function PostHistory({ settings }) {
       {!loaded&&!loading && <div className="text-center py-10 text-gray-400 dark:text-gray-500 text-sm">Select a store and click Load Posts</div>}
       {loaded&&posts.length===0 && <div className="text-center py-10 text-gray-400 dark:text-gray-500 text-sm">No posts found.</div>}
       <div className="space-y-3 max-h-[480px] overflow-y-auto pr-1">
-        {posts.map(p => {
-          const text = p.message||p.story||'(no text)';
+        {posts.map(function(p) {
+          var text = p.message||p.story||'(no text)';
+          var likesCount = p.likes && p.likes.summary ? (p.likes.summary.total_count || 0) : 0;
+          var commentsCount = p.comments && p.comments.summary ? (p.comments.summary.total_count || 0) : 0;
+          var sharesCount = p.shares ? (p.shares.count || 0) : 0;
           return (
             <div key={p.id} className="flex gap-3 p-3 rounded-xl border border-gray-100 dark:border-gray-700 hover:border-indigo-200 dark:hover:border-indigo-700 transition-colors">
               {p.full_picture && <img src={p.full_picture} alt="" className="w-16 h-16 rounded-lg object-cover flex-shrink-0 border border-gray-200 dark:border-gray-600"/>}
@@ -1947,9 +2035,9 @@ function PostHistory({ settings }) {
                 <p className="text-sm text-gray-800 dark:text-gray-200 line-clamp-3 leading-snug">{text}</p>
                 <p className="text-xs text-gray-400 mt-1">{fmtDate(p.created_time)}</p>
                 <div className="flex items-center gap-3 mt-1.5 flex-wrap">
-                  <span className="text-xs text-gray-500 dark:text-gray-400">👍 {p.likes?.summary?.total_count??0}</span>
-                  <span className="text-xs text-gray-500 dark:text-gray-400">💬 {p.comments?.summary?.total_count??0}</span>
-                  {(p.shares?.count??0)>0 && <span className="text-xs text-gray-500 dark:text-gray-400">🔄 {p.shares.count}</span>}
+                  <span className="text-xs text-gray-500 dark:text-gray-400">👍 {likesCount}</span>
+                  <span className="text-xs text-gray-500 dark:text-gray-400">💬 {commentsCount}</span>
+                  {sharesCount>0 && <span className="text-xs text-gray-500 dark:text-gray-400">🔄 {sharesCount}</span>}
                   <a href={p.permalink_url||fbPostUrl(p.id)} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline ml-auto">Open →</a>
                 </div>
               </div>
@@ -2004,46 +2092,43 @@ function CampaignBuilder({ settings }) {
   const finishStep = (status,detail='') => setSteps(p=>{ const a=[...p]; a[a.length-1]={...a[a.length-1],status,detail}; return a; });
 
   const launch = async () => {
-    const token = settings.metaToken;
-    if (!token)            { toast.error('Meta User Access Token not set in Settings'); return; }
     if (!campName.trim())  { toast.error('Enter a campaign name'); return; }
     if (!headline.trim()||!bodyText.trim()) { toast.error('Enter headline and body copy'); return; }
     if (placements.length===0) { toast.error('Select at least one placement'); return; }
 
-    const objMeta = AD_OBJECTIVES.find(o=>o.value===objective);
-    setRunning(true); setSteps([]);
+    setRunning(true); setSteps([{ label: 'Sending to server…', status: 'running', detail: '' }]);
 
     try {
-      addStep('Creating campaign…','running');
-      const camp = await gPost(`/${AD_ACCOUNT_ID}/campaigns`,{ name:`[${store.name}] ${campName}`, objective, status:'PAUSED', special_ad_categories:[] },token);
-      finishStep('done',`ID: ${camp.id}`);
-
-      addStep('Creating ad set…','running');
-      const targeting = { geo_locations:{ custom_locations:[{ latitude:parseFloat(lat)||store.lat, longitude:parseFloat(lng)||store.lng, radius:parseInt(radius)||25, distance_unit:'kilometer' }] }, age_min:parseInt(ageMin)||21, age_max:parseInt(ageMax)||65, facebook_positions:placements.filter(p=>p.startsWith('facebook')).map(p=>p.replace('facebook_','')).filter(Boolean), instagram_positions:placements.filter(p=>p.startsWith('instagram')).map(p=>p.replace('instagram_','')).filter(Boolean) };
-      const adSet = await gPost(`/${AD_ACCOUNT_ID}/adsets`,{ name:`${campName} — Ad Set`, campaign_id:camp.id, daily_budget:Math.round(parseFloat(dailyBudget)*100), billing_event:'IMPRESSIONS', optimization_goal:objMeta.optGoal, targeting, status:'PAUSED', page_id:store.pageId },token);
-      finishStep('done',`ID: ${adSet.id}`);
-
-      let imageHash=null;
+      // Upload ad image to Storage first if provided
+      var imageUrl = null;
       if (adImg) {
-        addStep('Uploading image…','running');
-        const b64=await fileToBase64(adImg);
-        const resp=await gPost(`/${AD_ACCOUNT_ID}/adimages`,{[adImg.name]:b64},token);
-        imageHash=resp.images?Object.values(resp.images)[0]?.hash:null;
-        finishStep('done',imageHash?`Hash: ${imageHash}`:'Uploaded');
+        setSteps([{ label: 'Uploading image…', status: 'running', detail: '' }]);
+        imageUrl = await uploadImageToStorage(adImg);
       }
 
-      addStep('Creating ad creative…','running');
-      const linkUrl=destUrl.trim()||`https://www.facebook.com/${store.pageId}`;
-      const creative = await gPost(`/${AD_ACCOUNT_ID}/adcreatives`,{ name:`${campName} — Creative`, object_story_spec:{ page_id:store.pageId, link_data:{ message:bodyText, name:headline, link:linkUrl, call_to_action:{type:ctaType,value:{link:linkUrl}}, ...(imageHash?{image_hash:imageHash}:{}) } } },token);
-      finishStep('done',`ID: ${creative.id}`);
-
-      addStep('Creating ad…','running');
-      const ad=await gPost(`/${AD_ACCOUNT_ID}/ads`,{ name:`${campName} — Ad`, adset_id:adSet.id, creative:{creative_id:creative.id}, status:'PAUSED' },token);
-      finishStep('done',`ID: ${ad.id}`);
-
-      addStep('🎉 Campaign created — all assets are PAUSED','done','Activate in Meta Ads Manager when ready.');
+      var result = await callEdge('meta-ads', 'createCampaign', {
+        storeId: storeId,
+        campName: store.name + ' — ' + campName,
+        objective: objective,
+        dailyBudget: parseFloat(dailyBudget) || 20,
+        lat: parseFloat(lat) || store.lat,
+        lng: parseFloat(lng) || store.lng,
+        radius: parseInt(radius) || 25,
+        ageMin: parseInt(ageMin) || 21,
+        ageMax: parseInt(ageMax) || 65,
+        placements: placements,
+        headline: headline,
+        bodyText: bodyText,
+        ctaType: ctaType,
+        destUrl: destUrl,
+        imageUrl: imageUrl,
+      });
+      setSteps(result.steps || []);
       toast.success('Campaign created!');
-    } catch(e) { finishStep('error',e.message); toast.error(`Failed: ${e.message}`); }
+    } catch(e) {
+      setSteps(function(p) { var a=[...p]; if(a.length) a[a.length-1]={...a[a.length-1],status:'error',detail:e.message}; return a; });
+      toast.error('Failed: ' + e.message);
+    }
     finally    { setRunning(false); }
   };
 
@@ -2111,35 +2196,31 @@ function CampaignDashboard({ settings }) {
   const [togglingId, setTogglingId] = useState(null);
 
   const load = async () => {
-    const token=settings.metaToken;
-    if (!token) { toast.error('Meta User Access Token not set in Settings'); return; }
     setLoading(true);
     try {
-      const data=await gGet(`/${AD_ACCOUNT_ID}/campaigns`,{ fields:'name,status,objective,daily_budget,insights{spend,impressions,clicks,ctr}',limit:100 },token);
-      setCampaigns(data.data||[]);
-    } catch(e) { toast.error(`Failed: ${e.message}`); }
+      var result = await callEdge('meta-ads', 'listCampaigns', { adAccountId: AD_ACCOUNT_ID });
+      setCampaigns(result.campaigns || []);
+    } catch(e) { toast.error('Failed: ' + e.message); }
     finally    { setLoading(false); }
   };
 
-  useEffect(()=>{ load(); },[]);
+  useEffect(function(){ load(); },[]);
 
   const toggleStatus = async (camp) => {
-    const token=settings.metaToken;
-    if(!token) { toast.error('Meta User Access Token not set'); return; }
-    const newStatus=camp.status==='ACTIVE'?'PAUSED':'ACTIVE';
+    var newStatus = camp.status==='ACTIVE' ? 'PAUSED' : 'ACTIVE';
     setTogglingId(camp.id);
     try {
-      await gPost(`/${camp.id}`,{status:newStatus},token);
-      setCampaigns(p=>p.map(c=>c.id===camp.id?{...c,status:newStatus}:c));
-      toast.success(`Campaign ${newStatus==='ACTIVE'?'resumed':'paused'}`);
-    } catch(e) { toast.error(`Failed: ${e.message}`); }
+      await callEdge('meta-ads', 'toggleCampaign', { campaignId: camp.id, newStatus: newStatus });
+      setCampaigns(function(p) { return p.map(function(c) { return c.id===camp.id ? Object.assign({},c,{status:newStatus}) : c; }); });
+      toast.success('Campaign ' + (newStatus==='ACTIVE'?'resumed':'paused'));
+    } catch(e) { toast.error('Failed: ' + e.message); }
     finally    { setTogglingId(null); }
   };
 
-  const storeOf = name => STORES.find(s=>(name||'').startsWith(`[${s.name}]`));
-  const filtered = filter==='all'?campaigns:campaigns.filter(c=>storeOf(c.name)?.id===filter);
-  const insight  = (c,f) => c.insights?.data?.[0]?.[f]??null;
-  const statusColor = s=>({ACTIVE:'green',PAUSED:'yellow',DELETED:'red',ARCHIVED:'gray'}[s]||'gray');
+  const storeOf = function(name) { return STORES.find(function(s) { return (name||'').startsWith('['+s.name+']'); }); };
+  const filtered = filter==='all' ? campaigns : campaigns.filter(function(c) { var s=storeOf(c.name); return s && s.id===filter; });
+  const insight  = function(c,f) { return c.insights && c.insights.data && c.insights.data[0] ? (c.insights.data[0][f] || null) : null; };
+  const statusColor = function(s) { return ({ACTIVE:'green',PAUSED:'yellow',DELETED:'red',ARCHIVED:'gray'}[s]||'gray'); };
 
   return (
     <Card>
@@ -3667,6 +3748,95 @@ function SettingsPage({ settings, onSave, currentUserId }) {
 }
 
 // ─────────────────────────────────────────────
+// SCHEDULED POSTS PANEL
+// ─────────────────────────────────────────────
+function ScheduledPostsPanel() {
+  const toast = useToast();
+  const [posts,    setPosts]    = useState([]);
+  const [loading,  setLoading]  = useState(false);
+  const [canceling,setCanceling]= useState(null);
+
+  const load = useCallback(async function() {
+    setLoading(true);
+    try {
+      var result = await callEdge('meta-social', 'listScheduled', {});
+      setPosts(result.posts || []);
+    } catch(e) { toast.error('Failed to load: ' + e.message); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(function(){ load(); }, [load]);
+
+  const cancel = async function(id) {
+    setCanceling(id);
+    try {
+      await callEdge('meta-social', 'cancelScheduled', { id: id });
+      toast.success('Cancelled');
+      await load();
+    } catch(e) { toast.error(e.message); }
+    finally { setCanceling(null); }
+  };
+
+  const pending = posts.filter(function(p) { return p.status === 'pending'; });
+  const past    = posts.filter(function(p) { return p.status !== 'pending'; });
+
+  return (
+    <Card>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-base font-bold text-gray-900 dark:text-white">📅 Scheduled &amp; Recent Posts</h2>
+        <Button variant="secondary" size="sm" onClick={load} loading={loading}>Refresh</Button>
+      </div>
+      {posts.length === 0 && !loading && (
+        <p className="text-center py-8 text-gray-400 dark:text-gray-500 text-sm">No scheduled posts.</p>
+      )}
+      {pending.length > 0 && (
+        <div className="mb-4">
+          <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">Pending ({pending.length})</p>
+          <div className="space-y-2">
+            {pending.map(function(p) {
+              var storeName = (STORES.find(function(s) { return s.id === p.store_id; }) || {}).name || p.store_id;
+              return (
+                <div key={p.id} className="flex items-start gap-3 p-3 rounded-xl border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20">
+                  {p.image_url && <img src={p.image_url} alt="" className="w-12 h-12 rounded-lg object-cover flex-shrink-0"/>}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">{storeName}</p>
+                    <p className="text-xs text-gray-600 dark:text-gray-400 line-clamp-2 mt-0.5">{p.caption}</p>
+                    <p className="text-xs text-gray-400 mt-1">🕐 {fmtDate(p.scheduled_at)} · {(p.publish_to || ['facebook']).join(' + ')}</p>
+                  </div>
+                  <Button variant="danger" size="sm" loading={canceling === p.id} onClick={function(){ cancel(p.id); }}>Cancel</Button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {past.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">Recent ({past.length})</p>
+          <div className="space-y-2">
+            {past.map(function(p) {
+              var storeName = (STORES.find(function(s) { return s.id === p.store_id; }) || {}).name || p.store_id;
+              var isOk = p.status === 'published';
+              return (
+                <div key={p.id} className={'flex items-start gap-3 p-3 rounded-xl border ' + (isOk ? 'border-emerald-200 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-900/20' : 'border-red-200 dark:border-red-700 bg-red-50 dark:bg-red-900/20')}>
+                  {p.image_url && <img src={p.image_url} alt="" className="w-12 h-12 rounded-lg object-cover flex-shrink-0"/>}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">{storeName} · <span className={'font-bold ' + (isOk ? 'text-emerald-600' : 'text-red-600')}>{p.status}</span></p>
+                    <p className="text-xs text-gray-600 dark:text-gray-400 line-clamp-2 mt-0.5">{p.caption}</p>
+                    {p.error_msg && <p className="text-xs text-red-500 mt-0.5">⚠ {p.error_msg}</p>}
+                    <p className="text-xs text-gray-400 mt-1">{fmtDate(p.scheduled_at)}</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// ─────────────────────────────────────────────
 // PAGE CONTAINERS
 // ─────────────────────────────────────────────
 function PostsPage({ settings }) {
@@ -3681,8 +3851,8 @@ function PostsPage({ settings }) {
   return (
     <div>
       <div className="flex border-b border-gray-200 dark:border-gray-700 mb-5">
-        {[{id:'compose',label:'✏️ Compose'},{id:'history',label:'📋 History'},{id:'images',label:'🖼 Image Generator'}].map(t=>(
-          <button key={t.id} onClick={()=>setTab(t.id)} className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}>
+        {[{id:'compose',label:'✏️ Compose'},{id:'history',label:'📋 History'},{id:'scheduled',label:'📅 Scheduled'},{id:'images',label:'🖼 Image Generator'}].map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)} className={`px-4 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}>
             {t.label}{t.id==='compose'&&pendingImage?' 🟢':''}
           </button>
         ))}
@@ -3693,6 +3863,7 @@ function PostsPage({ settings }) {
           <PostHistory  settings={settings}/>
         </div>
       )}
+      {tab==='scheduled' && <ScheduledPostsPanel/>}
       {tab==='history' && <PostHistory settings={settings}/>}
       {tab==='images'  && <ImageGenerator settings={settings} onUseInPost={handleUseInPost}/>}
     </div>
@@ -4815,8 +4986,8 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
 
   const nav = [
     { id:'shelf', icon:'🏷', label:'Shelf Talkers' },
+    { id:'posts', icon:'📝', label:'Posts' },
     ...(isAdmin ? [
-      { id:'posts',    icon:'📝', label:'Posts' },
       { id:'ads',      icon:'📣', label:'Ads' },
       { id:'brand',    icon:'🎨', label:'Brand' },
       { id:'settings', icon:'⚙️', label:'Settings' },
@@ -4837,7 +5008,7 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
             <span className="text-2xl">🥃</span>
             <div>
               <p className="text-sm font-bold text-gray-900 dark:text-white leading-none">Liquor Store Social</p>
-              <p className="text-xs text-gray-400 leading-none mt-0.5">4 locations · Meta v21</p>
+              <p className="text-xs text-gray-400 leading-none mt-0.5">4 locations · Meta v25</p>
             </div>
           </div>
           <div className="flex items-center gap-1">
@@ -4900,7 +5071,7 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
         {page==='settings' && isAdmin    && <SettingsPage     settings={settings} onSave={saveSettings} currentUserId={user ? user.id : null}/>}
       </main>
       <footer className="text-center py-3 text-xs text-gray-300 dark:text-gray-600">
-        Liquor Store Social · Supabase · Graph API v21.0 · {user?.email}
+        Liquor Store Social · Supabase · Graph API v25.0 · {user && user.email ? user.email : ''}
       </footer>
     </div>
   );

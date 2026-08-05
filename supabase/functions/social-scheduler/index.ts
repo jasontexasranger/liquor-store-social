@@ -3,7 +3,10 @@
 // and publishes them to Facebook and/or Instagram.
 //
 // Required edge function secrets:
-//   META_SYSTEM_USER_TOKEN       — Meta Business system-user token
+//   PT_{PAGE_ID}                 — Permanent page access token per store, e.g.:
+//                                  PT_470483222987070   (Hideaway)
+//                                  PT_1240518919373546  (Downtown)
+//   META_SYSTEM_USER_TOKEN       — Optional fallback system-user token
 //   CRON_SECRET                  — Random string shared only with pg_cron SQL
 //   SUPABASE_URL                 — auto-set
 //   SUPABASE_SERVICE_ROLE_KEY    — auto-set
@@ -35,10 +38,15 @@ async function gPost(path: string, body: Record<string, unknown>, token: string)
 }
 
 async function getPageToken(pageId: string): Promise<string> {
+  // 1. Direct per-page token secret (e.g. PT_470483222987070)
+  const direct = Deno.env.get('PT_' + pageId);
+  if (direct) return direct;
+
+  // 2. Fallback: system-user token exchange
   const sut = Deno.env.get('META_SYSTEM_USER_TOKEN');
-  if (!sut) throw new Error('META_SYSTEM_USER_TOKEN not configured');
-  const data = await gGet(`/${pageId}`, { fields: 'access_token' }, sut);
-  if (!data.access_token) throw new Error(`No page token for ${pageId}`);
+  if (!sut) throw new Error('No page token configured for page ' + pageId + '. Add PT_' + pageId + ' secret.');
+  const data = await gGet('/' + pageId, { fields: 'access_token' }, sut);
+  if (!data.access_token) throw new Error('No page token for ' + pageId);
   return data.access_token;
 }
 

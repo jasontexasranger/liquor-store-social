@@ -4,7 +4,12 @@
 //          listComments | replyComment | deletePost | getIgAccountId
 //
 // Required edge function secrets (Dashboard → Edge Functions → Secrets):
-//   META_SYSTEM_USER_TOKEN  — Meta Business system-user token (never in browser)
+//   PT_{PAGE_ID}            — Permanent page access token per store, e.g.:
+//                             PT_470483222987070   (Hideaway Liquor Store)
+//                             PT_1240518919373546  (Downtown Liquor Store)
+//                             PT_195479573844075   (Cobblestone — when available)
+//                             PT_58258641073       (Brothers — when available)
+//   META_SYSTEM_USER_TOKEN  — Optional fallback: Meta system-user token
 //   SUPABASE_URL            — auto-set by Supabase
 //   SUPABASE_SERVICE_ROLE_KEY — auto-set by Supabase
 
@@ -48,12 +53,24 @@ async function gDelete(path: string, token: string) {
 
 // ─── Token helpers ────────────────────────────────────────────────────────────
 
-// Exchange system-user token for a specific page's access token
+// Get the page access token for a given page ID.
+// Checks PT_{pageId} secret first (preferred: permanent page tokens stored directly).
+// Falls back to exchanging META_SYSTEM_USER_TOKEN if available.
 async function getPageToken(pageId: string): Promise<string> {
+  // 1. Direct per-page token secret (e.g. PT_470483222987070)
+  const direct = Deno.env.get('PT_' + pageId);
+  if (direct) return direct;
+
+  // 2. Fallback: system-user token exchange
   const sut = Deno.env.get('META_SYSTEM_USER_TOKEN');
-  if (!sut) throw new Error('META_SYSTEM_USER_TOKEN secret not configured');
-  const data = await gGet(`/${pageId}`, { fields: 'access_token' }, sut);
-  if (!data.access_token) throw new Error(`Could not retrieve page token for page ${pageId}`);
+  if (!sut) {
+    throw new Error(
+      'No page token configured for page ' + pageId +
+      '. Add secret PT_' + pageId + ' in Supabase Edge Function Secrets.'
+    );
+  }
+  const data = await gGet('/' + pageId, { fields: 'access_token' }, sut);
+  if (!data.access_token) throw new Error('Could not retrieve page token for page ' + pageId);
   return data.access_token;
 }
 

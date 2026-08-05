@@ -2010,7 +2010,7 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
               <div className="flex items-center justify-between">
                 <span>
                   {r.success?'✓':'✗'} {r.store} — {
-                    !r.success ? r.error
+                    !r.success ? (r.error || 'Not published')
                     : r.scheduled ? 'Scheduled'
                     : (r.postId && r.igPostId) ? 'Published to Facebook + Instagram'
                     : r.postId ? 'Published to Facebook'

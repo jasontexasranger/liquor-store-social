@@ -1592,28 +1592,61 @@ function RecipesPage({ isAdmin, myStores }) {
 
   const productOf = r => products.find(p => p.id === (r && r.product_id)) || null;
 
+  // Does this ingredient row refer to that product? Asked for "BACARDI WHITE",
+  // a model often writes "Bacardi Superior white rum" — the same bottle. The
+  // brand is nearly always the first word, and that's what's matched on.
+  // Apostrophes are dropped rather than turned into spaces, so RYAN'S and
+  // RYANS are the same bottle.
+  function normLabel(t) {
+    return String(t||'').toLowerCase()
+      .replace(/['’]/g, '')
+      .replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
+  }
+  function isProductRow(item, label) {
+    const a = normLabel(item), b = normLabel(label);
+    if (!a || !b) return false;
+    if (a === b) return true;
+    const brand = b.split(' ')[0];
+    return brand.length > 2 && a.indexOf(brand) !== -1;
+  }
+
+  // Switching the product on a recipe that was already written for a different
+  // one. The rest of the ingredients belong to the old drink — mango juice and
+  // lime are a rum recipe, not a whisky one — so the sane thing is to start
+  // over rather than leave a mongrel list behind.
+  function switchProduct(prev, label) {
+    const filled  = (prev.ingredients || []).filter(i => (i.item||'').trim());
+    const written = filled.length > 1 || (prev.method || []).filter(Boolean).length > 0;
+
+    // No recipe yet, so whatever single ingredient is sitting there can only be
+    // a product picked a moment ago and changed its mind about. Replace it.
+    if (!written) {
+      return Object.assign({}, prev, { ingredients: [{ amount:'2 oz', item: label }] });
+    }
+
+    // Already written around this same bottle — leave the work alone.
+    if (filled.some(i => isProductRow(i.item, label))) {
+      return Object.assign({}, prev, {
+        ingredients: withProductIngredient(prev.ingredients, label),
+      });
+    }
+
+    // Written around something else. Mango juice and lime belong to the rum
+    // drink, not to a whisky, so the honest thing is to start over.
+    return Object.assign({}, prev, {
+      name: '', blurb: '', glass: '', garnish: '',
+      ingredients: [{ amount:'2 oz', item: label }],
+      method: [''],
+    });
+  }
+
   // The bottle you're trying to sell belongs in the ingredient list by name.
   // Written into the first empty row if there is one, otherwise added at the
   // top — never overwriting something already typed.
   function withProductIngredient(list, label) {
     if (!label) return list;
     const rows = (list || []).slice();
-    // Asked for "BACARDI WHITE", the model often writes "Bacardi Superior white
-    // rum" — the same bottle, so adding ours on top would list it twice. The
-    // brand is nearly always the first word, and that's what's matched on.
-    // Apostrophes are dropped rather than turned into spaces, so RYAN'S and
-    // RYANS are the same bottle.
-    const norm = t => String(t||'').toLowerCase()
-      .replace(/['’]/g, '')
-      .replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
-    const brand = norm(label).split(' ')[0];
-    const already = rows.some(function(i) {
-      const item = norm(i.item);
-      if (!item) return false;
-      if (item === norm(label)) return true;
-      return brand.length > 2 && item.indexOf(brand) !== -1;
-    });
-    if (already) return rows;
+    if (rows.some(i => isProductRow(i.item, label))) return rows;
     const blank = rows.findIndex(i => !(i.item||'').trim() && !(i.amount||'').trim());
     if (blank >= 0) { rows[blank] = { amount:'2 oz', item:label }; return rows; }
     return [{ amount:'2 oz', item:label }].concat(rows);
@@ -2041,9 +2074,8 @@ function RecipesPage({ isAdmin, myStores }) {
           {showPick && (
             <ProductPickerModal products={products}
               onPick={function(p){
-                setDraft(prev => Object.assign({}, prev, {
+                setDraft(prev => Object.assign({}, switchProduct(prev, p.product_name), {
                   product_id: p.id,
-                  ingredients: withProductIngredient(prev.ingredients, p.product_name),
                 }));
                 setShowPick(false);
               }}
@@ -2054,12 +2086,12 @@ function RecipesPage({ isAdmin, myStores }) {
             <FeaturePicker storeId={storeId}
               onPick={function(f, prod){
                 setOffer(f);
-                setDraft(prev => Object.assign({}, prev, {
+                // The feature's own name is what the price is quoted against,
+                // so it beats the linked product's name if they differ.
+                const label = f.name || (prod||{}).product_name;
+                setDraft(prev => Object.assign({}, switchProduct(prev, label), {
                   feature_id: f.id,
                   product_id: prod ? prod.id : prev.product_id,
-                  // The feature's own name is what the price is quoted against,
-                  // so it beats the linked product's name if they differ.
-                  ingredients: withProductIngredient(prev.ingredients, f.name || (prod||{}).product_name),
                 }));
                 setShowFeat(false);
               }}

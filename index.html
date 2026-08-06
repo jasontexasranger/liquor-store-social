@@ -931,7 +931,11 @@ async function renderFieldTemplate(tpl, fields, values, productDataUrl, onStep) 
       if (onStep) onStep('removing');
       try { src = await removeProductBackground(productDataUrl); } catch(e) { /* keep original */ }
     }
-    try { productImg = await loadImg(src); } catch(e) { /* skip */ }
+    try { productImg = await loadImg(src); }
+    catch(e) {
+      // Better to fail loudly than hand back an ad with an empty product box.
+      throw new Error('Could not load the product image. If it was imported, check the product-media bucket is public.');
+    }
   }
 
   if (onStep) onStep('compositing');
@@ -1507,8 +1511,25 @@ function useBrandTemplates(storeId) {
 // ─────────────────────────────────────────────
 function removeProductBackground(dataUrl, threshold=228) {
   return new Promise(resolve => {
+    if (!dataUrl) { resolve(dataUrl); return; }
+
+    // This must never hang. Every failure path resolves with the original
+    // image so the caller still gets something drawable:
+    //   • cross-origin canvas taint (imported Storage URLs) -> SecurityError
+    //   • image fails to load at all -> onerror
+    //   • anything unexpectedly slow -> watchdog
+    let settled = false;
+    const done = v => { if (!settled) { settled = true; resolve(v); } };
+    const watchdog = setTimeout(() => done(dataUrl), 15000);
+    const finish = v => { clearTimeout(watchdog); done(v); };
+
     const img = new Image();
+    // Required for getImageData() on a Supabase Storage URL. Supabase serves
+    // the CORS headers that make this work.
+    img.crossOrigin = 'anonymous';
+    img.onerror = () => finish(dataUrl);
     img.onload = () => {
+     try {
       const canvas = document.createElement('canvas');
       canvas.width  = img.width;
       canvas.height = img.height;
@@ -1554,9 +1575,12 @@ function removeProductBackground(dataUrl, threshold=228) {
       }
 
       ctx.putImageData(imgData, 0, 0);
-      resolve(canvas.toDataURL('image/png'));
+      finish(canvas.toDataURL('image/png'));
+     } catch (err) {
+       // Tainted canvas or any other draw failure: use the original image.
+       finish(dataUrl);
+     }
     };
-    img.onerror = () => resolve(dataUrl);
     img.src = dataUrl;
   });
 }

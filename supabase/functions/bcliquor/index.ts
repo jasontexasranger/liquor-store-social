@@ -2,7 +2,8 @@
 // BC Liquor Stores product lookup + image import.
 //
 // Two actions:
-//   search  — query the public BCLIQUOR catalogue, return normalized products
+//   search    — query the public BCLIQUOR catalogue, return normalized products
+//   importUrl — copy an arbitrary image URL into Storage (guarded)
 //   import  — revalidate a SKU server-side, copy its image into our Storage
 //
 // Deliberate constraints, carried over from the Brothers implementation:
@@ -188,6 +189,78 @@ Deno.serve(async (req) => {
         image_alt: `${product.name}${product.package_size ? `, ${product.package_size}` : ''}`,
         product,
       }, { headers: corsHeaders });
+    }
+
+    // ── importUrl ───────────────────────────────────────────────────────────
+    // Copy an arbitrary image URL into our Storage. Pasting a URL can't be done
+    // in the browser because the source site won't send CORS headers, so the
+    // fetch has to happen here.
+    //
+    // That makes this a fetch-on-behalf-of endpoint, so it is deliberately
+    // constrained: signed-in staff only, http(s) only, obvious internal hosts
+    // refused, image content types only, size capped, and rate limited. It
+    // reduces the SSRF surface rather than eliminating it — a URL that resolves
+    // to a private address through DNS would still be attempted.
+    if (action === 'importUrl') {
+      const raw = String((body as Record<string, unknown>).url ?? '').trim();
+      if (!raw) throw new Error('url required');
+      await limit('bcliquor_import', 20);
+
+      let target: URL;
+      try { target = new URL(raw); } catch { throw new Error('That is not a valid URL'); }
+      if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+        throw new Error('Only http and https URLs are allowed');
+      }
+
+      const host = target.hostname.toLowerCase();
+      const blocked =
+        host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal') ||
+        host === '::1' || host === '0.0.0.0' ||
+        /^127\./.test(host) || /^10\./.test(host) ||
+        /^192\.168\./.test(host) || /^169\.254\./.test(host) ||
+        /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+      if (blocked) throw new Error('That address is not allowed');
+
+      const res = await fetch(target.toString(), {
+        headers: { 'Accept': 'image/*', 'User-Agent': UA_IMPORT },
+        redirect: 'follow',
+        cache: 'no-store',
+        signal: timeout(10_000),
+      });
+      if (!res.ok) throw new Error(`Could not fetch that image (${res.status})`);
+
+      // Re-check after redirects — the first URL being safe doesn't mean the
+      // final one is.
+      const finalHost = new URL(res.url).hostname.toLowerCase();
+      if (/^(localhost|127\.|10\.|192\.168\.|169\.254\.)/.test(finalHost)) {
+        throw new Error('That address is not allowed');
+      }
+
+      const contentType = (res.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+      const ext = OK_TYPES[contentType];
+      if (!ext) throw new Error(`That URL is not an image (${contentType || 'unknown type'})`);
+
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      if (!bytes.byteLength)          throw new Error('That image was empty');
+      if (bytes.byteLength > MAX_BYTES) throw new Error('Image exceeds the 6 MB limit');
+
+      const path = `pasted/${user.id}-${Date.now()}.${ext}`;
+      const up = await sb.storage.from(BUCKET).upload(path, bytes, {
+        contentType, cacheControl: '31536000', upsert: false,
+      });
+      if (up.error) throw new Error(`Upload failed: ${up.error.message}`);
+
+      const publicUrl = sb.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
+
+      await sb.from('audit_log').insert({
+        user_id: user.id,
+        action: 'import_image_from_url',
+        entity_type: 'brand_images',
+        changed_fields: ['image_url'],
+        safe_metadata: { source_host: finalHost, bytes: bytes.byteLength, content_type: contentType },
+      });
+
+      return Response.json({ image_url: publicUrl, bytes: bytes.byteLength }, { headers: corsHeaders });
     }
 
     throw new Error(`Unknown action: ${action}`);

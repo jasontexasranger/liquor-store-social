@@ -7,7 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
-  <link href="https://fonts.googleapis.com/css2?family=Anton&family=Archivo+Black&family=Bebas+Neue&family=Oswald:wght@400;500;600;700&family=Barlow+Condensed:wght@600;700;800&family=Montserrat:wght@600;700;800;900&family=Inter:wght@600;700;800;900&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Anton&family=Archivo+Black&family=Bebas+Neue&family=Oswald:wght@400;500;600;700&family=Barlow+Condensed:wght@600;700;800&family=Montserrat:wght@300;400;500;600;700;800;900&family=Inter:wght@300;400;500;600;700;800;900&family=Jost:wght@300;400;500;600&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config = { darkMode: 'class' };</script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -1121,19 +1121,30 @@ const RECIPE_CARD_H = 1350;
 // A generic modern look, to be overridden per store. Every read merges over
 // these, so a token added later doesn't break cards saved before it existed.
 const RECIPE_STYLE_DEFAULTS = {
-  text:        '#ffffff',
-  accent:      '#e8c76a',
-  name_font:   'Anton',
-  uppercase:   true,
-  name_pos:    'bottom',   // 'bottom' | 'centre' | 'top'
-  scrim:       0.55,       // how hard the photo is darkened behind the name
-  show_rule:   true,
-  // Only used before a photo exists, so the card is never a blank rectangle.
-  bg_top:      '#141c26',
-  bg_bottom:   '#243542',
+  v: 2,
+  band_pos:     'top',        // 'top' | 'bottom' | 'none'
+  band_color:   '#f2ece1',
+  band_height:  16,           // percent of the card height
+  text:         '#141414',
+  name_font:    'Jost',
+  name_weight:  400,
+  uppercase:    true,
+  tracking:     18,           // letter spacing, percent of the font size
+  // Used when the name sits straight on the photo rather than in a band.
+  scrim:        0.5,
+  // Only shown before a photo exists, so the card is never a blank rectangle.
+  bg_top:       '#141c26',
+  bg_bottom:    '#243542',
 };
 
-const withStyleDefaults = t => Object.assign({}, RECIPE_STYLE_DEFAULTS, t || {});
+// Styles saved under the earlier card design used the same key names for
+// different things — `text` was white, to sit over a dark photo. Merged
+// blindly, that gives white text on a cream band. Anything without a version
+// marker is treated as the old scheme and its colours dropped.
+function withStyleDefaults(t) {
+  const saved = (t && t.v === 2) ? t : {};
+  return Object.assign({}, RECIPE_STYLE_DEFAULTS, saved);
+}
 
 function hexToRgba(hex, a) {
   const h = String(hex || '#000000').replace('#','');
@@ -1143,6 +1154,61 @@ function hexToRgba(hex, a) {
   if (!/^[0-9a-f]{6}$/i.test(full)) return 'rgba(0,0,0,' + a + ')';
   const n = parseInt(full, 16);
   return 'rgba(' + ((n>>16)&255) + ',' + ((n>>8)&255) + ',' + (n&255) + ',' + a + ')';
+}
+
+// ── Letter-spaced text ──────────────────────────────────────────────────────
+// Canvas has no tracking, and the wide-set capitals this card wants are the
+// whole look. Drawn a character at a time instead: measure each glyph, add the
+// gap, advance by hand. ctx.letterSpacing exists in current Chrome but is
+// ignored by Safari and by canvas measurement in older builds, so it can't be
+// relied on for something that has to come out identical every time.
+function trackedWidth(ctx, text, gap) {
+  let w = 0;
+  for (const ch of text) w += ctx.measureText(ch).width + gap;
+  return text.length ? w - gap : 0;
+}
+
+function drawTrackedLine(ctx, text, cx, baseline, fontSize, tracking) {
+  const gap = fontSize * tracking;
+  let x = cx - trackedWidth(ctx, text, gap) / 2;
+  for (const ch of text) {
+    ctx.fillText(ch, x, baseline);
+    x += ctx.measureText(ch).width + gap;
+  }
+}
+
+// Largest size that fits the box, wrapping to a second line only if it must.
+function fitTrackedText(ctx, text, boxW, boxH, opts) {
+  const { fontFamily, fontWeight, tracking, maxFontSize = 120, minFontSize = 18 } = opts;
+  const words = String(text).split(/\s+/).filter(Boolean);
+
+  const layout = function(size) {
+    ctx.font = fontWeight + ' ' + size + 'px ' + fontFamily;
+    const gap = size * tracking;
+    const one = trackedWidth(ctx, words.join(' '), gap);
+    if (one <= boxW) return { lines: [words.join(' ')], w: one };
+    if (words.length < 2) return null;
+    // Split as evenly as possible rather than greedily — two balanced lines
+    // read better than one long and one short.
+    let best = null;
+    for (let i = 1; i < words.length; i++) {
+      const a = words.slice(0, i).join(' '), b = words.slice(i).join(' ');
+      const wa = trackedWidth(ctx, a, gap), wb = trackedWidth(ctx, b, gap);
+      if (wa > boxW || wb > boxW) continue;
+      const score = Math.abs(wa - wb);
+      if (!best || score < best.score) best = { lines: [a, b], w: Math.max(wa, wb), score };
+    }
+    return best;
+  };
+
+  for (let size = maxFontSize; size >= minFontSize; size -= 2) {
+    const r = layout(size);
+    if (!r) continue;
+    const lineH = size * 1.18;
+    if (r.lines.length * lineH <= boxH) return { size, lines: r.lines, lineH };
+  }
+  ctx.font = fontWeight + ' ' + minFontSize + 'px ' + fontFamily;
+  return { size: minFontSize, lines: [words.join(' ')], lineH: minFontSize * 1.18 };
 }
 
 // What the image model is asked for. Built from the recipe itself so the photo
@@ -1160,9 +1226,12 @@ function cocktailPhotoPrompt(recipe, hint) {
   if (hint && hint.trim()) parts.push(hint.trim() + '.');
 
   parts.push(
-    'Editorial lifestyle photography, natural light, shallow depth of field, ' +
-    'the glass sharp and slightly off centre with room above and below it. ' +
-    'Warm and inviting, a real bar or kitchen counter, tasteful and understated.',
+    'Editorial lifestyle photography, shot on a 50mm lens at a wide aperture, ' +
+    'natural window light, shallow depth of field with the background softly blurred. ' +
+    'The glass sits in the lower two thirds of the frame, sharp and lit from the side, ' +
+    'on a marble or polished stone surface in a modern bar or hotel lounge. ' +
+    'Leave the top third of the frame calm and uncluttered — a caption is placed there. ' +
+    'Warm, tasteful and understated, muted colours apart from the drink itself.',
     // Everything below is the negative half of the prompt. Bottles and labels
     // are the point of the price ads, not of this card, and any text the model
     // renders will collide with the drink name drawn on top.
@@ -1173,8 +1242,9 @@ function cocktailPhotoPrompt(recipe, hint) {
   return parts.join(' ');
 }
 
-// Photo first, drink name over it. The photo is generated separately and passed
-// in, because it costs money and fifteen seconds — restyling has to be free.
+// Photo first, drink name in a band across it. The photo is generated
+// separately and passed in, because it costs money and fifteen seconds —
+// restyling has to be free.
 async function renderRecipeCard(styleTokens, recipe, photoDataUrl) {
   const s = withStyleDefaults(styleTokens);
   await ensureFontsReady();
@@ -1203,42 +1273,53 @@ async function renderRecipeCard(styleTokens, recipe, photoDataUrl) {
     ctx.fillRect(0, 0, W, H);
   }
 
-  // Where the name sits, and the scrim that keeps it readable over whatever the
-  // photo happens to be doing there.
-  const pos = s.name_pos === 'top' ? 'top' : s.name_pos === 'centre' ? 'centre' : 'bottom';
-  const band = pos === 'top'    ? { y: 0,        h: 430 }
-             : pos === 'centre' ? { y: H/2 - 215, h: 430 }
-             :                    { y: H - 430,  h: 430 };
+  const bandH = Math.round(H * (Math.max(8, Math.min(34, Number(s.band_height))) / 100));
+  const hasBand = s.band_pos === 'top' || s.band_pos === 'bottom';
+  const bandY = s.band_pos === 'bottom' ? H - bandH : 0;
 
-  const scrim = Math.max(0, Math.min(0.9, Number(s.scrim)));
-  if (scrim > 0) {
-    if (pos === 'centre') {
-      ctx.fillStyle = 'rgba(0,0,0,' + (scrim * 0.75) + ')';
-      ctx.fillRect(0, 0, W, H);
-    } else {
-      const g = ctx.createLinearGradient(0, band.y, 0, band.y + band.h);
-      const stops = pos === 'top'
-        ? [[0, scrim], [1, 0]]
-        : [[0, 0], [1, scrim]];
-      stops.forEach(st => g.addColorStop(st[0], 'rgba(0,0,0,' + st[1] + ')'));
+  if (hasBand) {
+    ctx.fillStyle = s.band_color;
+    ctx.fillRect(0, bandY, W, bandH);
+  } else {
+    // No band: the name sits on the photo, so it needs shading to stay legible.
+    const scrim = Math.max(0, Math.min(0.9, Number(s.scrim)));
+    if (scrim > 0) {
+      const g = ctx.createLinearGradient(0, H - 430, 0, H);
+      g.addColorStop(0, 'rgba(0,0,0,0)');
+      g.addColorStop(1, 'rgba(0,0,0,' + scrim + ')');
       ctx.fillStyle = g;
-      ctx.fillRect(0, band.y, W, band.h);
+      ctx.fillRect(0, H - 430, W, 430);
     }
   }
 
-  const nameY = pos === 'top' ? 92 : pos === 'centre' ? H/2 - 110 : H - 300;
-
-  if (s.show_rule) {
-    ctx.fillStyle = s.accent;
-    ctx.fillRect(W/2 - 60, nameY - 34, 120, 4);
-  }
-
   const name = s.uppercase ? String(recipe.name || '').toUpperCase() : String(recipe.name || '');
-  drawTextField(ctx, name, { x:80, y:nameY, w:920, h:220 }, {
-    align:'center', valign:'middle', color:s.text,
-    fontFamily: fontStack(s.name_font), fontWeight:400,
-    maxFontSize:124, minFontSize:34, maxLines:2, lineSpacing:1.02, padding:6,
-  });
+  if (name) {
+    const boxY = hasBand ? bandY : H - 330;
+    const boxH = hasBand ? bandH : 240;
+    const fit = fitTrackedText(ctx, name, W - 150, boxH - 34, {
+      fontFamily: fontStack(s.name_font),
+      fontWeight: s.name_weight || 400,
+      tracking:   Math.max(0, Number(s.tracking) || 0) / 100,
+      maxFontSize: Math.min(132, Math.round(boxH * 0.62)),
+      minFontSize: 20,
+    });
+
+    ctx.fillStyle = hasBand ? s.text : '#ffffff';
+    ctx.textBaseline = 'alphabetic';
+    ctx.font = (s.name_weight || 400) + ' ' + fit.size + 'px ' + fontStack(s.name_font);
+
+    // Centre the block on the band optically: cap height rather than the em
+    // box, or all-capitals text sits noticeably low.
+    const m = ctx.measureText(name);
+    const capH = (m.actualBoundingBoxAscent || fit.size * 0.72);
+    const blockH = (fit.lines.length - 1) * fit.lineH + capH;
+    let baseline = boxY + (boxH - blockH) / 2 + capH;
+
+    fit.lines.forEach(function(line) {
+      drawTrackedLine(ctx, line, W/2, baseline, fit.size, (Number(s.tracking)||0)/100);
+      baseline += fit.lineH;
+    });
+  }
 
   return canvas.toDataURL('image/png');
 }
@@ -1348,7 +1429,20 @@ function useRecipeStyle(storeId) {
 function RecipeStyleEditor({ tokens, isOwn, onSave, onClear, isAdmin, storeName, busy }) {
   const [t, setT] = useState(tokens);
   useEffect(function(){ setT(tokens); }, [tokens]);
-  const set = (k, v) => setT(prev => Object.assign({}, prev, { [k]: v }));
+  const set = function(k, v) {
+    setT(function(prev) {
+      const next = Object.assign({}, prev, { [k]: v });
+      // Each face ships different weights. Carrying 300 over to Anton would
+      // silently render as its only weight and the control would lie.
+      if (k === 'name_font') {
+        const ws = (AD_FONTS.find(f=>f.id===v) || { weights:[400] }).weights;
+        if (ws.indexOf(next.name_weight) === -1) {
+          next.name_weight = ws.indexOf(400) !== -1 ? 400 : ws[0];
+        }
+      }
+      return next;
+    });
+  };
 
   const colorRow = (key, label) => (
     <div className="flex items-center gap-2 mb-2">
@@ -1361,45 +1455,73 @@ function RecipeStyleEditor({ tokens, isOwn, onSave, onClear, isAdmin, storeName,
 
   return (
     <div>
-      {colorRow('text','Drink name')}
-      {colorRow('accent','Rule above the name')}
+      <Label>Name band</Label>
+      <div className="flex mb-3" style={{border:'1px solid var(--line)', width:'fit-content'}}>
+        {[['top','Top'],['bottom','Bottom'],['none','No band']].map(function(o) {
+          const on = t.band_pos===o[0];
+          return (
+            <button key={o[0]} onClick={()=>set('band_pos', o[0])}
+              className="px-3 py-1.5 text-xs uppercase tracking-[.14em]"
+              style={{ background:on?'var(--cy-glow)':'transparent', color:on?'var(--cy)':'var(--txt2)' }}>
+              {o[1]}
+            </button>
+          );
+        })}
+      </div>
 
-      <div className="grid grid-cols-2 gap-2 mt-3 mb-3">
+      {t.band_pos !== 'none' && colorRow('band_color','Band colour')}
+      {colorRow('text','Drink name')}
+
+      {t.band_pos !== 'none' && (
+        <div className="mb-3">
+          <Label>Band depth</Label>
+          <div className="flex items-center gap-3">
+            <input type="range" min="8" max="34" step="1" value={t.band_height}
+                   onChange={e=>set('band_height', Number(e.target.value))} className="flex-1"/>
+            <span className="mono text-xs" style={{color:'var(--txt3)'}}>{t.band_height}%</span>
+          </div>
+        </div>
+      )}
+
+      {t.band_pos === 'none' && (
+        <div className="mb-3">
+          <Label>Shading behind the name</Label>
+          <div className="flex items-center gap-3">
+            <input type="range" min="0" max="90" step="5" value={Math.round(t.scrim*100)}
+                   onChange={e=>set('scrim', Number(e.target.value)/100)} className="flex-1"/>
+            <span className="mono text-xs" style={{color:'var(--txt3)'}}>{Math.round(t.scrim*100)}%</span>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 gap-2 mb-3">
         <div>
-          <Label>Name font</Label>
+          <Label>Font</Label>
           <Select value={t.name_font} className="text-xs" onChange={e=>set('name_font', e.target.value)}>
             {AD_FONTS.map(f=><option key={f.id} value={f.id}>{f.label}</option>)}
           </Select>
         </div>
         <div>
-          <Label>Name sits</Label>
-          <Select value={t.name_pos} className="text-xs" onChange={e=>set('name_pos', e.target.value)}>
-            <option value="bottom">At the bottom</option>
-            <option value="centre">Across the middle</option>
-            <option value="top">At the top</option>
+          <Label>Weight</Label>
+          <Select value={t.name_weight} className="text-xs"
+                  onChange={e=>set('name_weight', Number(e.target.value))}>
+            {((AD_FONTS.find(f=>f.id===t.name_font)||{weights:[400]}).weights).map(w=>
+              <option key={w} value={w}>{w}</option>)}
           </Select>
         </div>
       </div>
 
-      <Label>Shading behind the name</Label>
+      <Label>Letter spacing</Label>
       <div className="flex items-center gap-3 mb-3">
-        <input type="range" min="0" max="90" step="5" value={Math.round(t.scrim*100)}
-               onChange={e=>set('scrim', Number(e.target.value)/100)} className="flex-1"/>
-        <span className="mono text-xs" style={{color:'var(--txt3)'}}>{Math.round(t.scrim*100)}%</span>
+        <input type="range" min="0" max="45" step="1" value={t.tracking}
+               onChange={e=>set('tracking', Number(e.target.value))} className="flex-1"/>
+        <span className="mono text-xs" style={{color:'var(--txt3)'}}>{t.tracking}%</span>
       </div>
-      <p className="lbl mb-3">
-        Keeps the name readable over a bright photo. Too little and it disappears
-        against a pale drink.
-      </p>
 
-      {[['uppercase','Name in capitals'],['show_rule','Rule above the name']].map(function(o) {
-        return (
-          <label key={o[0]} className="flex items-center gap-2 py-1 cursor-pointer">
-            <input type="checkbox" checked={!!t[o[0]]} onChange={e=>set(o[0], e.target.checked)}/>
-            <span className="text-xs" style={{color:'var(--txt2)'}}>{o[1]}</span>
-          </label>
-        );
-      })}
+      <label className="flex items-center gap-2 py-1 cursor-pointer">
+        <input type="checkbox" checked={!!t.uppercase} onChange={e=>set('uppercase', e.target.checked)}/>
+        <span className="text-xs" style={{color:'var(--txt2)'}}>Name in capitals</span>
+      </label>
 
       <div className="flex gap-2 flex-wrap mt-4">
         <Button size="sm" onClick={()=>onSave(t, 'store')} loading={busy}>
@@ -5696,8 +5818,9 @@ const AD_FONTS = [
   { id:'Bebas Neue',       label:'Bebas Neue',       stack:"'Bebas Neue',sans-serif",       weights:[400] },
   { id:'Oswald',           label:'Oswald',           stack:"'Oswald',sans-serif",           weights:[400,500,600,700] },
   { id:'Barlow Condensed', label:'Barlow Condensed', stack:"'Barlow Condensed',sans-serif", weights:[600,700,800] },
-  { id:'Montserrat',       label:'Montserrat',       stack:"'Montserrat',sans-serif",       weights:[600,700,800,900] },
-  { id:'Inter',            label:'Inter',            stack:"'Inter',sans-serif",            weights:[600,700,800,900] },
+  { id:'Montserrat',       label:'Montserrat',       stack:"'Montserrat',sans-serif",       weights:[300,400,500,600,700,800,900] },
+  { id:'Inter',            label:'Inter',            stack:"'Inter',sans-serif",            weights:[300,400,500,600,700,800,900] },
+  { id:'Jost',             label:'Jost (geometric)', stack:"'Jost',sans-serif",             weights:[300,400,500,600] },
   { id:'Chakra Petch',     label:'Chakra Petch',     stack:"'Chakra Petch',sans-serif",     weights:[400,500,600,700] },
   { id:'Arial',            label:'Arial (system)',   stack:'Arial,Helvetica,sans-serif',    weights:[400,700] },
 ];

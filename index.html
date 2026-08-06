@@ -1324,11 +1324,25 @@ async function renderRecipeCard(styleTokens, recipe, photoDataUrl) {
   return canvas.toDataURL('image/png');
 }
 
-// The recipe as a post caption: ingredients as a list, method as steps.
-function recipeCaption(recipe, productName) {
+// The recipe as a post caption: ingredients as a list, method as steps, and
+// the offer if the drink was built around something on feature. A recipe post
+// that doesn't mention the price is a recipe post; one that does is an ad for
+// the bottle, which is the point.
+function recipeCaption(recipe, productName, offer) {
   const lines = [];
   lines.push(recipe.name + (productName ? ' — made with ' + productName : ''));
   if (recipe.blurb) { lines.push(''); lines.push(recipe.blurb); }
+
+  if (offer && offer.sale_price != null) {
+    const bits = [(offer.name || productName || 'It') + ' is on feature at ' + money(offer.sale_price)];
+    if (offer.savings != null && Number(offer.savings) > 0) {
+      bits.push('save ' + money(offer.savings));
+    } else if (offer.reg_price != null && Number(offer.reg_price) > Number(offer.sale_price)) {
+      bits.push('down from ' + money(offer.reg_price));
+    }
+    lines.push('');
+    lines.push(bits.join(', ') + '.');
+  }
 
   const ing = (recipe.ingredients || []).filter(i => i && (i.item || i.amount));
   if (ing.length) {
@@ -1564,6 +1578,10 @@ function RecipesPage({ isAdmin, myStores }) {
   // over the same photo instead of paying for a new drink.
   const [photo,    setPhoto]    = useState(null);
   const [photoHint,setPhotoHint]= useState('');
+  // The feature this drink was built around, if any. Held live rather than
+  // copied into the recipe: prices change month to month, and the caption
+  // should quote what the feature says now, not what it said when saved.
+  const [offer,    setOffer]    = useState(null);
   const [busy,     setBusy]     = useState(null);
   const [showStyle,setShowStyle]= useState(false);
   const [showPick, setShowPick] = useState(false);
@@ -1589,7 +1607,7 @@ function RecipesPage({ isAdmin, myStores }) {
   }, [draft && draft.name, tokens, photo]);
 
   const startNew = function(product, feature) {
-    setPhoto(null); setPhotoHint('');
+    setPhoto(null); setPhotoHint(''); setOffer(feature || null);
     setDraft(Object.assign({}, RECIPE_BLANK, {
       store_id: null,
       product_id: product ? product.id : null,
@@ -1712,7 +1730,7 @@ function RecipesPage({ isAdmin, myStores }) {
       const prod = productOf(draft);
       const { error } = await sb.from('scheduled_posts').insert({
         store_id: storeId,
-        caption: recipeCaption(draft, prod ? prod.product_name : ''),
+        caption: recipeCaption(draft, prod ? prod.product_name : '', offer),
         image_url: imageUrl,
         image_urls: [imageUrl],
         publish_to: ['facebook'],
@@ -1807,6 +1825,11 @@ function RecipesPage({ isAdmin, myStores }) {
                       onClick={function(){
                         setPhoto(r.photo_url || null);
                         setPhotoHint(r.photo_hint || '');
+                        setOffer(null);
+                        if (r.feature_id) {
+                          getSB().from('features').select('*').eq('id', r.feature_id).maybeSingle()
+                            .then(({data}) => setOffer(data || null));
+                        }
                         setDraft({
                           id:r.id, name:r.name,
                           blurb:r.notes||'', glass:r.glass||'', garnish:r.garnish||'',
@@ -1946,7 +1969,23 @@ function RecipesPage({ isAdmin, myStores }) {
               </div>
 
               <div className="mt-4 pt-3" style={{borderTop:'1px solid var(--line)'}}>
-                <Label>Draft a post from this</Label>
+                <Label>The post</Label>
+                {offer && offer.sale_price != null ? (
+                  <p className="lbl mb-2" style={{color:'var(--cy)'}}>
+                    <Icon name="tag" size={11}/> On feature — {offer.name} at {money(offer.sale_price)}
+                    {offer.savings != null ? ', save ' + money(offer.savings) : ''}. Included in the caption.
+                  </p>
+                ) : (
+                  <p className="lbl mb-2">
+                    No feature attached, so no price in the caption. Use "From a feature" to add one.
+                  </p>
+                )}
+                <div className="p-2.5 mb-3" style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.4)', maxHeight:'160px', overflowY:'auto'}}>
+                  <p className="text-xs whitespace-pre-wrap" style={{color:'var(--txt2)'}}>
+                    {recipeCaption(draft, (productOf(draft)||{}).product_name || '', offer)}
+                  </p>
+                </div>
+                <Label>Send at</Label>
                 <div className="flex gap-2 flex-wrap">
                   <Input type="datetime-local" value={postAt} className="flex-1 text-xs"
                          onChange={e=>setPostAt(e.target.value)}/>
@@ -1975,6 +2014,7 @@ function RecipesPage({ isAdmin, myStores }) {
           {showFeat && (
             <FeaturePicker storeId={storeId}
               onPick={function(f, prod){
+                setOffer(f);
                 setDraft(prev => Object.assign({}, prev, {
                   feature_id: f.id,
                   product_id: prod ? prod.id : prev.product_id,

@@ -1858,9 +1858,10 @@ function FeaturesPage({ isAdmin, myStores }) {
   const [storeId, setStoreId] = useState((myStores[0]||{}).id || '');
   const [period,  setPeriod]  = useState(monthKey(new Date()));
   const [showPaste, setShowPaste] = useState(false);
+  const [showCsv, setShowCsv] = useState(false);
   const [mode, setMode] = useState('plan');   // plan | sales
 
-  const { periodRow, rows, loading, addRows, updateRow, deleteRow, setStatus, ensurePeriod } =
+  const { periodRow, rows, loading, reload, addRows, updateRow, deleteRow, setStatus, ensurePeriod } =
     useFeaturePeriod(storeId, period);
   const { images: products } = useBrandImageLibrary();
   const { campaigns } = useCampaigns();
@@ -1921,6 +1922,9 @@ function FeaturesPage({ isAdmin, myStores }) {
             })}
           </div>
           <span className="flex-1"/>
+          <Button size="sm" variant="outline" onClick={()=>setShowCsv(v=>!v)}>
+            <Icon name="folder"/> Import CSV
+          </Button>
           <Button size="sm" variant="outline" onClick={()=>setShowPaste(v=>!v)}>
             <Icon name="down"/> Paste from Excel
           </Button>
@@ -1933,6 +1937,12 @@ function FeaturesPage({ isAdmin, myStores }) {
           )}
         </div>
       </Card>
+
+      {showCsv && (
+        <Card>
+          <FeatureCsvImport onDone={reload} onClose={()=>setShowCsv(false)}/>
+        </Card>
+      )}
 
       {showPaste && (
         <Card>
@@ -2092,6 +2102,224 @@ function FeaturePicker({ storeId, onPick, onClose }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// MONTHLY CSV IMPORT
+// ─────────────────────────────────────────────
+// The exported sheet is one file per month containing a block per store:
+//   STORE NAME
+//   MARKETING / TASTING / DATA READINESS rows
+//   Name,Size,Reg Price,...           <- feature table
+//   Product,Date,Start Time,...       <- tastings table (skipped)
+const STORE_HEADER = /^(HIDEAWAY|DOWNTOWN|BROTHERS|COBBLESTONE)[^,]*LIQUOR STORE/i;
+
+// Proper CSV split — names like "GRAN PASSIONE PROSECCO, ROSSO, BIANCO" are
+// quoted and contain the delimiter.
+function splitCsvLine(line) {
+  const out = []; let cur = ''; let q = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (q) {
+      if (ch === '"' && line[i+1] === '"') { cur += '"'; i++; }
+      else if (ch === '"') q = false;
+      else cur += ch;
+    } else if (ch === '"') q = true;
+    else if (ch === ',') { out.push(cur); cur = ''; }
+    else cur += ch;
+  }
+  out.push(cur);
+  return out.map(c => c.replace(/\r$/, '').trim());
+}
+
+const MONTHS = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+
+// "LRS FEATURES 2026(Aug 2026).csv" -> 2026-08-01
+function monthFromFilename(filename) {
+  const f = String(filename || '').toLowerCase();
+  const m = f.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s*,?\s*((?:19|20)\d{2})/);
+  if (m) return m[2] + '-' + String(MONTHS.indexOf(m[1]) + 1).padStart(2,'0') + '-01';
+  const y = f.match(/(19|20)\d{2}/);
+  return y ? y[0] + '-01-01' : monthKey(new Date());
+}
+
+function parseFeatureCsv(text) {
+  const lines = String(text || '').split(/\r?\n/);
+  const blocks = [];
+  let store = null, mode = null;
+
+  for (const line of lines) {
+    if (!line.trim() || /^,+$/.test(line)) continue;
+    const c = splitCsvLine(line);
+    const first = c[0] || '';
+
+    if (STORE_HEADER.test(first)) {
+      store = { storeName: first.trim(), rows: [] };
+      blocks.push(store);
+      mode = null;
+      continue;
+    }
+    if (/^name$/i.test(first) && /^size$/i.test(c[1] || '')) { mode = 'features'; continue; }
+    if (/^product$/i.test(first) && /^date$/i.test(c[1] || '')) { mode = 'tastings'; continue; }
+    if (/readiness|completeness/i.test(first)) continue;
+    if (mode !== 'features' || !store || !first) continue;
+
+    const reg  = parseMoney(c[2]);
+    const sale = parseMoney(c[3]);
+    const sav  = parseMoney(c[4]);
+    const qty  = parseInt10(c[9]);
+    const rev  = parseMoney(c[10]);
+    store.rows.push({
+      ...FEATURE_BLANK,
+      name: first.replace(/\s+/g,' ').trim(),
+      size: (c[1] || '').replace(/\s+/g,' ').trim(),
+      reg_price: reg, sale_price: sale,
+      savings: sav != null ? sav : suggestSavings(reg, sale),
+      // Revenue of exactly 0 is the sheet's placeholder, not a real figure.
+      qty_sold: qty || null,
+      revenue: rev ? rev : null,
+      notes: (c[12] || '').trim(),
+    });
+  }
+  return blocks.filter(b => b.rows.length);
+}
+
+// "DOWNTOWN LIQUOR STORE" -> the store id used everywhere else in the app.
+function matchStoreId(label) {
+  const l = String(label || '').toLowerCase();
+  const hit = STORES.find(s => l.includes(s.id) || l.includes(s.name.split(' ')[0].toLowerCase()));
+  return hit ? hit.id : null;
+}
+
+async function importFeatureCsv(blocks, period, { replace = false } = {}) {
+  const sb = getSB();
+  const { data:{ user } } = await sb.auth.getUser();
+  const result = [];
+
+  for (const b of blocks) {
+    const storeId = b.matchedStore || matchStoreId(b.storeName);
+    if (!storeId) { result.push({ store:b.storeName, skipped:'no matching store' }); continue; }
+
+    let { data: p } = await sb.from('feature_periods')
+      .select('*').eq('store_id', storeId).eq('period', period).maybeSingle();
+
+    if (!p) {
+      const ins = await sb.from('feature_periods')
+        .insert({ store_id:storeId, period, status:'closed', created_by:user?.id })
+        .select().single();
+      if (ins.error) { result.push({ store:storeId, skipped:ins.error.message }); continue; }
+      p = ins.data;
+    } else if (replace) {
+      await sb.from('features').delete().eq('period_id', p.id);
+    }
+
+    const { count } = await sb.from('features')
+      .select('id', { count:'exact', head:true }).eq('period_id', p.id);
+    const base = count || 0;
+
+    const payload = b.rows.map((r,i) => ({ ...r, period_id:p.id, position:base+i }));
+    const { error } = await sb.from('features').insert(payload);
+    result.push(error ? { store:storeId, skipped:error.message } : { store:storeId, added:payload.length });
+  }
+  return result;
+}
+
+function FeatureCsvImport({ onDone, onClose }) {
+  const toast = useToast();
+  const [blocks, setBlocks] = useState(null);
+  const [period, setPeriod] = useState(monthKey(new Date()));
+  const [filename, setFilename] = useState('');
+  const [replace, setReplace] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const fileRef = useRef();
+
+  const handleFile = async function(file) {
+    if (!file) return;
+    setFilename(file.name);
+    setPeriod(monthFromFilename(file.name));
+    const text = await file.text();
+    const parsed = parseFeatureCsv(text).map(b => ({ ...b, matchedStore: matchStoreId(b.storeName) }));
+    setBlocks(parsed);
+    if (!parsed.length) toast.error('No feature rows found in that file');
+  };
+
+  const run = async function() {
+    setBusy(true);
+    try {
+      const res = await importFeatureCsv(blocks, period, { replace });
+      const added = res.reduce((a,r)=>a+(r.added||0), 0);
+      const bad = res.filter(r=>r.skipped);
+      toast.success('Imported ' + added + ' rows for ' + monthLabel(period));
+      if (bad.length) toast.error(bad.map(b=>b.store+': '+b.skipped).join(' · '));
+      if (onDone) onDone();
+      onClose();
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(false); }
+  };
+
+  const total = (blocks||[]).reduce((a,b)=>a+b.rows.length, 0);
+
+  return (
+    <div className="p-4" style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.45)'}}>
+      <div className="flex items-center gap-3 mb-3">
+        <span className="ttl">Import a monthly CSV</span>
+        <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+        <button onClick={onClose} style={{color:'var(--txt2)'}}><Icon name="close"/></button>
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap mb-3">
+        <Button size="sm" variant="secondary" onClick={()=>fileRef.current?.click()}>
+          <Icon name="folder"/> Choose file
+        </Button>
+        {filename && <span className="mono text-xs truncate" style={{color:'var(--txt2)', maxWidth:'260px'}}>{filename}</span>}
+        <input ref={fileRef} type="file" accept=".csv,text/csv" className="hidden"
+               onChange={e=>{ handleFile(e.target.files?.[0]); e.target.value=''; }}/>
+      </div>
+
+      {blocks && (
+        <React.Fragment>
+          <div className="grid grid-cols-2 gap-3 mb-3">
+            <div>
+              <Label>Month</Label>
+              <Input type="month" value={period.slice(0,7)}
+                     onChange={e=>setPeriod(e.target.value + '-01')}/>
+              <p className="lbl mt-1">Read from the filename — change it if that's wrong</p>
+            </div>
+            <div>
+              <Label>If the month already has rows</Label>
+              <Select value={replace ? 'replace' : 'append'} onChange={e=>setReplace(e.target.value==='replace')}>
+                <option value="append">Add to them</option>
+                <option value="replace">Replace them</option>
+              </Select>
+            </div>
+          </div>
+
+          <div style={{border:'1px solid var(--line)'}}>
+            {blocks.map(function(b,i){
+              const st = STORES.find(s=>s.id===b.matchedStore);
+              return (
+                <div key={i} className="flex items-center gap-3 px-3 py-2"
+                     style={{borderBottom:'1px solid rgba(56,224,240,.07)'}}>
+                  <Icon name={st ? 'check' : 'warn'} size={13}
+                        style={{color: st ? 'var(--grn)' : 'var(--amb)'}}/>
+                  <span className="text-xs flex-1 truncate" style={{color:'var(--txt)'}}>{b.storeName}</span>
+                  <span className="lbl">{st ? st.name : 'no matching store — will be skipped'}</span>
+                  <span className="mono text-xs" style={{color:'var(--cy)'}}>{b.rows.length}</span>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="flex gap-2 mt-3">
+            <Button size="sm" onClick={run} loading={busy} disabled={!total}>
+              <Icon name="down"/> Import {total} rows
+            </Button>
+            <Button size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
+          </div>
+        </React.Fragment>
+      )}
     </div>
   );
 }

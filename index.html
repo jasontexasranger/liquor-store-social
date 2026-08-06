@@ -1501,6 +1501,601 @@ function BCLiquorSearch({ onImported }) {
 }
 
 // ─────────────────────────────────────────────
+// MONTHLY FEATURES
+// ─────────────────────────────────────────────
+const monthKey = d => {
+  const dt = d instanceof Date ? d : new Date(d);
+  return dt.getFullYear() + '-' + String(dt.getMonth()+1).padStart(2,'0') + '-01';
+};
+const monthLabel = iso => {
+  const [y,m] = String(iso).split('-');
+  return new Date(+y, +m-1, 1).toLocaleString(undefined, { month:'long', year:'numeric' });
+};
+const money = v => (v == null || v === '' ? '' : '$' + Number(v).toFixed(2));
+
+// Prices arrive as "$27.00", "27", "$1,234.50" — strip anything that isn't a number.
+const parseMoney = v => {
+  if (v == null) return null;
+  const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ''));
+  return isFinite(n) ? n : null;
+};
+const parseInt10 = v => {
+  if (v == null) return null;
+  const n = parseInt(String(v).replace(/[^0-9\-]/g, ''), 10);
+  return isFinite(n) ? n : null;
+};
+
+// Savings on the existing sheet is the difference rounded to the nearest
+// $0.25 — verified against all twelve rows of a real month. Marketing figure,
+// not arithmetic, so it's a default rather than a fixed calculation.
+const suggestSavings = (reg, sale) => {
+  if (reg == null || sale == null) return null;
+  return Math.round((reg - sale) * 4) / 4;
+};
+
+const FEATURE_BLANK = {
+  name:'', size:'', reg_price:null, sale_price:null,
+  savings:null, on_social:false, on_digital:false, on_ads:false, on_radio:false,
+  qty_sold:null, revenue:null, notes:'', product_id:null, campaign_id:null,
+};
+
+// Paste straight from the spreadsheet. Tab-separated, header row optional.
+// Column order follows the existing sheet but headers win when present.
+function parseFeaturePaste(text) {
+  const rows = String(text || '').split(/\r?\n/).filter(l => l.trim());
+  if (!rows.length) return [];
+
+  const split = l => l.split('\t').map(c => c.trim());
+  const HEAD = {
+    name:['name','product','item'], size:['size','pack','format'],
+    reg_price:['reg price','regular','reg','regular price'],
+    sale_price:['sale price','sale','feature price','price'],
+    savings:['savings','save'],
+    on_social:['social'], on_digital:['digital'], on_ads:['ads','ad'], on_radio:['radio'],
+    qty_sold:['qty sold','qty','units','quantity'],
+    revenue:['revenue','sales','$'],
+    notes:['notes','note','comments'],
+  };
+
+  let map = null;
+  const first = split(rows[0]).map(c => c.toLowerCase());
+  if (first.some(c => HEAD.name.includes(c))) {
+    map = {};
+    first.forEach(function(cell, i) {
+      for (const key in HEAD) if (HEAD[key].includes(cell)) map[key] = i;
+    });
+    rows.shift();
+  }
+
+  const at = (cells, key, fallbackIdx) => {
+    const i = map && map[key] != null ? map[key] : fallbackIdx;
+    return i == null ? '' : (cells[i] ?? '');
+  };
+  const tick = v => /^(x|y|yes|true|✓|done|1)$/i.test(String(v || '').trim());
+
+  return rows.map(function(line) {
+    const c = split(line);
+    const name = String(at(c,'name',0) || '').trim();
+    if (!name) return null;
+    return {
+      ...FEATURE_BLANK,
+      name,
+      size:       String(at(c,'size',1) || '').trim(),
+      reg_price:  parseMoney(at(c,'reg_price',2)),
+      sale_price: parseMoney(at(c,'sale_price',3)),
+      savings:    parseMoney(at(c,'savings',4)),
+      on_social:  tick(at(c,'on_social',5)),
+      on_digital: tick(at(c,'on_digital',6)),
+      on_ads:     tick(at(c,'on_ads',7)),
+      on_radio:   tick(at(c,'on_radio',8)),
+      qty_sold:   parseInt10(at(c,'qty_sold',9)),
+      revenue:    parseMoney(at(c,'revenue',10)),
+      notes:      String(at(c,'notes',12) || '').trim(),
+    };
+  }).filter(Boolean);
+}
+
+// The three readiness bars from the sheet, computed rather than typed.
+function featureStats(rows) {
+  const n = rows.length;
+  if (!n) return { data:0, marketing:0, sales:0, n:0 };
+  const complete = rows.filter(r => r.name && r.size && r.reg_price != null && r.sale_price != null).length;
+  const marketed = rows.filter(r => r.on_social && r.on_digital && r.on_ads && r.on_radio).length;
+  const withSales = rows.filter(r => r.qty_sold != null || r.revenue != null).length;
+  return {
+    n,
+    data:      Math.round(complete/n*100),
+    marketing: Math.round(marketed/n*100),
+    sales:     Math.round(withSales/n*100),
+  };
+}
+
+function useFeaturePeriod(storeId, period) {
+  const [periodRow, setPeriodRow] = useState(null);
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async function() {
+    const sb = getSB(); if (!sb || !storeId || !period) return;
+    setLoading(true);
+    const { data: p } = await sb.from('feature_periods')
+      .select('*').eq('store_id', storeId).eq('period', period).maybeSingle();
+    setPeriodRow(p || null);
+    if (p) {
+      const { data: f } = await sb.from('features')
+        .select('*').eq('period_id', p.id).order('position');
+      setRows(f || []);
+    } else setRows([]);
+    setLoading(false);
+  }, [storeId, period]);
+
+  useEffect(function(){ load(); }, [load]);
+
+  const ensurePeriod = async function() {
+    if (periodRow) return periodRow;
+    const sb = getSB();
+    const { data:{ user } } = await sb.auth.getUser();
+    const { data, error } = await sb.from('feature_periods')
+      .insert({ store_id:storeId, period, created_by:user?.id })
+      .select().single();
+    if (error) throw error;
+    setPeriodRow(data);
+    return data;
+  };
+
+  const addRows = async function(newRows) {
+    const sb = getSB();
+    const p = await ensurePeriod();
+    const base = rows.length;
+    const payload = newRows.map((r,i) => ({ ...r, period_id:p.id, position:base+i }));
+    const { error } = await sb.from('features').insert(payload);
+    if (error) throw error;
+    await load();
+  };
+
+  const updateRow = async function(id, patch) {
+    const sb = getSB();
+    const { error } = await sb.from('features').update(patch).eq('id', id);
+    if (error) throw error;
+    setRows(prev => prev.map(r => r.id===id ? { ...r, ...patch } : r));
+  };
+
+  const deleteRow = async function(id) {
+    const sb = getSB();
+    const { error } = await sb.from('features').delete().eq('id', id);
+    if (error) throw error;
+    setRows(prev => prev.filter(r => r.id !== id));
+  };
+
+  const setStatus = async function(status) {
+    const sb = getSB();
+    const p = await ensurePeriod();
+    const { error } = await sb.from('feature_periods').update({ status }).eq('id', p.id);
+    if (error) throw error;
+    setPeriodRow(prev => ({ ...prev, status }));
+  };
+
+  return { periodRow, rows, loading, reload:load, addRows, updateRow, deleteRow, setStatus, ensurePeriod };
+}
+
+// ─────────────────────────────────────────────
+// FEATURES SCREEN
+// ─────────────────────────────────────────────
+function ReadinessBar({ label, pct, tone }) {
+  const c = pct >= 100 ? 'var(--grn)' : pct > 0 ? 'var(--amb)' : 'var(--red)';
+  return (
+    <div className="flex-1 min-w-[140px]">
+      <div className="flex items-center justify-between mb-1">
+        <span className="lbl">{label}</span>
+        <span className="mono text-xs" style={{color:c}}>{pct}%</span>
+      </div>
+      <div style={{height:'3px', background:'rgba(56,224,240,.12)'}}>
+        <div style={{height:'100%', width:pct+'%', background:c, boxShadow:'0 0 7px '+c, transition:'width .3s'}}/>
+      </div>
+    </div>
+  );
+}
+
+function FeaturePasteBox({ onImport, onClose }) {
+  const toast = useToast();
+  const [text, setText] = useState('');
+  const preview = parseFeaturePaste(text);
+
+  return (
+    <div className="p-4 mb-4" style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.45)'}}>
+      <div className="flex items-center gap-3 mb-3">
+        <span className="ttl">Paste from Excel</span>
+        <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+        <button onClick={onClose} style={{color:'var(--txt2)'}}><Icon name="close"/></button>
+      </div>
+      <p className="lbl mb-2">
+        Select the feature rows in your sheet, copy, and paste here. A header row is optional.
+      </p>
+      <Textarea rows={6} value={text} onChange={e=>setText(e.target.value)}
+                placeholder={'PHILLIPS DINOSOUR MIXER\t8CAN\t$27.00\t$23.99\t$3.00'}
+                style={{fontFamily:'var(--mono)', fontSize:'11px'}}/>
+      {preview.length > 0 && (
+        <div className="mt-3">
+          <p className="lbl mb-2">{preview.length} row{preview.length===1?'':'s'} detected</p>
+          <div className="max-h-40 overflow-auto" style={{border:'1px solid var(--line)'}}>
+            {preview.slice(0,8).map(function(r,i){
+              return (
+                <div key={i} className="mono flex gap-3 px-2 py-1" style={{fontSize:'10.5px', color:'var(--txt2)'}}>
+                  <span className="flex-1 truncate" style={{color:'var(--txt)'}}>{r.name}</span>
+                  <span style={{width:'52px'}}>{r.size}</span>
+                  <span style={{width:'56px'}}>{money(r.reg_price)}</span>
+                  <span style={{width:'56px', color:'var(--cy)'}}>{money(r.sale_price)}</span>
+                  <span style={{width:'52px', color:'var(--amb)'}}>{money(r.savings ?? suggestSavings(r.reg_price, r.sale_price))}</span>
+                </div>
+              );
+            })}
+            {preview.length > 8 && <p className="lbl px-2 py-1">+{preview.length-8} more</p>}
+          </div>
+        </div>
+      )}
+      <div className="flex gap-2 mt-3">
+        <Button size="sm" disabled={!preview.length}
+          onClick={async function(){
+            try { await onImport(preview); toast.success('Imported ' + preview.length + ' rows'); setText(''); onClose(); }
+            catch(e){ toast.error(e.message); }
+          }}>
+          <Icon name="down"/> Import {preview.length || ''} rows
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
+      </div>
+    </div>
+  );
+}
+
+// Suggests library products by name. Never blocks — linking is optional and
+// only buys you the product photo downstream.
+function ProductLink({ row, products, onLink }) {
+  const [open, setOpen] = useState(false);
+  const linked = products.find(p => p.id === row.product_id);
+
+  const suggestions = (function(){
+    const q = (row.name || '').toLowerCase().replace(/[^a-z0-9 ]/g,'');
+    if (!q) return [];
+    const words = q.split(/\s+/).filter(w => w.length > 2);
+    return products.map(function(p){
+      const n = (p.product_name||'').toLowerCase().replace(/[^a-z0-9 ]/g,'');
+      let score = 0;
+      if (n === q) score = 100;
+      else if (n.includes(q) || q.includes(n)) score = 70;
+      else score = words.filter(w => n.includes(w)).length * 20;
+      return { p, score };
+    }).filter(x => x.score > 0).sort((a,b)=>b.score-a.score).slice(0,5).map(x=>x.p);
+  })();
+
+  if (linked) {
+    return (
+      <button onClick={()=>onLink(row.id, null)} title={'Linked to ' + linked.product_name + ' — click to unlink'}
+              className="flex items-center gap-1.5">
+        <img src={prodSrc(linked)} alt="" className="w-7 h-7 object-cover" style={{border:'1px solid var(--cy)'}}/>
+      </button>
+    );
+  }
+  return (
+    <div className="relative">
+      <button onClick={()=>setOpen(v=>!v)} title="Link a product photo"
+              className="w-7 h-7 flex items-center justify-center"
+              style={{border:'1px dashed var(--line2)', color: suggestions.length ? 'var(--cy)' : 'var(--txt3)'}}>
+        <Icon name="image" size={12}/>
+      </button>
+      {open && (
+        <div className="absolute z-30 left-0 mt-1 w-56 p-2" style={{background:'#0a111e', border:'1px solid var(--line2)'}}>
+          {suggestions.length === 0
+            ? <p className="lbl py-2 text-center">No close matches</p>
+            : suggestions.map(function(p){
+                return (
+                  <button key={p.id} onClick={()=>{ onLink(row.id, p.id); setOpen(false); }}
+                          className="flex items-center gap-2 w-full p-1.5 text-left"
+                          style={{color:'var(--txt2)'}}>
+                    <img src={prodSrc(p)} alt="" className="w-7 h-7 object-cover flex-none"/>
+                    <span className="text-xs truncate">{p.product_name}</span>
+                  </button>
+                );
+              })}
+          <button onClick={()=>setOpen(false)} className="lbl w-full text-center pt-1">Close</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FeaturesPage({ isAdmin, myStores }) {
+  const toast = useToast();
+  const [storeId, setStoreId] = useState((myStores[0]||{}).id || '');
+  const [period,  setPeriod]  = useState(monthKey(new Date()));
+  const [showPaste, setShowPaste] = useState(false);
+  const [mode, setMode] = useState('plan');   // plan | sales
+
+  const { periodRow, rows, loading, addRows, updateRow, deleteRow, setStatus, ensurePeriod } =
+    useFeaturePeriod(storeId, period);
+  const { images: products } = useBrandImageLibrary();
+  const { campaigns } = useCampaigns();
+
+  const stats = featureStats(rows);
+  const shiftMonth = n => {
+    const [y,m] = period.split('-').map(Number);
+    setPeriod(monthKey(new Date(y, m-1+n, 1)));
+  };
+
+  const patch = async (id, p) => { try { await updateRow(id, p); } catch(e){ toast.error(e.message); } };
+
+  const addBlank = async () => {
+    try { await addRows([{ ...FEATURE_BLANK, name:'New feature' }]); }
+    catch(e){ toast.error(e.message); }
+  };
+
+  // Editable cell — commits on blur so we're not writing on every keystroke.
+  const Cell = ({ row, field, type='text', width, align='left', prefix }) => (
+    <input
+      defaultValue={row[field] ?? ''}
+      onBlur={function(e){
+        const raw = e.target.value;
+        let v = raw === '' ? null : raw;
+        if (type === 'money') v = parseMoney(raw);
+        if (type === 'int')   v = parseInt10(raw);
+        if (v === (row[field] ?? null)) return;
+        const p = { [field]: v };
+        // Keep savings in step with the prices unless it's been set by hand.
+        if (field === 'reg_price' || field === 'sale_price') {
+          const reg  = field==='reg_price'  ? v : row.reg_price;
+          const sale = field==='sale_price' ? v : row.sale_price;
+          const auto = suggestSavings(reg, sale);
+          const wasAuto = row.savings == null ||
+            row.savings === suggestSavings(row.reg_price, row.sale_price);
+          if (wasAuto && auto != null) p.savings = auto;
+        }
+        patch(row.id, p);
+      }}
+      style={{
+        width: width || '100%', background:'transparent', border:'none',
+        borderBottom:'1px solid transparent', color:'var(--txt)',
+        fontSize:'12px', padding:'4px 5px', textAlign:align, outline:'none',
+        fontFamily: type==='text' ? 'var(--disp)' : 'var(--mono)',
+      }}
+      onFocus={e=>{ e.target.style.borderBottomColor='var(--cy)'; e.target.style.background='rgba(56,224,240,.06)'; }}
+      onBlurCapture={e=>{ e.target.style.borderBottomColor='transparent'; e.target.style.background='transparent'; }}
+      placeholder={prefix || ''}
+    />
+  );
+
+  const Tick = ({ row, field }) => (
+    <button onClick={()=>patch(row.id, { [field]: !row[field] })}
+            aria-label={field}
+            style={{ width:'16px', height:'16px', border:'1px solid '+(row[field]?'var(--grn)':'var(--line2)'),
+                     background: row[field] ? 'rgba(63,240,138,.2)' : 'transparent',
+                     display:'flex', alignItems:'center', justifyContent:'center' }}>
+      {row[field] && <Icon name="check" size={11} style={{color:'var(--grn)'}}/>}
+    </button>
+  );
+
+  const totalRev = rows.reduce((a,r)=>a + (Number(r.revenue)||0), 0);
+  const totalQty = rows.reduce((a,r)=>a + (Number(r.qty_sold)||0), 0);
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <div className="flex items-center gap-3 flex-wrap mb-4">
+          <span className="ttl">Monthly features</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs">
+            {myStores.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+          </Select>
+          <div className="flex items-center gap-1">
+            <Button size="sm" variant="ghost" onClick={()=>shiftMonth(-1)} aria-label="Previous month">
+              <Icon name="back" size={13}/>
+            </Button>
+            <span className="mono text-xs px-2 whitespace-nowrap" style={{color:'var(--cy)'}}>{monthLabel(period)}</span>
+            <Button size="sm" variant="ghost" onClick={()=>shiftMonth(1)} aria-label="Next month">
+              <Icon name="fwd" size={13}/>
+            </Button>
+          </div>
+          {periodRow && <Badge color={periodRow.status==='closed'?'gray':periodRow.status==='active'?'green':'yellow'}>{periodRow.status}</Badge>}
+        </div>
+
+        <div className="flex gap-4 flex-wrap mb-4">
+          <ReadinessBar label="Data completeness" pct={stats.data}/>
+          <ReadinessBar label="Marketing readiness" pct={stats.marketing}/>
+          <ReadinessBar label="Sales entered" pct={stats.sales}/>
+        </div>
+
+        <div className="flex gap-2 flex-wrap">
+          <div className="flex" style={{border:'1px solid var(--line)'}}>
+            {[['plan','Plan'],['sales','Sales figures']].map(function(m){
+              const on = mode===m[0];
+              return (
+                <button key={m[0]} onClick={()=>setMode(m[0])}
+                  className="px-3 py-1.5 text-xs uppercase tracking-[.14em]"
+                  style={{ background:on?'var(--cy-glow)':'transparent', color:on?'var(--cy)':'var(--txt2)' }}>
+                  {m[1]}
+                </button>
+              );
+            })}
+          </div>
+          <span className="flex-1"/>
+          <Button size="sm" variant="outline" onClick={()=>setShowPaste(v=>!v)}>
+            <Icon name="down"/> Paste from Excel
+          </Button>
+          <Button size="sm" onClick={addBlank}><Icon name="tag"/> Add row</Button>
+          {periodRow && periodRow.status !== 'closed' && (
+            <Button size="sm" variant="secondary"
+              onClick={()=>setStatus(periodRow.status==='draft'?'active':'closed')}>
+              {periodRow.status==='draft' ? 'Mark active' : 'Close month'}
+            </Button>
+          )}
+        </div>
+      </Card>
+
+      {showPaste && (
+        <Card>
+          <FeaturePasteBox onImport={addRows} onClose={()=>setShowPaste(false)}/>
+        </Card>
+      )}
+
+      <Card>
+        {loading ? <p className="lbl text-center py-10">Loading…</p>
+         : rows.length === 0 ? (
+          <div className="text-center py-14">
+            <Icon name="tag" size={38} style={{color:'var(--cy-dim)'}}/>
+            <p className="lbl mt-3">No features for {monthLabel(period)}</p>
+            <p className="text-xs mt-2" style={{color:'var(--txt2)'}}>
+              Paste your sheet or add rows manually
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table style={{width:'100%', minWidth: mode==='sales' ? '760px' : '980px', borderCollapse:'collapse'}}>
+              <thead>
+                <tr style={{borderBottom:'1px solid var(--line2)'}}>
+                  {['','Name','Size','Reg','Sale','Save'].map(h=>(
+                    <th key={h} className="lbl" style={{textAlign:'left', padding:'0 5px 8px'}}>{h}</th>
+                  ))}
+                  {mode==='plan' && ['Social','Digital','Ads','Radio','Campaign','Notes',''].map(h=>(
+                    <th key={h} className="lbl" style={{textAlign:'left', padding:'0 5px 8px'}}>{h}</th>
+                  ))}
+                  {mode==='sales' && ['Qty sold','Revenue','Notes',''].map(h=>(
+                    <th key={h} className="lbl" style={{textAlign:'left', padding:'0 5px 8px'}}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map(function(r){
+                  return (
+                    <tr key={r.id} style={{borderBottom:'1px solid rgba(56,224,240,.07)'}}>
+                      <td style={{padding:'5px'}}>
+                        <ProductLink row={r} products={products}
+                                     onLink={(id,pid)=>patch(id,{product_id:pid})}/>
+                      </td>
+                      <td style={{padding:'2px 0', minWidth:'190px'}}><Cell row={r} field="name"/></td>
+                      <td style={{padding:'2px 0', width:'80px'}}><Cell row={r} field="size"/></td>
+                      <td style={{padding:'2px 0', width:'80px'}}><Cell row={r} field="reg_price"  type="money" align="right"/></td>
+                      <td style={{padding:'2px 0', width:'80px'}}><Cell row={r} field="sale_price" type="money" align="right"/></td>
+                      <td style={{padding:'2px 0', width:'80px'}}><Cell row={r} field="savings"    type="money" align="right"/></td>
+
+                      {mode==='plan' && (
+                        <React.Fragment>
+                          <td style={{padding:'5px', textAlign:'center'}}><Tick row={r} field="on_social"/></td>
+                          <td style={{padding:'5px', textAlign:'center'}}><Tick row={r} field="on_digital"/></td>
+                          <td style={{padding:'5px', textAlign:'center'}}><Tick row={r} field="on_ads"/></td>
+                          <td style={{padding:'5px', textAlign:'center'}}><Tick row={r} field="on_radio"/></td>
+                          <td style={{padding:'2px 5px', width:'130px'}}>
+                            <Select value={r.campaign_id || ''} className="text-xs"
+                                    onChange={e=>patch(r.id,{campaign_id:e.target.value || null})}
+                                    style={{padding:'3px 5px', fontSize:'11px'}}>
+                              <option value="">—</option>
+                              {campaigns.filter(c=>!c.archived && (!c.store_id || c.store_id===storeId))
+                                .map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+                            </Select>
+                          </td>
+                          <td style={{padding:'2px 0', minWidth:'160px'}}><Cell row={r} field="notes"/></td>
+                        </React.Fragment>
+                      )}
+
+                      {mode==='sales' && (
+                        <React.Fragment>
+                          <td style={{padding:'2px 0', width:'90px'}}><Cell row={r} field="qty_sold" type="int"   align="right"/></td>
+                          <td style={{padding:'2px 0', width:'110px'}}><Cell row={r} field="revenue"  type="money" align="right"/></td>
+                          <td style={{padding:'2px 0', minWidth:'160px'}}><Cell row={r} field="notes"/></td>
+                        </React.Fragment>
+                      )}
+
+                      <td style={{padding:'5px', width:'34px'}}>
+                        <button onClick={()=>{ if(confirm('Delete "'+r.name+'"?')) deleteRow(r.id); }}
+                                aria-label="Delete row" style={{color:'var(--txt3)'}}>
+                          <Icon name="trash" size={12}/>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              {mode==='sales' && (
+                <tfoot>
+                  <tr style={{borderTop:'1px solid var(--line2)'}}>
+                    <td colSpan={6} className="lbl" style={{padding:'8px 5px'}}>
+                      {rows.length} features · {monthLabel(period)}
+                    </td>
+                    <td className="mono" style={{padding:'8px 5px', textAlign:'right', color:'var(--cy)'}}>{totalQty || ''}</td>
+                    <td className="mono" style={{padding:'8px 5px', textAlign:'right', color:'var(--cy)'}}>{totalRev ? money(totalRev) : ''}</td>
+                    <td colSpan={2}/>
+                  </tr>
+                </tfoot>
+              )}
+            </table>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+// Pulls the month's feature rows into the price ad builder so the copy that was
+// already typed into the feature sheet never gets typed a second time.
+function FeaturePicker({ storeId, onPick, onClose }) {
+  const [period, setPeriod] = useState(monthKey(new Date()));
+  const { rows, loading } = useFeaturePeriod(storeId, period);
+  const { images: products } = useBrandImageLibrary();
+
+  const shift = n => {
+    const [y,m] = period.split('-').map(Number);
+    setPeriod(monthKey(new Date(y, m-1+n, 1)));
+  };
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-6"
+         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
+      <div className="hud hud-brk w-full max-w-2xl max-h-[85vh] overflow-auto p-6" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center gap-3 mb-4 flex-wrap">
+          <span className="ttl">This month's features</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          <Button size="sm" variant="ghost" onClick={()=>shift(-1)}><Icon name="back" size={12}/></Button>
+          <span className="mono text-xs" style={{color:'var(--cy)'}}>{monthLabel(period)}</span>
+          <Button size="sm" variant="ghost" onClick={()=>shift(1)}><Icon name="fwd" size={12}/></Button>
+          <button onClick={onClose} style={{color:'var(--txt2)'}}><Icon name="close"/></button>
+        </div>
+
+        {loading ? <p className="lbl text-center py-10">Loading…</p>
+         : rows.length === 0 ? (
+          <div className="text-center py-12">
+            <Icon name="tag" size={34} style={{color:'var(--cy-dim)'}}/>
+            <p className="lbl mt-3">Nothing featured for {monthLabel(period)}</p>
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            {rows.map(function(r){
+              const prod = products.find(p => p.id === r.product_id);
+              return (
+                <button key={r.id} onClick={()=>{ onPick(r, prod); onClose(); }}
+                        className="flex items-center gap-3 w-full p-2.5 text-left"
+                        style={{border:'1px solid var(--line)', background:'rgba(2,5,11,.5)'}}>
+                  {prod
+                    ? <img src={prodSrc(prod)} alt="" className="w-11 h-11 object-cover flex-none"/>
+                    : <div className="w-11 h-11 flex-none flex items-center justify-center"
+                           style={{border:'1px dashed var(--line)'}}>
+                        <Icon name="image" size={14} style={{color:'var(--txt3)'}}/>
+                      </div>}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm truncate" style={{color:'var(--txt)'}}>{r.name}</p>
+                    <p className="lbl mt-0.5">{r.size}</p>
+                  </div>
+                  <div className="text-right flex-none">
+                    <p className="mono text-sm" style={{color:'var(--cy)'}}>{money(r.sale_price)}</p>
+                    {r.savings != null && <p className="mono" style={{fontSize:'10px', color:'var(--amb)'}}>save {money(r.savings)}</p>}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
 // TOAST CONTEXT
 // ─────────────────────────────────────────────
 const ToastCtx = createContext(null);
@@ -2960,6 +3555,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
   const [productName, setProductName]= useState('');
   const [productSize, setProductSize]= useState('');
   const [lastAd, setLastAd] = useState(null);
+  const [showFeatures, setShowFeatures] = useState(false);
   const [nameTouched, setNameTouched] = useState(false);
   const [sizeTouched, setSizeTouched] = useState(false);
   const [genStep,     setGenStep]    = useState('idle');
@@ -2988,6 +3584,21 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
     const r=new FileReader();
     r.onload=async()=>{ setProdPrev(r.result); try { await saveToLib(file.name, r.result); } catch{} };
     r.readAsDataURL(file);
+  };
+
+  const applyFeature = (f, prod) => {
+    setProductName(f.name || '');
+    setProductSize(f.size || '');
+    if (f.sale_price != null) setPriceText(String(f.sale_price.toFixed ? f.sale_price.toFixed(2) : f.sale_price));
+    if (f.savings != null)    setSaveText('$' + Number(f.savings).toFixed(2));
+    setNameTouched(true); setSizeTouched(true);
+    if (prod) {
+      const src = prodSrc(prod);
+      setProdPrev(src);
+      fetch(src).then(r=>r.blob())
+        .then(b=>setProdFile(new File([b], (prod.product_name||'product')+'.jpg', {type:'image/jpeg'})))
+        .catch(()=>{});
+    }
   };
 
   const selectFromLib = img => {
@@ -3229,6 +3840,17 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
         </div>
 
         {/* Product details */}
+        <div className="flex items-center gap-2 mb-2">
+          <Label className="mb-0 flex-1">Product details</Label>
+          <button onClick={()=>setShowFeatures(true)} className="text-xs font-semibold hover:underline"
+                  style={{color:'var(--cy)'}}>
+            <Icon name="tag"/> Pull from features
+          </button>
+        </div>
+        {showFeatures && (
+          <FeaturePicker storeId={storeId} onPick={applyFeature}
+                         onClose={()=>setShowFeatures(false)}/>
+        )}
         <div className="grid grid-cols-2 gap-2">
           <div>
             <Label>Product Name</Label>
@@ -7121,6 +7743,7 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
   const nav = [
     { id:'shelf', icon:'tag', label:'Shelf Talkers' },
     { id:'posts', icon:'note', label:'Posts' },
+    { id:'features', icon:'tag', label:'Features' },
     { id:'creatives', icon:'image', label:'Creatives' },
     ...(isAdmin ? [{ id:'products', icon:'package', label:'Products' }] : []),
     ...(isAdmin ? [
@@ -7203,6 +7826,8 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
         {page==='posts'                  && <PostsPage       settings={settings} userStoreIds={isAdmin ? [] : userStoreIds} isAdmin={isAdmin}/>}
         {page==='shelf'                  && <ShelfTalkerPage isAdmin={isAdmin} userStoreIds={isAdmin ? [] : userStoreIds} userId={user ? user.id : null}/>}
         {page==='creatives'              && <CreativeLibrary isAdmin={isAdmin}
+                                             myStores={isAdmin ? STORES : STORES.filter(st=>userStoreIds.includes(st.id))}/>}
+        {page==='features'               && <FeaturesPage isAdmin={isAdmin}
                                              myStores={isAdmin ? STORES : STORES.filter(st=>userStoreIds.includes(st.id))}/>}
         {page==='products' && isAdmin    && <ProductLibrary/>}
         {page==='ads'      && isAdmin    && <AdsPage         settings={settings}/>}

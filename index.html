@@ -1121,19 +1121,16 @@ const RECIPE_CARD_H = 1350;
 // A generic modern look, to be overridden per store. Every read merges over
 // these, so a token added later doesn't break cards saved before it existed.
 const RECIPE_STYLE_DEFAULTS = {
+  text:        '#ffffff',
+  accent:      '#e8c76a',
+  name_font:   'Anton',
+  uppercase:   true,
+  name_pos:    'bottom',   // 'bottom' | 'centre' | 'top'
+  scrim:       0.55,       // how hard the photo is darkened behind the name
+  show_rule:   true,
+  // Only used before a photo exists, so the card is never a blank rectangle.
   bg_top:      '#141c26',
   bg_bottom:   '#243542',
-  accent:      '#c9a227',
-  text:        '#ffffff',
-  muted:       '#aebcc8',
-  name_font:   'Anton',
-  body_font:   'Inter',
-  uppercase:   true,
-  show_glow:   true,
-  show_frame:  true,
-  show_logo:   true,
-  show_rule:   true,
-  remove_bg:   true,
 };
 
 const withStyleDefaults = t => Object.assign({}, RECIPE_STYLE_DEFAULTS, t || {});
@@ -1148,7 +1145,37 @@ function hexToRgba(hex, a) {
   return 'rgba(' + ((n>>16)&255) + ',' + ((n>>8)&255) + ',' + (n&255) + ',' + a + ')';
 }
 
-async function renderRecipeCard(styleTokens, recipe, productDataUrl, logoDataUrl) {
+// What the image model is asked for. Built from the recipe itself so the photo
+// shows the drink that the caption describes — the right colour, the right
+// glass, the right garnish — rather than a generic cocktail.
+function cocktailPhotoPrompt(recipe, hint) {
+  const ing = (recipe.ingredients || [])
+    .map(i => (i && i.item) ? String(i.item).trim() : '')
+    .filter(Boolean);
+
+  const parts = ['A photograph of a single finished cocktail called "' + (recipe.name || 'cocktail') + '".'];
+  if (recipe.glass) parts.push('Served in a ' + recipe.glass + '.');
+  if (ing.length)   parts.push('Made from ' + ing.slice(0, 5).join(', ') + ', so match its colour.');
+  if (recipe.garnish) parts.push('Garnished with ' + recipe.garnish + '.');
+  if (hint && hint.trim()) parts.push(hint.trim() + '.');
+
+  parts.push(
+    'Editorial lifestyle photography, natural light, shallow depth of field, ' +
+    'the glass sharp and slightly off centre with room above and below it. ' +
+    'Warm and inviting, a real bar or kitchen counter, tasteful and understated.',
+    // Everything below is the negative half of the prompt. Bottles and labels
+    // are the point of the price ads, not of this card, and any text the model
+    // renders will collide with the drink name drawn on top.
+    'No text, no writing, no lettering, no logos, no labels, no watermarks. ' +
+    'No bottles, no packaging, no branding of any kind. No people, no hands. ' +
+    'Vertical composition.',
+  );
+  return parts.join(' ');
+}
+
+// Photo first, drink name over it. The photo is generated separately and passed
+// in, because it costs money and fifteen seconds — restyling has to be free.
+async function renderRecipeCard(styleTokens, recipe, photoDataUrl) {
   const s = withStyleDefaults(styleTokens);
   await ensureFontsReady();
 
@@ -1157,72 +1184,61 @@ async function renderRecipeCard(styleTokens, recipe, productDataUrl, logoDataUrl
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
 
-  const grad = ctx.createLinearGradient(0, 0, 0, H);
-  grad.addColorStop(0, s.bg_top);
-  grad.addColorStop(1, s.bg_bottom);
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, W, H);
+  let drew = false;
+  if (photoDataUrl) {
+    try {
+      const img = await loadImg(photoDataUrl);
+      // Cover, not contain: the model returns 2:3 and the card is 4:5, so the
+      // photo is cropped rather than letterboxed.
+      drawImageFitted(ctx, img, { x:0, y:0, w:W, h:H }, 'cover');
+      drew = true;
+    } catch(e) { /* fall through to the placeholder */ }
+  }
 
-  // A soft accent wash behind the product so it isn't floating on flat colour.
-  if (s.show_glow) {
-    const g2 = ctx.createRadialGradient(W*0.5, H*0.40, 40, W*0.5, H*0.40, W*0.62);
-    g2.addColorStop(0, hexToRgba(s.accent, 0.20));
-    g2.addColorStop(1, hexToRgba(s.accent, 0));
-    ctx.fillStyle = g2;
+  if (!drew) {
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, s.bg_top);
+    grad.addColorStop(1, s.bg_bottom);
+    ctx.fillStyle = grad;
     ctx.fillRect(0, 0, W, H);
   }
 
-  if (s.show_frame) {
-    ctx.strokeStyle = hexToRgba(s.accent, 0.55);
-    ctx.lineWidth = 2;
-    ctx.strokeRect(38, 38, W-76, H-76);
-  }
+  // Where the name sits, and the scrim that keeps it readable over whatever the
+  // photo happens to be doing there.
+  const pos = s.name_pos === 'top' ? 'top' : s.name_pos === 'centre' ? 'centre' : 'bottom';
+  const band = pos === 'top'    ? { y: 0,        h: 430 }
+             : pos === 'centre' ? { y: H/2 - 215, h: 430 }
+             :                    { y: H - 430,  h: 430 };
 
-  // Product shot
-  if (productDataUrl) {
-    let src = productDataUrl;
-    if (s.remove_bg) {
-      try { src = await removeProductBackground(productDataUrl); } catch(e) { /* keep original */ }
+  const scrim = Math.max(0, Math.min(0.9, Number(s.scrim)));
+  if (scrim > 0) {
+    if (pos === 'centre') {
+      ctx.fillStyle = 'rgba(0,0,0,' + (scrim * 0.75) + ')';
+      ctx.fillRect(0, 0, W, H);
+    } else {
+      const g = ctx.createLinearGradient(0, band.y, 0, band.y + band.h);
+      const stops = pos === 'top'
+        ? [[0, scrim], [1, 0]]
+        : [[0, 0], [1, scrim]];
+      stops.forEach(st => g.addColorStop(st[0], 'rgba(0,0,0,' + st[1] + ')'));
+      ctx.fillStyle = g;
+      ctx.fillRect(0, band.y, W, band.h);
     }
-    try {
-      const img = await loadImg(src);
-      drawImageFitted(ctx, img, { x:170, y:150, w:740, h:800 }, 'contain');
-    } catch(e) { /* a card without the bottle is still a card */ }
   }
 
-  const hasLogo = s.show_logo && logoDataUrl;
-  // Without a logo the text block claims the space instead of leaving a gap.
-  const shift = hasLogo ? 0 : 46;
+  const nameY = pos === 'top' ? 92 : pos === 'centre' ? H/2 - 110 : H - 300;
 
   if (s.show_rule) {
     ctx.fillStyle = s.accent;
-    ctx.fillRect(W/2 - 70, 998 + shift, 140, 4);
+    ctx.fillRect(W/2 - 60, nameY - 34, 120, 4);
   }
 
   const name = s.uppercase ? String(recipe.name || '').toUpperCase() : String(recipe.name || '');
-  drawTextField(ctx, name, { x:80, y:1030 + shift, w:920, h:132 }, {
+  drawTextField(ctx, name, { x:80, y:nameY, w:920, h:220 }, {
     align:'center', valign:'middle', color:s.text,
     fontFamily: fontStack(s.name_font), fontWeight:400,
-    maxFontSize:112, minFontSize:30, maxLines:2, lineSpacing:1.02, padding:6,
+    maxFontSize:124, minFontSize:34, maxLines:2, lineSpacing:1.02, padding:6,
   });
-
-  if (recipe.subtitle) {
-    drawTextField(ctx, recipe.subtitle, { x:90, y:1172 + shift, w:900, h:46 }, {
-      align:'center', valign:'middle', color:s.muted,
-      fontFamily: fontStack(s.body_font), fontWeight:600,
-      maxFontSize:30, minFontSize:14, maxLines:1, wrap:false, padding:4,
-    });
-  }
-
-  if (hasLogo) {
-    try {
-      const logo = await loadImg(logoDataUrl);
-      const maxH = 68, maxW = 380;
-      const scale = Math.min(maxW / logo.width, maxH / logo.height);
-      const lw = logo.width * scale, lh = logo.height * scale;
-      ctx.drawImage(logo, (W - lw)/2, 1238, lw, lh);
-    } catch(e) { /* logo is optional */ }
-  }
 
   return canvas.toDataURL('image/png');
 }
@@ -1345,11 +1361,8 @@ function RecipeStyleEditor({ tokens, isOwn, onSave, onClear, isAdmin, storeName,
 
   return (
     <div>
-      {colorRow('bg_top','Background top')}
-      {colorRow('bg_bottom','Background bottom')}
-      {colorRow('accent','Accent')}
       {colorRow('text','Drink name')}
-      {colorRow('muted','Subtitle')}
+      {colorRow('accent','Rule above the name')}
 
       <div className="grid grid-cols-2 gap-2 mt-3 mb-3">
         <div>
@@ -1359,16 +1372,27 @@ function RecipeStyleEditor({ tokens, isOwn, onSave, onClear, isAdmin, storeName,
           </Select>
         </div>
         <div>
-          <Label>Subtitle font</Label>
-          <Select value={t.body_font} className="text-xs" onChange={e=>set('body_font', e.target.value)}>
-            {AD_FONTS.map(f=><option key={f.id} value={f.id}>{f.label}</option>)}
+          <Label>Name sits</Label>
+          <Select value={t.name_pos} className="text-xs" onChange={e=>set('name_pos', e.target.value)}>
+            <option value="bottom">At the bottom</option>
+            <option value="centre">Across the middle</option>
+            <option value="top">At the top</option>
           </Select>
         </div>
       </div>
 
-      {[['uppercase','Name in capitals'],['show_glow','Accent glow'],['show_frame','Border'],
-        ['show_rule','Rule above the name'],['show_logo','Store logo'],['remove_bg','Cut out the product background']]
-        .map(function(o) {
+      <Label>Shading behind the name</Label>
+      <div className="flex items-center gap-3 mb-3">
+        <input type="range" min="0" max="90" step="5" value={Math.round(t.scrim*100)}
+               onChange={e=>set('scrim', Number(e.target.value)/100)} className="flex-1"/>
+        <span className="mono text-xs" style={{color:'var(--txt3)'}}>{Math.round(t.scrim*100)}%</span>
+      </div>
+      <p className="lbl mb-3">
+        Keeps the name readable over a bright photo. Too little and it disappears
+        against a pale drink.
+      </p>
+
+      {[['uppercase','Name in capitals'],['show_rule','Rule above the name']].map(function(o) {
         return (
           <label key={o[0]} className="flex items-center gap-2 py-1 cursor-pointer">
             <input type="checkbox" checked={!!t[o[0]]} onChange={e=>set(o[0], e.target.checked)}/>
@@ -1399,7 +1423,7 @@ function RecipeStyleEditor({ tokens, isOwn, onSave, onClear, isAdmin, storeName,
 }
 
 const RECIPE_BLANK = {
-  name:'', subtitle:'', blurb:'', glass:'', garnish:'',
+  name:'', blurb:'', glass:'', garnish:'',
   ingredients:[{amount:'',item:''}], method:[''],
   store_id:null, product_id:null, feature_id:null,
 };
@@ -1414,7 +1438,10 @@ function RecipesPage({ isAdmin, myStores }) {
 
   const [draft,    setDraft]    = useState(null);   // the recipe being edited
   const [preview,  setPreview]  = useState(null);   // rendered card data URL
-  const [logo,     setLogo]     = useState(null);
+  // The generated photo, kept apart from the card. Restyling redraws the name
+  // over the same photo instead of paying for a new drink.
+  const [photo,    setPhoto]    = useState(null);
+  const [photoHint,setPhotoHint]= useState('');
   const [busy,     setBusy]     = useState(null);
   const [showStyle,setShowStyle]= useState(false);
   const [showPick, setShowPick] = useState(false);
@@ -1423,37 +1450,29 @@ function RecipesPage({ isAdmin, myStores }) {
 
   const storeName = (myStores.find(s=>s.id===storeId)||{}).name || '';
 
-  useEffect(function() {
-    const sb = getSB(); if (!sb || !storeId) return;
-    sb.from('brand_profiles').select('logo_data').eq('store_id', storeId).maybeSingle()
-      .then(({data}) => setLogo(data?.logo_data || null));
-  }, [storeId]);
-
   const productOf = r => products.find(p => p.id === (r && r.product_id)) || null;
 
-  // Re-render whenever the recipe or the look changes. Cheap — it's canvas
-  // work on one image, no network.
+  // Redraw whenever the name or the look changes. Free — canvas only, no
+  // network, and never a new photo.
   useEffect(function() {
     if (!draft) { setPreview(null); return; }
     let cancelled = false;
-    const prod = productOf(draft);
     (async function() {
       try {
-        const src = prod ? await toDataUrl(prodSrc(prod)) : null;
-        const url = await renderRecipeCard(tokens, draft, src, logo);
+        const url = await renderRecipeCard(tokens, draft, photo);
         if (!cancelled) setPreview(url);
       } catch(e) { if (!cancelled) setPreview(null); }
     })();
     return function(){ cancelled = true; };
-  }, [draft, tokens, logo, products]);
+  }, [draft && draft.name, tokens, photo]);
 
   const startNew = function(product, feature) {
+    setPhoto(null); setPhotoHint('');
     setDraft(Object.assign({}, RECIPE_BLANK, {
       store_id: null,
       product_id: product ? product.id : null,
       feature_id: feature ? feature.id : null,
       name: '',
-      subtitle: product ? 'Made with ' + product.product_name : '',
     }));
   };
 
@@ -1468,9 +1487,9 @@ function RecipesPage({ isAdmin, myStores }) {
         'It must be genuinely simple: at most 5 ingredients, no infusions, no syrups that need making, ' +
         'no equipment beyond a shaker or a spoon.\n\n' +
         'Reply with JSON only, no code fence, in exactly this shape:\n' +
-        '{"name":"","subtitle":"","blurb":"","glass":"","garnish":"",' +
+        '{"name":"","blurb":"","glass":"","garnish":"",' +
         '"ingredients":[{"amount":"","item":""}],"method":[""]}\n\n' +
-        'name: the drink name, 1 to 3 words. subtitle: a short line naming the product, under 40 characters. ' +
+        'name: the drink name, 1 to 3 words. ' +
         'blurb: one sentence on what it tastes like. method: 2 to 4 short steps. ' +
         'No hashtags, no emoji, no brand claims beyond the product name.';
       const r = await callEdge('meta-social', 'aiWrite', { prompt, maxTokens: 700 });
@@ -1481,7 +1500,6 @@ function RecipesPage({ isAdmin, myStores }) {
 
       setDraft(prev => Object.assign({}, prev, {
         name:     parsed.name || prev.name,
-        subtitle: parsed.subtitle || prev.subtitle,
         blurb:    parsed.blurb || '',
         glass:    parsed.glass || '',
         garnish:  parsed.garnish || '',
@@ -1491,6 +1509,29 @@ function RecipesPage({ isAdmin, myStores }) {
         method:   Array.isArray(parsed.method) && parsed.method.length ? parsed.method : prev.method,
       }));
       toast.success('Recipe drafted — check it before you save');
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(null); }
+  };
+
+  // Anything the image API hands back has to end up on our own Storage before
+  // it touches a canvas: a cross-origin image taints the canvas and the export
+  // then throws. Our bucket sends the CORS headers that make it exportable.
+  const persistPhoto = async function(url) {
+    if (!url) throw new Error('No image came back');
+    if (url.startsWith('data:')) return uploadImageToStorage(url);
+    const r = await callEdge('bcliquor', 'importUrl', { url });
+    return r.image_url;
+  };
+
+  const generatePhoto = async function() {
+    if (!draft || !draft.name.trim()) { toast.error('Draft the recipe first'); return; }
+    setBusy('photo');
+    try {
+      // 2:3 is the tallest the model offers; the card crops it to 4:5.
+      const img = await openAIGenerateImage(cocktailPhotoPrompt(draft, photoHint), '1024x1536', null);
+      const hosted = await persistPhoto(img.url);
+      setPhoto(hosted);
+      toast.success('Photo made — press it again for a different take');
     } catch(e) { toast.error(e.message); }
     finally { setBusy(null); }
   };
@@ -1511,6 +1552,8 @@ function RecipesPage({ isAdmin, myStores }) {
         ingredients: (draft.ingredients||[]).filter(i=>i.item || i.amount),
         method: (draft.method||[]).filter(Boolean),
         image_url: draft.image_url || null,
+        photo_url: photo || null,
+        photo_hint: photoHint || null,
       });
       toast.success('Saved');
       setDraft(null);
@@ -1640,8 +1683,10 @@ function RecipesPage({ isAdmin, myStores }) {
                     {p && <p className="lbl mt-1 truncate">{p.product_name}</p>}
                     <Button size="sm" variant="ghost" className="mt-1.5"
                       onClick={function(){
+                        setPhoto(r.photo_url || null);
+                        setPhotoHint(r.photo_hint || '');
                         setDraft({
-                          id:r.id, name:r.name, subtitle:p ? 'Made with ' + p.product_name : '',
+                          id:r.id, name:r.name,
                           blurb:r.notes||'', glass:r.glass||'', garnish:r.garnish||'',
                           ingredients:(r.ingredients&&r.ingredients.length)?r.ingredients:[{amount:'',item:''}],
                           method:(r.method&&r.method.length)?r.method:[''],
@@ -1679,15 +1724,9 @@ function RecipesPage({ isAdmin, myStores }) {
                 </Button>
               </div>
 
-              <div className="grid grid-cols-2 gap-3 mb-3">
-                <div>
-                  <Label>Drink name</Label>
-                  <Input value={draft.name} onChange={e=>setDraft({...draft, name:e.target.value})}/>
-                </div>
-                <div>
-                  <Label>Subtitle on the card</Label>
-                  <Input value={draft.subtitle} onChange={e=>setDraft({...draft, subtitle:e.target.value})}/>
-                </div>
+              <div className="mb-3">
+                <Label>Drink name — the only text on the card</Label>
+                <Input value={draft.name} onChange={e=>setDraft({...draft, name:e.target.value})}/>
               </div>
 
               <Label>One line on the taste</Label>
@@ -1752,10 +1791,31 @@ function RecipesPage({ isAdmin, myStores }) {
                   : <div className="flex items-center justify-center" style={{aspectRatio:'4/5'}}>
                       <p className="lbl">Building…</p>
                     </div>}
+                {!photo && preview && (
+                  <p className="lbl p-2">No photo yet — make one below.</p>
+                )}
+              </div>
+
+              <div className="mt-3">
+                <Label>Photo direction (optional)</Label>
+                <div className="flex gap-2">
+                  <Input value={photoHint} className="flex-1 text-xs"
+                         placeholder="e.g. sunny patio table, late afternoon"
+                         onChange={e=>setPhotoHint(e.target.value)}/>
+                  <Button size="sm" onClick={generatePhoto} loading={busy==='photo'}>
+                    <Icon name="spark"/> {photo ? 'New photo' : 'Make the photo'}
+                  </Button>
+                </div>
+                <p className="lbl mt-1.5">
+                  {photo
+                    ? 'Restyling is free — only this button costs a generation.'
+                    : 'Built from the ingredients, so the drink matches the recipe.'}
+                </p>
               </div>
 
               <div className="flex gap-2 flex-wrap mt-3">
-                <Button size="sm" variant="outline" onClick={saveCard} loading={busy==='card'}>
+                <Button size="sm" variant="outline" onClick={saveCard} loading={busy==='card'}
+                        disabled={!photo}>
                   <Icon name="down"/> Save card to library
                 </Button>
                 <Button size="sm" onClick={saveRecipe} loading={busy==='save'}>
@@ -1784,7 +1844,6 @@ function RecipesPage({ isAdmin, myStores }) {
               onPick={function(p){
                 setDraft(prev => Object.assign({}, prev, {
                   product_id: p.id,
-                  subtitle: prev.subtitle || ('Made with ' + p.product_name),
                 }));
                 setShowPick(false);
               }}
@@ -1797,7 +1856,6 @@ function RecipesPage({ isAdmin, myStores }) {
                 setDraft(prev => Object.assign({}, prev, {
                   feature_id: f.id,
                   product_id: prod ? prod.id : prev.product_id,
-                  subtitle: prev.subtitle || ('Made with ' + f.name),
                 }));
                 setShowFeat(false);
               }}

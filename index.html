@@ -1785,12 +1785,14 @@ function QuickProductCreate({ seedName, seedSize, onCreated, onClose }) {
     setBusy(true);
     try {
       const sb = getSB();
+      // Empty strings, not nulls — several of these columns are NOT NULL, and
+      // the main Product Library form has always written '' for blanks.
       const row = {
         store_id: null,
         product_name: name.trim(),
-        size: size.trim() || null,
-        category: cat || null,
-        notes: null,
+        size: size.trim(),
+        category: cat || '',
+        notes: '',
         // A hosted image already lives in Storage; an uploaded one gets
         // compressed into the base64 column like the rest of the library.
         image_url: hosted || null,

@@ -4,6 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Liquor Store Social Media Manager</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config = { darkMode: 'class' };</script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -15,18 +18,151 @@
   <!-- jsPDF: generates print-ready 8.5×11" PDF output -->
   <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
   <style>
-    ::-webkit-scrollbar { width: 5px; height: 5px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: #9ca3af; border-radius: 4px; }
-    .dark ::-webkit-scrollbar-thumb { background: #4b5563; }
-    .line-clamp-3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+    :root{
+      --void:#04070e; --deep:#070c17; --panel:rgba(10,17,30,.82);
+      --cy:#38e0f0; --cy-dim:#1a8f9c; --cy-glow:rgba(56,224,240,.14);
+      --amb:#f0a830; --red:#ff4d5e; --grn:#3ff08a; --vio:#a98cf5;
+      --txt:#dbe9f2; --txt2:#7d93a8; --txt3:#48596b;
+      --line:rgba(56,224,240,.16); --line2:rgba(56,224,240,.3);
+      --disp:'Chakra Petch',ui-sans-serif,system-ui,sans-serif;
+      --mono:'JetBrains Mono',ui-monospace,monospace;
+    }
+    html,body{background:var(--void);color:var(--txt);font-family:var(--disp)}
+    body{
+      min-height:100vh;
+      background-image:
+        radial-gradient(ellipse 900px 620px at 12% -8%, rgba(56,224,240,.085), transparent 60%),
+        radial-gradient(ellipse 760px 520px at 92% 3%, rgba(240,168,48,.05), transparent 60%),
+        linear-gradient(rgba(56,224,240,.026) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(56,224,240,.026) 1px, transparent 1px);
+      background-size:auto,auto,44px 44px,44px 44px;
+      background-attachment:fixed;
+    }
+    body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;
+      background:repeating-linear-gradient(0deg,rgba(0,0,0,.15) 0 1px,transparent 1px 3px);opacity:.45}
+    ::-webkit-scrollbar{width:7px;height:7px}
+    ::-webkit-scrollbar-track{background:rgba(56,224,240,.04)}
+    ::-webkit-scrollbar-thumb{background:rgba(56,224,240,.28)}
+    ::-webkit-scrollbar-thumb:hover{background:var(--cy)}
+    .line-clamp-3{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+    .hud{position:relative;background:var(--panel);border:1px solid var(--line);
+      backdrop-filter:blur(7px);
+      clip-path:polygon(13px 0,100% 0,100% calc(100% - 13px),calc(100% - 13px) 100%,0 100%,0 13px);
+      box-shadow:inset 0 1px 0 rgba(56,224,240,.09),0 0 34px rgba(0,0,0,.5)}
+    .hud::before{content:'';position:absolute;top:0;left:13px;right:0;height:1px;
+      background:linear-gradient(90deg,var(--cy),transparent 70%);opacity:.5}
+    .hud-brk::after{content:'';position:absolute;top:6px;right:6px;width:9px;height:9px;
+      border:1px solid var(--cy);border-left:0;border-bottom:0;opacity:.45}
+    .clip{clip-path:polygon(9px 0,100% 0,100% calc(100% - 9px),calc(100% - 9px) 100%,0 100%,0 9px)}
+    .lbl{font-family:var(--mono);font-size:9.5px;letter-spacing:.26em;text-transform:uppercase;color:var(--cy-dim)}
+    .ttl{font-size:12.5px;font-weight:600;letter-spacing:.19em;text-transform:uppercase;color:var(--cy)}
+    .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+    .glow{box-shadow:0 0 8px currentColor}
+    .pulse{animation:hudpulse 2s ease-in-out infinite}
+    @keyframes hudpulse{50%{opacity:.35}}
+    .scan{position:relative;overflow:hidden}
+    .scan::after{content:'';position:absolute;left:0;right:0;height:34%;top:-40%;
+      background:linear-gradient(180deg,transparent,rgba(56,224,240,.07),transparent);
+      animation:sweep 5.5s ease-in-out infinite}
+    @keyframes sweep{0%{top:-40%}100%{top:120%}}
+    input,textarea,select{font-family:var(--disp)}
+    input::placeholder,textarea::placeholder{color:var(--txt3)}
+    select option{background:#0a111e;color:var(--txt)}
+    ::selection{background:rgba(56,224,240,.3);color:#fff}
   </style>
 </head>
-<body class="bg-gray-100 dark:bg-gray-900 transition-colors">
+<body>
 <div id="root"></div>
 
 <script type="text/babel">
 const { useState, useEffect, useCallback, useRef, createContext, useContext } = React;
+
+// ─────────────────────────────────────────────
+// ICON SYSTEM — stroked SVG, replaces all emoji
+// ─────────────────────────────────────────────
+const ICON_PATHS = {
+  close:'M18 6 6 18M6 6l12 12',
+  check:'M20 6 9 17l-5-5',
+  cross:'M18 6 6 18M6 6l12 12',
+  warn:'M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
+  info:'M12 16v-4M12 8h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z',
+  down:'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3',
+  up:'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12',
+  back:'M19 12H5M12 19l-7-7 7-7',
+  fwd:'M5 12h14M12 5l7 7-7 7',
+  chevD:'m6 9 6 6 6-6',
+  search:'M21 21l-4.3-4.3M19 11a8 8 0 1 1-16 0 8 8 0 0 1 16 0z',
+  trash:'M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6',
+  edit:'M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z',
+  save:'M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2zM17 21v-8H7v8M7 3v5h8',
+  cal:'M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z',
+  clock:'M12 6v6l4 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z',
+  chart:'M3 3v18h18M7 15l4-5 3 3 5-7',
+  grid:'M3 13h8V3H3zM13 21h8V11h-8zM3 21h8v-6H3zM13 9h8V3h-8z',
+  image:'M3 5h18v14H3zM3 15l5-5 4 4 3-3 6 6M8.5 9.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2z',
+  palette:'M12 21a9 9 0 1 1 0-18c4.9 0 9 3.6 9 8 0 2.2-1.8 4-4 4h-2a2 2 0 0 0-1.4 3.4A2 2 0 0 1 12 21zM7.5 11.5h.01M10 7.5h.01M14.5 7.5h.01',
+  package:'M21 8v8a2 2 0 0 1-1 1.7l-7 4a2 2 0 0 1-2 0l-7-4A2 2 0 0 1 3 16V8a2 2 0 0 1 1-1.7l7-4a2 2 0 0 1 2 0l7 4A2 2 0 0 1 21 8zM3.3 7 12 12l8.7-5M12 22V12',
+  tag:'M20.6 13.4 12 22l-9-9V3h10zM7.5 7.5h.01',
+  book:'M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z',
+  note:'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M9 13h6M9 17h4',
+  file:'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6',
+  folder:'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z',
+  spark:'M12 2 14.4 8.6 21 11l-6.6 2.4L12 20l-2.4-6.6L3 11l6.6-2.4zM19 3v3M20.5 4.5h-3',
+  gear:'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2v.2a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.6 1.7 1.7 0 0 0-1.9.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1.1 1.7 1.7 0 0 0-.4-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H10a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V10a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z',
+  lock:'M5 11h14v11H5zM8 11V7a4 4 0 0 1 8 0v4',
+  key:'M21 2l-2 2M15.5 8.5 19 5M12.7 11.3a5 5 0 1 1-7.07 7.07 5 5 0 0 1 7.07-7.07z',
+  users:'M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM23 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8',
+  user:'M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',
+  store:'M3 9 4.5 4h15L21 9M3 9h18v11a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zM3 9a3 3 0 0 0 6 0 3 3 0 0 0 6 0 3 3 0 0 0 6 0M9 21v-6h6v6',
+  globe:'M2 12h20M12 2a15 15 0 0 1 0 20 15 15 0 0 1 0-20zM21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z',
+  eye:'M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
+  print:'M6 9V2h12v7M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2M6 14h12v8H6z',
+  mega:'M3 11v2a1 1 0 0 0 1 1h3l6 4V6L7 10H4a1 1 0 0 0-1 1zM17 9a4 4 0 0 1 0 6M20 6a8 8 0 0 1 0 12',
+  sun:'M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4',
+  moon:'M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z',
+  refresh:'M23 4v6h-6M1 20v-6h6M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15',
+  heart:'M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8l1.1 1L12 21l7.7-7.6 1.1-1a5.5 5.5 0 0 0 0-7.8z',
+  star:'M12 2l3.1 6.3 6.9 1-5 4.9 1.2 6.8L12 17.8 5.8 21l1.2-6.8-5-4.9 6.9-1z',
+  comment:'M21 11.5a8.4 8.4 0 0 1-9 8.4 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.2A8.4 8.4 0 0 1 12 3.1a8.4 8.4 0 0 1 9 8.4z',
+  thumb:'M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.3a2 2 0 0 0 2-1.7l1.4-9a2 2 0 0 0-2-2.3zM7 22H4a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2h3',
+  share:'M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8M16 6l-4-4-4 4M12 2v13',
+  send:'M22 2 11 13M22 2l-7 20-4-9-9-4z',
+  rocket:'M4.5 16.5c-1.5 1.3-2 5-2 5s3.7-.5 5-2a2.8 2.8 0 0 0-3-3zM12 15l-3-3a22 22 0 0 1 2-3.9A12.9 12.9 0 0 1 22 2a12.9 12.9 0 0 1-6.1 11 22 22 0 0 1-3.9 2zM9 12H4s.5-2.8 2-4c1.7-1.3 5 0 5 0M12 15v5s2.8-.5 4-2c1.3-1.7 0-5 0-5',
+  cam:'M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2zM12 17a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',
+  tool:'M14.7 6.3a4 4 0 0 0 5 5l-9.4 9.4a2.8 2.8 0 0 1-4-4z',
+  bulb:'M9 18h6M10 22h4M15.1 14a6 6 0 1 0-6.2 0c.6.5 1.1 1.2 1.1 2h4c0-.8.5-1.5 1.1-2z',
+  ban:'M4.9 4.9l14.2 14.2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z',
+  mic:'M12 1a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3zM19 10v1a7 7 0 0 1-14 0v-1M12 19v4M8 23h8',
+  scissors:'M6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM20 4 8.1 15.9M14.5 14.5 20 20',
+  fb:'M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z',
+  ig:'M17.5 6.5h.01M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM7 2h10a5 5 0 0 1 5 5v10a5 5 0 0 1-5 5H7a5 5 0 0 1-5-5V7a5 5 0 0 1 5-5z',
+  layers:'M12 2 2 7l10 5 10-5zM2 17l10 5 10-5M2 12l10 5 10-5',
+  whisky:'M6 3h12l-1.5 9.5A3 3 0 0 1 13.5 15h-3a3 3 0 0 1-3-2.5zM12 15v6M8 21h8M6.6 8h10.8',
+  beer:'M17 8h1.5a2.5 2.5 0 0 1 0 5H17M6 3h11v14a4 4 0 0 1-4 4h-3a4 4 0 0 1-4-4zM10 8v8M13.5 8v8',
+  wine:'M8 22h8M12 15v7M5 3h14c0 5-2.5 9-7 9S5 8 5 3z',
+  sparkling:'M9 2h6l-1 5h-4zM8 7h8l1 7a5 5 0 0 1-5 5 5 5 0 0 1-5-5zM12 19v3M9 22h6',
+  bottle:'M10 2h4v4l2.5 3a4 4 0 0 1 .5 2v9a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-9a4 4 0 0 1 .5-2L10 6zM7 14h10',
+  leaf:'M11 20A7 7 0 0 1 4 13c0-6 6-11 17-11 0 11-5 17-11 17zM4 21c3-6 6-9 10-11',
+  palm:'M12 22V9M12 9C9 5 5 5 3 8c3-1 6 0 9 1M12 9c3-4 7-4 9-1-3-1-6 0-9 1M12 9c0-4 2-7 5-7-2 2-3 4-3 7',
+  cactus:'M12 22V6a3 3 0 0 1 6 0v3a2 2 0 0 1-4 0M12 14a2 2 0 0 1-4 0V9a3 3 0 0 1 4-3',
+  autumn:'M12 22V11M12 11 7 6M12 11l5-5M12 11 9 3M12 11l3-8',
+  cocktail:'M5 4h14l-7 8zM12 12v8M8 20h8M17 4l2-2',
+  can:'M8 2h8v3H8zM8 5h8v15a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2zM8 10h8M8 15h8',
+  drop:'M12 2.7 6.7 8a7.5 7.5 0 1 0 10.6 0z',
+  dot:'M12 18a6 6 0 1 0 0-12 6 6 0 0 0 0 12z',
+};
+
+function Icon({ name, size=16, className='', style={}, ...rest }) {
+  const d = ICON_PATHS[name] || ICON_PATHS.dot;
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor"
+         strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"
+         className={'inline-block flex-none align-[-0.15em] '+className} style={style}
+         aria-hidden="true" {...rest}>
+      <path d={d}/>
+    </svg>
+  );
+}
 
 // ─────────────────────────────────────────────
 // CONSTANTS
@@ -38,7 +174,8 @@ const STORES = [
   { id: 'brothers',   name: 'Brothers Liquor Store - Sicamous', pageId: '58258641073',      lat: 50.8449, lng: -118.9742 },
 ];
 
-const AD_ACCOUNT_ID = 'act_813974741538881';
+// Ad accounts are per-store and resolved server-side from meta_accounts.ad_account_id.
+// (The old shared constant act_813974741538881 matched no real ad account.)
 const GRAPH_API     = 'https://graph.facebook.com/v25.0';
 
 const AD_OBJECTIVES = [
@@ -55,19 +192,19 @@ const CTA_OPTIONS = ['LEARN_MORE','SHOP_NOW','GET_DIRECTIONS','CALL_NOW','MESSAG
 const TONES       = ['Friendly','Promotional','Informational'];
 
 const LIQUOR_CATEGORIES = [
-  { id:'beer-cider',     label:'Beer & Cider',        icon:'🍺' },
-  { id:'red-wine',       label:'Red Wine',             icon:'🍷' },
-  { id:'white-wine',     label:'White Wine',           icon:'🥂' },
-  { id:'rose-sparkling', label:'Rosé & Sparkling',    icon:'🍾' },
-  { id:'whisky',         label:'Whisky & Bourbon',    icon:'🥃' },
-  { id:'vodka',          label:'Vodka',                icon:'🫙' },
-  { id:'gin',            label:'Gin',                  icon:'🌿' },
-  { id:'rum',            label:'Rum',                  icon:'🏝' },
-  { id:'tequila',        label:'Tequila & Mezcal',    icon:'🌵' },
-  { id:'brandy',         label:'Brandy & Cognac',     icon:'🍂' },
-  { id:'liqueurs',       label:'Liqueurs & Cordials', icon:'🍹' },
-  { id:'rtd',            label:'Ready-to-Drink',      icon:'🥤' },
-  { id:'non-alc',        label:'Non-Alc & Mixers',    icon:'💧' },
+  { id:'beer-cider',     label:'Beer & Cider',        icon:'beer' },
+  { id:'red-wine',       label:'Red Wine',             icon:'wine' },
+  { id:'white-wine',     label:'White Wine',           icon:'sparkling' },
+  { id:'rose-sparkling', label:'Rosé & Sparkling',    icon:'sparkling' },
+  { id:'whisky',         label:'Whisky & Bourbon',    icon:'whisky' },
+  { id:'vodka',          label:'Vodka',                icon:'bottle' },
+  { id:'gin',            label:'Gin',                  icon:'leaf' },
+  { id:'rum',            label:'Rum',                  icon:'palm' },
+  { id:'tequila',        label:'Tequila & Mezcal',    icon:'cactus' },
+  { id:'brandy',         label:'Brandy & Cognac',     icon:'autumn' },
+  { id:'liqueurs',       label:'Liqueurs & Cordials', icon:'cocktail' },
+  { id:'rtd',            label:'Ready-to-Drink',      icon:'can' },
+  { id:'non-alc',        label:'Non-Alc & Mixers',    icon:'drop' },
 ];
 
 const BOTTLE_SIZES = ['355ml','473ml','500ml','750ml','1L','1.14L','1.75L','2L','4-pack','6-pack','12-pack','24-pack','Other'];
@@ -143,6 +280,11 @@ async function callEdge(funcName, action, params) {
 // Upload an image (File object or data-URL string) to Supabase Storage
 // and return the public URL.  Called from PostComposer before publishing.
 async function uploadImageToStorage(fileOrDataUrl) {
+  // Already a hosted URL (e.g. picked from the Creative Library) — reuse it
+  // rather than round-tripping the bytes through Storage again.
+  if (typeof fileOrDataUrl === 'string' && /^https?:\/\//.test(fileOrDataUrl)) {
+    return fileOrDataUrl;
+  }
   var sb = getSB();
   var sessionData = await sb.auth.getSession();
   var session = sessionData.data.session;
@@ -178,6 +320,486 @@ async function uploadImageToStorage(fileOrDataUrl) {
 }
 
 // ─────────────────────────────────────────────
+// CREATIVE LIBRARY — campaigns + creatives
+// ─────────────────────────────────────────────
+const ASPECTS = [
+  { id:'1:1',    label:'Square',    ratio:1/1,      hint:'1080 × 1080',  surfaces:['post','ad'] },
+  { id:'3:5',    label:'Portrait',  ratio:3/5,      hint:'1080 × 1800',  surfaces:['post','ad'] },
+  { id:'16:9',   label:'Landscape', ratio:16/9,     hint:'1920 × 1080',  surfaces:['ad'] },
+  { id:'1.91:1', label:'Link',      ratio:1.91/1,   hint:'1200 × 628',   surfaces:['ad'] },
+];
+const POST_ASPECTS = ASPECTS.filter(a=>a.surfaces.includes('post')).map(a=>a.id);
+const AD_ASPECTS   = ASPECTS.map(a=>a.id);
+const aspectMeta   = id => ASPECTS.find(a=>a.id===id) || ASPECTS[0];
+
+// Ratio tolerance — a 1080x1082 export shouldn't be called wrong.
+const RATIO_TOLERANCE = 0.04;
+function ratioCheck(w, h, aspectId) {
+  if (!w || !h) return { ok:true };
+  const want = aspectMeta(aspectId).ratio;
+  const got  = w / h;
+  const off  = Math.abs(got - want) / want;
+  if (off <= RATIO_TOLERANCE) return { ok:true };
+  const near = ASPECTS.reduce((b,a)=>
+    Math.abs(got-a.ratio)/a.ratio < Math.abs(got-b.ratio)/b.ratio ? a : b, ASPECTS[0]);
+  return { ok:false, got, near:near.id, pct:Math.round(off*100) };
+}
+
+function readImageSize(file) {
+  return new Promise(function(resolve) {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload  = () => { resolve({ w:img.naturalWidth, h:img.naturalHeight }); URL.revokeObjectURL(url); };
+    img.onerror = () => { resolve({ w:0, h:0 }); URL.revokeObjectURL(url); };
+    img.src = url;
+  });
+}
+
+function useCampaigns() {
+  const [campaigns, setCampaigns] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const reload = useCallback(async function() {
+    const sb = getSB(); if (!sb) return;
+    const { data } = await sb.from('campaigns').select('*').order('created_at',{ascending:false});
+    setCampaigns(data || []); setLoading(false);
+  }, []);
+  useEffect(function(){ reload(); }, [reload]);
+
+  const create = async function(fields) {
+    const sb = getSB();
+    const { data:{ user } } = await sb.auth.getUser();
+    const { error } = await sb.from('campaigns').insert({ ...fields, created_by:user?.id });
+    if (error) throw error;
+    await reload();
+  };
+  const update = async function(id, fields) {
+    const sb = getSB();
+    const { error } = await sb.from('campaigns').update(fields).eq('id', id);
+    if (error) throw error;
+    await reload();
+  };
+  return { campaigns, loading, reload, create, update };
+}
+
+function useCreatives() {
+  const [creatives, setCreatives] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const reload = useCallback(async function() {
+    const sb = getSB(); if (!sb) return;
+    const { data } = await sb.from('creatives').select('*').order('created_at',{ascending:false});
+    setCreatives(data || []); setLoading(false);
+  }, []);
+  useEffect(function(){ reload(); }, [reload]);
+
+  const upload = async function(file, meta) {
+    const sb = getSB();
+    const { data:{ session } } = await sb.auth.getSession();
+    if (!session) throw new Error('Not authenticated');
+    const size = await readImageSize(file);
+    const ext  = (file.name||'image').split('.').pop() || 'jpg';
+    const path = session.user.id + '/' + Date.now() + '-' + Math.random().toString(36).slice(2,8) + '.' + ext;
+
+    const up = await sb.storage.from('creatives').upload(path, file, {
+      contentType: file.type || 'image/jpeg', upsert:false,
+    });
+    if (up.error) throw new Error(up.error.message);
+    const url = sb.storage.from('creatives').getPublicUrl(path).data.publicUrl;
+
+    const { error } = await sb.from('creatives').insert({
+      name: meta.name, campaign_id: meta.campaignId || null, store_id: meta.storeId || null,
+      aspect: meta.aspect, storage_path: path, public_url: url,
+      width: size.w, height: size.h, bytes: file.size, mime: file.type,
+      created_by: session.user.id,
+    });
+    if (error) { await sb.storage.from('creatives').remove([path]); throw error; }
+    await reload();
+  };
+
+  const remove = async function(c) {
+    const sb = getSB();
+    await sb.storage.from('creatives').remove([c.storage_path]);
+    const { error } = await sb.from('creatives').delete().eq('id', c.id);
+    if (error) throw error;
+    await reload();
+  };
+  return { creatives, loading, reload, upload, remove };
+}
+
+// Reusable picker — Posts passes POST_ASPECTS, Ads passes AD_ASPECTS.
+function CreativePicker({ allowed, storeIds, onPick, onClose }) {
+  const { creatives, loading } = useCreatives();
+  const { campaigns } = useCampaigns();
+  const [camp, setCamp] = useState('all');
+  const [asp,  setAsp]  = useState('all');
+
+  const visible = creatives.filter(function(c) {
+    if (!allowed.includes(c.aspect)) return false;
+    if (asp !== 'all' && c.aspect !== asp) return false;
+    if (camp === 'none' && c.campaign_id) return false;
+    if (camp !== 'all' && camp !== 'none' && c.campaign_id !== camp) return false;
+    if (storeIds && storeIds.length && c.store_id && !storeIds.includes(c.store_id)) return false;
+    return true;
+  });
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-6"
+         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
+      <div className="hud hud-brk w-full max-w-4xl max-h-[86vh] overflow-auto p-6" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center gap-3 mb-5">
+          <span className="ttl">Creative Library</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          <button onClick={onClose} style={{color:'var(--txt2)'}}><Icon name="close"/></button>
+        </div>
+
+        <div className="flex flex-wrap gap-2 mb-5">
+          <Select value={asp} onChange={e=>setAsp(e.target.value)} className="w-auto text-xs">
+            <option value="all">All sizes</option>
+            {ASPECTS.filter(a=>allowed.includes(a.id)).map(a=>
+              <option key={a.id} value={a.id}>{a.id} · {a.label}</option>)}
+          </Select>
+          <Select value={camp} onChange={e=>setCamp(e.target.value)} className="w-auto text-xs">
+            <option value="all">All campaigns</option>
+            <option value="none">No campaign</option>
+            {campaigns.filter(c=>!c.archived).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+          </Select>
+        </div>
+
+        {loading ? <p className="lbl text-center py-10">Loading…</p>
+         : visible.length === 0 ? (
+          <div className="text-center py-12">
+            <Icon name="image" size={38} style={{color:'var(--cy-dim)'}}/>
+            <p className="lbl mt-3">No creatives match — sizes allowed here: {allowed.join(' · ')}</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            {visible.map(function(c) {
+              const cp = campaigns.find(x=>x.id===c.campaign_id);
+              return (
+                <button key={c.id} onClick={()=>{ onPick(c); onClose(); }}
+                  className="hud p-0 overflow-hidden text-left group">
+                  <div className="w-full" style={{aspectRatio:String(aspectMeta(c.aspect).ratio), background:'rgba(4,8,16,.7)'}}>
+                    <img src={c.public_url} alt={c.name} className="w-full h-full object-cover"/>
+                  </div>
+                  <div className="p-2.5">
+                    <p className="text-xs truncate" style={{color:'var(--txt)'}}>{c.name}</p>
+                    <p className="lbl mt-1 truncate">{c.aspect}{cp?' · '+cp.name:''}</p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// CREATIVE LIBRARY SCREEN
+// ─────────────────────────────────────────────
+function UploadCreativeModal({ campaigns, myStores, onClose, onUpload }) {
+  const toast = useToast();
+  const [file, setFile]   = useState(null);
+  const [prev, setPrev]   = useState(null);
+  const [dims, setDims]   = useState(null);
+  const [name, setName]   = useState('');
+  const [camp, setCamp]   = useState('');
+  const [store, setStore] = useState('');
+  const [aspect, setAspect] = useState('1:1');
+  const [busy, setBusy]   = useState(false);
+  const ref = useRef(null);
+
+  const pick = async function(f) {
+    if (!f) return;
+    setFile(f);
+    if (!name) setName((f.name||'').replace(/\.[^.]+$/,''));
+    const r = new FileReader(); r.onload = () => setPrev(r.result); r.readAsDataURL(f);
+    const d = await readImageSize(f); setDims(d);
+  };
+
+  const check = dims ? ratioCheck(dims.w, dims.h, aspect) : { ok:true };
+
+  const save = async function() {
+    if (!file)        { toast.error('Choose an image first'); return; }
+    if (!name.trim()) { toast.error('Give the creative a name'); return; }
+    setBusy(true);
+    try {
+      await onUpload(file, { name:name.trim(), campaignId:camp||null, storeId:store||null, aspect });
+      toast.success('Creative added');
+      onClose();
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-6"
+         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
+      <div className="hud hud-brk w-full max-w-lg max-h-[88vh] overflow-auto p-6" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center gap-3 mb-5">
+          <span className="ttl">Add Creative</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          <button onClick={onClose} style={{color:'var(--txt2)'}}><Icon name="close"/></button>
+        </div>
+
+        <div onClick={()=>ref.current?.click()}
+             className="cursor-pointer mb-4 flex items-center justify-center"
+             style={{border:'1px dashed var(--line2)', minHeight:'150px', background:'rgba(4,8,16,.5)'}}>
+          {prev
+            ? <img src={prev} alt="" style={{maxHeight:'230px'}} className="object-contain"/>
+            : <div className="text-center py-8">
+                <Icon name="up" size={26} style={{color:'var(--cy-dim)'}}/>
+                <p className="lbl mt-2">Click to choose an image</p>
+              </div>}
+        </div>
+        <input ref={ref} type="file" accept="image/*" className="hidden"
+               onChange={e=>pick(e.target.files?.[0])}/>
+
+        <div className="mb-4">
+          <Label>Name</Label>
+          <Input value={name} onChange={e=>setName(e.target.value)} placeholder="Summer patio hero"/>
+        </div>
+
+        <div className="mb-4">
+          <Label>Size</Label>
+          <div className="grid grid-cols-2 gap-2">
+            {ASPECTS.map(function(a) {
+              const on = aspect===a.id;
+              return (
+                <button key={a.id} onClick={()=>setAspect(a.id)}
+                  className="flex items-center gap-2.5 p-2.5 border text-left transition-all"
+                  style={{ borderColor:on?'var(--cy)':'var(--line)',
+                           background:on?'var(--cy-glow)':'rgba(4,8,16,.4)',
+                           color:on?'var(--cy)':'var(--txt2)' }}>
+                  <span style={{width:'22px', height:'22px', display:'flex', alignItems:'center', justifyContent:'center'}}>
+                    <span style={{ width: a.ratio>=1?'20px':(20*a.ratio)+'px',
+                                   height:a.ratio>=1?(20/a.ratio)+'px':'20px',
+                                   border:'1px solid currentColor', display:'block' }}/>
+                  </span>
+                  <span>
+                    <span className="block text-xs">{a.id}</span>
+                    <span className="lbl block" style={{fontSize:'8.5px'}}>{a.hint}</span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <p className="lbl mt-2" style={{color:'var(--txt3)'}}>
+            16:9 and 1.91:1 are available to ads only
+          </p>
+        </div>
+
+        {dims && (
+          <div className="mb-4 p-3 border" style={{
+            borderColor: check.ok?'var(--line)':'var(--amb)',
+            background: check.ok?'rgba(4,8,16,.4)':'rgba(240,168,48,.09)'}}>
+            <p className="mono text-xs" style={{color:check.ok?'var(--txt2)':'var(--amb)'}}>
+              {check.ok
+                ? <React.Fragment><Icon name="check" size={13} className="mr-1.5"/>{dims.w} × {dims.h} — matches {aspect}</React.Fragment>
+                : <React.Fragment><Icon name="warn" size={13} className="mr-1.5"/>{dims.w} × {dims.h} is {check.pct}% off {aspect} — closer to {check.near}</React.Fragment>}
+            </p>
+            {!check.ok && <p className="lbl mt-1.5" style={{color:'var(--txt3)'}}>You can still save it; Meta may crop.</p>}
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-3 mb-5">
+          <div>
+            <Label>Campaign</Label>
+            <Select value={camp} onChange={e=>setCamp(e.target.value)}>
+              <option value="">None</option>
+              {campaigns.filter(c=>!c.archived).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+            </Select>
+          </div>
+          <div>
+            <Label>Store</Label>
+            <Select value={store} onChange={e=>setStore(e.target.value)}>
+              <option value="">Global — all stores</option>
+              {myStores.map(st=><option key={st.id} value={st.id}>{st.name}</option>)}
+            </Select>
+          </div>
+        </div>
+
+        <div className="flex gap-2">
+          <Button onClick={save} loading={busy} className="flex-1">
+            <Icon name="save"/> Save to library
+          </Button>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CampaignManager({ campaigns, onCreate, onUpdate, counts }) {
+  const toast = useToast();
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [from, setFrom] = useState('');
+  const [to,   setTo]   = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const add = async function() {
+    if (!name.trim()) { toast.error('Name the campaign'); return; }
+    setBusy(true);
+    try {
+      await onCreate({ name:name.trim(), starts_on:from||null, ends_on:to||null });
+      toast.success('Campaign created');
+      setName(''); setFrom(''); setTo(''); setOpen(false);
+    } catch(e) { toast.error(e.message.includes('duplicate')?'A campaign with that name already exists':e.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Card>
+      <div className="flex items-center gap-3 mb-4">
+        <span className="ttl">Campaigns</span>
+        <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+        <Button size="sm" variant={open?'ghost':'outline'} onClick={()=>setOpen(v=>!v)}>
+          {open ? 'Cancel' : <React.Fragment><Icon name="tag"/> New</React.Fragment>}
+        </Button>
+      </div>
+
+      {open && (
+        <div className="mb-5 p-4" style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.4)'}}>
+          <div className="mb-3"><Label>Name</Label>
+            <Input value={name} onChange={e=>setName(e.target.value)} placeholder="Summer Patio 2026"/></div>
+          <div className="grid grid-cols-2 gap-3 mb-3">
+            <div><Label>Starts</Label><Input type="date" value={from} onChange={e=>setFrom(e.target.value)}/></div>
+            <div><Label>Ends</Label><Input type="date" value={to} onChange={e=>setTo(e.target.value)}/></div>
+          </div>
+          <Button onClick={add} loading={busy} size="sm"><Icon name="check"/> Create campaign</Button>
+        </div>
+      )}
+
+      {campaigns.length === 0 ? (
+        <p className="lbl py-4 text-center">No campaigns yet</p>
+      ) : (
+        <div className="space-y-1">
+          {campaigns.map(function(c) {
+            return (
+              <div key={c.id} className="flex items-center gap-3 py-2.5 px-1"
+                   style={{borderBottom:'1px solid rgba(56,224,240,.075)', opacity:c.archived?.45:1}}>
+                <Icon name="layers" size={14} style={{color:'var(--cy-dim)'}}/>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm truncate">{c.name}</p>
+                  {(c.starts_on || c.ends_on) &&
+                    <p className="lbl mt-0.5">{c.starts_on||'—'} → {c.ends_on||'—'}</p>}
+                </div>
+                <span className="mono text-xs" style={{color:'var(--txt3)'}}>{counts[c.id]||0}</span>
+                <Button size="sm" variant="ghost" onClick={()=>onUpdate(c.id,{archived:!c.archived})}>
+                  {c.archived ? 'Restore' : 'Archive'}
+                </Button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function CreativeLibrary({ isAdmin, myStores }) {
+  const toast = useToast();
+  const { campaigns, create, update } = useCampaigns();
+  const { creatives, loading, upload, remove } = useCreatives();
+  const [showUp, setShowUp] = useState(false);
+  const [fStore, setFStore] = useState('all');
+  const [fCamp,  setFCamp]  = useState('all');
+  const [fAsp,   setFAsp]   = useState('all');
+
+  const counts = {};
+  creatives.forEach(c => { if (c.campaign_id) counts[c.campaign_id] = (counts[c.campaign_id]||0)+1; });
+
+  const visible = creatives.filter(function(c) {
+    if (fStore === 'global' && c.store_id) return false;
+    if (fStore !== 'all' && fStore !== 'global' && c.store_id !== fStore) return false;
+    if (fCamp === 'none' && c.campaign_id) return false;
+    if (fCamp !== 'all' && fCamp !== 'none' && c.campaign_id !== fCamp) return false;
+    if (fAsp !== 'all' && c.aspect !== fAsp) return false;
+    return true;
+  });
+
+  const del = async function(c) {
+    if (!confirm('Delete "'+c.name+'"? This cannot be undone.')) return;
+    try { await remove(c); toast.success('Deleted'); }
+    catch(e) { toast.error(e.message); }
+  };
+
+  return (
+    <div className="space-y-4">
+      {isAdmin && <CampaignManager campaigns={campaigns} onCreate={create} onUpdate={update} counts={counts}/>}
+
+      <Card>
+        <div className="flex items-center gap-3 mb-4 flex-wrap">
+          <span className="ttl">Creative Library</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          <Button size="sm" onClick={()=>setShowUp(true)}><Icon name="up"/> Add creative</Button>
+        </div>
+
+        <div className="flex flex-wrap gap-2 mb-5">
+          <Select value={fStore} onChange={e=>setFStore(e.target.value)} className="w-auto text-xs">
+            <option value="all">All stores</option>
+            <option value="global">Global only</option>
+            {myStores.map(st=><option key={st.id} value={st.id}>{st.name}</option>)}
+          </Select>
+          <Select value={fCamp} onChange={e=>setFCamp(e.target.value)} className="w-auto text-xs">
+            <option value="all">All campaigns</option>
+            <option value="none">No campaign</option>
+            {campaigns.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+          </Select>
+          <Select value={fAsp} onChange={e=>setFAsp(e.target.value)} className="w-auto text-xs">
+            <option value="all">All sizes</option>
+            {ASPECTS.map(a=><option key={a.id} value={a.id}>{a.id} · {a.label}</option>)}
+          </Select>
+          <span className="mono text-xs self-center ml-auto" style={{color:'var(--txt3)'}}>
+            {visible.length} of {creatives.length}
+          </span>
+        </div>
+
+        {loading ? <p className="lbl text-center py-12">Loading…</p>
+         : visible.length === 0 ? (
+          <div className="text-center py-14">
+            <Icon name="image" size={40} style={{color:'var(--cy-dim)'}}/>
+            <p className="lbl mt-3">Nothing here yet</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            {visible.map(function(c) {
+              const cp = campaigns.find(x=>x.id===c.campaign_id);
+              const st = myStores.find(x=>x.id===c.store_id);
+              return (
+                <div key={c.id} className="hud p-0 overflow-hidden group relative">
+                  <div className="w-full" style={{aspectRatio:String(aspectMeta(c.aspect).ratio), background:'rgba(4,8,16,.7)'}}>
+                    <img src={c.public_url} alt={c.name} className="w-full h-full object-cover"/>
+                  </div>
+                  <button onClick={()=>del(c)}
+                    className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1.5"
+                    style={{background:'rgba(2,5,11,.85)', color:'var(--red)', border:'1px solid var(--red)'}}
+                    aria-label={'Delete '+c.name}>
+                    <Icon name="trash" size={12}/>
+                  </button>
+                  <div className="p-2.5">
+                    <p className="text-xs truncate" style={{color:'var(--txt)'}}>{c.name}</p>
+                    <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                      <Badge color="blue">{c.aspect}</Badge>
+                      {st ? <Badge color="gray">{st.name.split(' ')[0]}</Badge>
+                          : <Badge color="green">Global</Badge>}
+                    </div>
+                    {cp && <p className="lbl mt-1.5 truncate">{cp.name}</p>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+
+      {showUp && <UploadCreativeModal campaigns={campaigns} myStores={myStores}
+                    onClose={()=>setShowUp(false)} onUpload={upload}/>}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
 // TOAST CONTEXT
 // ─────────────────────────────────────────────
 const ToastCtx = createContext(null);
@@ -197,7 +819,7 @@ function ToastProvider({ children }) {
         {toasts.map(t => (
           <div key={t.id} className={`px-4 py-3 rounded-xl shadow-lg text-white text-sm max-w-sm pointer-events-auto
             ${t.type==='success'?'bg-emerald-600':t.type==='error'?'bg-red-600':'bg-blue-600'}`}>
-            {t.type==='success'?'✓ ':t.type==='error'?'✗ ':'ℹ '}{t.msg}
+            <Icon name={t.type==='success'?'check':t.type==='error'?'cross':'info'} className="mr-1.5"/>{t.msg}
           </div>
         ))}
       </div>
@@ -263,17 +885,17 @@ function useBrandProfile(storeId) {
 // ─────────────────────────────────────────────
 // PRODUCT IMAGE LIBRARY HOOK
 // ─────────────────────────────────────────────
-function useProductLibrary(storeId) {
+function useProductLibrary() {
   const [images,  setImages]  = useState([]);
   const [loading, setLoading] = useState(false);
 
   const load = useCallback(async () => {
     const sb=getSB(); if(!sb) return;
     setLoading(true);
-    const {data}=await sb.from('product_images').select('id,name,data,created_at').eq('store_id',storeId).order('created_at',{ascending:false}).limit(40);
+    const {data}=await sb.from('product_images').select('id,name,data,created_at').order('created_at',{ascending:false}).limit(40);
     setImages(data||[]);
     setLoading(false);
-  },[storeId]);
+  },[]);
 
   useEffect(()=>{ load(); },[load]);
 
@@ -281,7 +903,7 @@ function useProductLibrary(storeId) {
     const sb=getSB(); if(!sb) throw new Error('Not connected');
     // Compress before saving
     const compressed = await compressImage(dataUrl, 600, 0.75);
-    await sb.from('product_images').insert({ store_id:storeId, name, data:compressed });
+    await sb.from('product_images').insert({ store_id:null, name, data:compressed });
     await load();
   };
 
@@ -316,21 +938,31 @@ function compressImage(dataUrl, maxPx=600, quality=0.75) {
 // ─────────────────────────────────────────────
 // BRAND IMAGE LIBRARY HOOK
 // ─────────────────────────────────────────────
-function useBrandImageLibrary(storeId) {
+function useBrandImageLibrary() {
   const [images, setImages] = useState([]);
 
   const load = useCallback(async () => {
     const sb=getSB(); if(!sb) return;
-    const {data}=await sb.from('brand_images').select('*').eq('store_id',storeId).order('category').order('created_at',{ascending:false});
+    // Products are global — the same bottle regardless of which store sells it.
+    const {data}=await sb.from('brand_images').select('*').order('category').order('created_at',{ascending:false});
     setImages(data||[]);
-  },[storeId]);
+  },[]);
 
   useEffect(()=>{ load(); },[load]);
 
   const add = async (product) => {
     const sb=getSB(); if(!sb) throw new Error('Not connected');
     const compressed = await compressImage(product.data, 800, 0.8);
-    await sb.from('brand_images').insert({ store_id:storeId, ...product, data:compressed });
+    await sb.from('brand_images').insert({ store_id:null, ...product, data:compressed });
+    await load();
+  };
+
+  const update = async (id, fields) => {
+    const sb=getSB(); if(!sb) throw new Error('Not connected');
+    const patch = { ...fields };
+    if (patch.data) patch.data = await compressImage(patch.data, 800, 0.8);
+    const { error } = await sb.from('brand_images').update(patch).eq('id', id);
+    if (error) throw error;
     await load();
   };
 
@@ -340,7 +972,7 @@ function useBrandImageLibrary(storeId) {
     setImages(p=>p.filter(x=>x.id!==id));
   };
 
-  return { images, load, add, remove };
+  return { images, load, add, update, remove };
 }
 
 // ─────────────────────────────────────────────
@@ -838,9 +1470,9 @@ function Lightbox({ src, onClose }) {
   return (
     <div className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center p-4" onClick={onClose}>
       <div className="relative" onClick={e=>e.stopPropagation()}>
-        <button onClick={onClose} className="absolute -top-9 right-0 text-white text-sm font-semibold hover:text-gray-300 flex items-center gap-1">✕ Close</button>
+        <button onClick={onClose} className="absolute -top-9 right-0 text-white text-sm font-semibold hover:text-gray-300 flex items-center gap-1"><Icon name="close"/> Close</button>
         <img src={src} alt="Generated" className="max-w-[90vw] max-h-[88vh] rounded-2xl shadow-2xl object-contain"/>
-        <a href={src} download="generated.png" onClick={e=>e.stopPropagation()} className="absolute -bottom-9 right-0 text-white text-xs font-semibold hover:text-gray-300">⬇ Download</a>
+        <a href={src} download="generated.png" onClick={e=>e.stopPropagation()} className="absolute -bottom-9 right-0 text-white text-xs font-semibold hover:text-gray-300"><Icon name="down"/> Download</a>
       </div>
     </div>
   );
@@ -914,45 +1546,55 @@ function fbPostUrl(id)  { const p=String(id).split('_'); return p.length===2?`ht
 // UI PRIMITIVES
 // ─────────────────────────────────────────────
 const Card = ({ children, className='' }) => (
-  <div className={`bg-white dark:bg-gray-800 rounded-2xl shadow-sm border border-gray-100 dark:border-gray-700 p-5 ${className}`}>{children}</div>
+  <div className={`hud hud-brk p-5 ${className}`}>{children}</div>
 );
 const Label = ({ children, className='' }) => (
-  <label className={`block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-1 ${className}`}>{children}</label>
+  <label className={`lbl block mb-2 ${className}`}>{children}</label>
 );
-const inputCls = 'w-full rounded-xl border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent placeholder-gray-400 dark:placeholder-gray-500';
-const Input    = ({ className='', ...p }) => <input    className={`${inputCls} ${className}`} {...p} />;
-const Textarea = ({ className='', ...p }) => <textarea className={`${inputCls} resize-none ${className}`} {...p} />;
-const Select   = ({ children, className='', ...p }) => <select className={`${inputCls} ${className}`} {...p}>{children}</select>;
+const inputCls = 'w-full border px-3 py-2.5 text-sm outline-none transition-all';
+const inputStyle = { background:'rgba(4,8,16,.72)', borderColor:'var(--line)', color:'var(--txt)' };
+const fx = e => { e.target.style.borderColor='var(--cy)'; e.target.style.boxShadow='inset 0 0 22px rgba(56,224,240,.07)'; };
+const fb = e => { e.target.style.borderColor='var(--line)'; e.target.style.boxShadow='none'; };
+const Input    = ({ className='', style={}, ...p }) => <input    onFocus={fx} onBlur={fb} style={{...inputStyle,...style}} className={`${inputCls} ${className}`} {...p} />;
+const Textarea = ({ className='', style={}, ...p }) => <textarea onFocus={fx} onBlur={fb} style={{...inputStyle,...style}} className={`${inputCls} resize-none ${className}`} {...p} />;
+const Select   = ({ children, className='', style={}, ...p }) => <select onFocus={fx} onBlur={fb} style={{...inputStyle,...style}} className={`${inputCls} ${className}`} {...p}>{children}</select>;
 
-function Button({ children, variant='primary', size='md', className='', loading=false, ...p }) {
-  const base = 'inline-flex items-center justify-center font-medium rounded-xl transition-all focus:outline-none focus:ring-2 focus:ring-offset-1 disabled:opacity-50 disabled:cursor-not-allowed';
-  const sz   = { sm:'px-3 py-1.5 text-xs', md:'px-4 py-2 text-sm', lg:'px-5 py-2.5 text-sm' }[size];
-  const v    = {
-    primary:   'bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white focus:ring-indigo-500',
-    secondary: 'bg-gray-100 hover:bg-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200 focus:ring-gray-400',
-    danger:    'bg-red-600 hover:bg-red-700 text-white focus:ring-red-500',
-    success:   'bg-emerald-600 hover:bg-emerald-700 text-white focus:ring-emerald-500',
-    ghost:     'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 focus:ring-gray-400',
-    outline:   'border border-indigo-500 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-50 dark:hover:bg-indigo-950 focus:ring-indigo-500',
-  }[variant];
+function Button({ children, variant='primary', size='md', className='', loading=false, style={}, ...p }) {
+  const base = 'clip inline-flex items-center justify-center gap-2 font-semibold uppercase tracking-[.16em] transition-all outline-none border disabled:opacity-40 disabled:cursor-not-allowed';
+  const sz   = { sm:'px-3 py-1.5 text-[10px]', md:'px-4 py-2.5 text-[11px]', lg:'px-5 py-3 text-[11.5px]' }[size];
+  const V = {
+    primary:   { borderColor:'var(--cy)',  color:'var(--cy)',  background:'var(--cy-glow)' },
+    secondary: { borderColor:'var(--line)',color:'var(--txt2)',background:'rgba(4,8,16,.5)' },
+    danger:    { borderColor:'var(--red)', color:'var(--red)', background:'rgba(255,77,94,.12)' },
+    success:   { borderColor:'var(--grn)', color:'var(--grn)', background:'rgba(63,240,138,.12)' },
+    ghost:     { borderColor:'transparent',color:'var(--txt2)',background:'transparent' },
+    outline:   { borderColor:'var(--line2)',color:'var(--cy)', background:'transparent' },
+  }[variant] || {};
+  const glow = { primary:'0 0 22px rgba(56,224,240,.3)', danger:'0 0 22px rgba(255,77,94,.28)',
+                 success:'0 0 22px rgba(63,240,138,.28)' }[variant] || '0 0 14px rgba(56,224,240,.16)';
   return (
-    <button className={`${base} ${sz} ${v} ${className}`} disabled={loading||p.disabled} {...p}>
-      {loading && <svg className="animate-spin -ml-0.5 mr-1.5 h-4 w-4" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>}
+    <button className={`${base} ${sz} ${className}`} style={{...V,...style}}
+      onMouseEnter={e=>{ if(!e.currentTarget.disabled) e.currentTarget.style.boxShadow=glow; }}
+      onMouseLeave={e=>{ e.currentTarget.style.boxShadow='none'; }}
+      disabled={loading||p.disabled} {...p}>
+      {loading && <svg className="animate-spin h-3.5 w-3.5" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>}
       {children}
     </button>
   );
 }
 
 function Badge({ children, color='gray' }) {
-  const c = { green:'bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300', red:'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300', yellow:'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300', blue:'bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-300', gray:'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300', indigo:'bg-indigo-100 text-indigo-800 dark:bg-indigo-900/40 dark:text-indigo-300' }[color]||'bg-gray-100 text-gray-700';
-  return <span className={`inline-flex items-center px-2 py-0.5 rounded-lg text-xs font-semibold ${c}`}>{children}</span>;
+  const C = { green:'var(--grn)', red:'var(--red)', yellow:'var(--amb)', blue:'var(--cy)',
+              gray:'var(--txt2)', indigo:'var(--vio)' }[color] || 'var(--txt2)';
+  return <span className="mono inline-flex items-center gap-1.5 px-2 py-0.5 text-[9.5px] uppercase tracking-[.14em] border"
+               style={{ color:C, borderColor:C, background:'transparent' }}>{children}</span>;
 }
 
 function Divider({ label }) {
   return (
-    <div className="relative my-4">
-      <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-gray-200 dark:border-gray-700"/></div>
-      {label && <div className="relative flex justify-center"><span className="bg-white dark:bg-gray-800 px-2 text-xs text-gray-400">{label}</span></div>}
+    <div className="flex items-center gap-3 my-5">
+      {label && <span className="ttl whitespace-nowrap">{label}</span>}
+      <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
     </div>
   );
 }
@@ -964,8 +1606,8 @@ function StepIndicator({ steps }) {
         <div key={i} className="flex items-start gap-3">
           <div className="mt-0.5 w-5 flex-shrink-0 flex justify-center">
             {s.status==='running'  && <svg className="animate-spin h-4 w-4 text-indigo-500" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>}
-            {s.status==='done'    && <span className="text-emerald-500 font-bold text-sm">✓</span>}
-            {s.status==='error'   && <span className="text-red-500 font-bold text-sm">✗</span>}
+            {s.status==='done'    && <Icon name="check" style={{color:"var(--grn)"}}/>}
+            {s.status==='error'   && <Icon name="cross" style={{color:"var(--red)"}}/>}
             {s.status==='pending' && <span className="text-gray-300 dark:text-gray-600">○</span>}
           </div>
           <div>
@@ -984,7 +1626,7 @@ function ImagePicker({ file, preview, onFile, onClear, label='Attach Image (opti
     <div>
       <Label>{label}</Label>
       <div className="flex items-center gap-3 flex-wrap">
-        <Button variant="secondary" size="sm" onClick={() => ref.current?.click()}>📷 Choose File</Button>
+        <Button variant="secondary" size="sm" onClick={() => ref.current?.click()}><Icon name="cam"/> Choose File</Button>
         {file && <span className="text-sm text-gray-600 dark:text-gray-400 truncate max-w-xs">{file.name}</span>}
         {file && <button onClick={onClear} className="text-xs text-red-500 hover:underline">Remove</button>}
       </div>
@@ -1266,7 +1908,7 @@ function SetupScreen({ onSetup }) {
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 p-4">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <span className="text-5xl">🥃</span>
+          <Icon name="whisky" size={54} style={{color:"var(--cy)"}}/>
           <h1 className="text-2xl font-bold text-white mt-3">Liquor Store Social</h1>
           <p className="text-gray-400 text-sm mt-1">Connect your Supabase project to get started</p>
         </div>
@@ -1329,7 +1971,7 @@ function LoginScreen() {
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 p-4">
       <div className="w-full max-w-sm">
         <div className="text-center mb-8">
-          <span className="text-5xl">🥃</span>
+          <Icon name="whisky" size={54} style={{color:"var(--cy)"}}/>
           <h1 className="text-2xl font-bold text-white mt-3">Liquor Store Social</h1>
           <p className="text-gray-400 text-sm mt-1">4 locations · Social Media Manager</p>
         </div>
@@ -1354,7 +1996,7 @@ function LoginScreen() {
           <div className="mt-5">
             {mode==='login' && <Button onClick={signIn} loading={loading} className="w-full" size="lg">Sign In</Button>}
             {mode==='forgot' && !sent && <Button onClick={resetPw} loading={loading} className="w-full" size="lg">Send Reset Email</Button>}
-            {sent && <p className="text-center text-sm text-emerald-600 font-medium py-2">✓ Check your inbox for the reset link</p>}
+            {sent && <p className="text-center text-sm text-emerald-600 font-medium py-2"><Icon name="check"/> Check your inbox for the reset link</p>}
           </div>
           <div className="mt-4 text-center text-xs text-gray-500">
             {mode==='login'
@@ -1399,7 +2041,7 @@ function AIWriter({ storeName, apiKey, mode='caption', onResult }) {
 
   return (
     <div className="rounded-xl border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-950/40 p-4 space-y-3">
-      <p className="text-xs font-bold text-violet-700 dark:text-violet-300 uppercase tracking-widest">✨ AI Copy Writer</p>
+      <p className="text-xs font-bold text-violet-700 dark:text-violet-300 uppercase tracking-widest"><Icon name="spark"/> AI Copy Writer</p>
       <div>
         <Label>Topic / Promotion</Label>
         <Input value={topic} onChange={e=>setTopic(e.target.value)} placeholder={mode==='caption'?'e.g. Weekend sale — 20% off all BC craft beer':'e.g. Summer whiskey sale, $5 off any bottle'}/>
@@ -1440,9 +2082,9 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
   const [showLib,     setShowLib]    = useState(false);
   const [lightbox,    setLightbox]   = useState(null);
   const [selectedTpl, setSelectedTpl]= useState(null); // uploaded template object
-  const { images:libImages, remove:removeFromLib } = useBrandImageLibrary(storeId);
+  const { images:libImages, remove:removeFromLib } = useBrandImageLibrary();
   const { templates: uploadedTpls }  = useBrandTemplates(storeId);
-  const { save:saveToQuickLib } = useProductLibrary(storeId);
+  const { save:saveToQuickLib } = useProductLibrary();
   const prodRef = useRef();
 
   useEffect(()=>{
@@ -1539,12 +2181,12 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
       setGenStep('idle');
       const sb=getSB();
       if(sb) sb.from('generation_history').insert({ store_id:storeId, store_name:storeName, image_url:finalUrl, revised_prompt:img.revised, brief, size_label:size, prompt });
-    } catch(e) { toast.error(`✗ ${e.message}`); setGenStep('idle'); }
+    } catch(e) { toast.error(e.message); setGenStep('idle'); }
   };
 
   const generate  = mode === 'template' ? generateTemplate : generateLifestyle;
   const isBusy    = genStep !== 'idle';
-  const stepLabel = { building:'⚙️ Building prompt…', generating:'🎨 Generating…', removing:'✂️ Removing background…', compositing:'🖼 Building ad…' };
+  const stepLabel = { building:'Building prompt…', generating:'Generating…', removing:'Removing background…', compositing:'Building ad…' };
 
   const clearProduct = () => { setProdFile(null); setProdPrev(null); setSaveText(''); setPriceText(''); setProductName(''); setProductSize(''); };
 
@@ -1552,15 +2194,15 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
     <>
     {lightbox && <Lightbox src={lightbox} onClose={()=>setLightbox(null)}/>}
     <div className="rounded-xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950/30 p-4 space-y-3">
-      <p className="text-xs font-bold text-indigo-700 dark:text-indigo-300 uppercase tracking-widest">🎨 Image Creator</p>
+      <p className="text-xs font-bold text-indigo-700 dark:text-indigo-300 uppercase tracking-widest"><Icon name="palette"/> Image Creator</p>
 
       {/* Mode toggle */}
       <div className="flex rounded-lg overflow-hidden border border-indigo-300 dark:border-indigo-700">
         <button onClick={()=>setMode('template')} className={`flex-1 py-2 text-xs font-bold transition-colors ${mode==='template'?'bg-indigo-600 text-white':'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-indigo-50 dark:hover:bg-gray-700'}`}>
-          📋 Price Ad
+          <Icon name="note"/> Price Ad
         </button>
         <button onClick={()=>setMode('lifestyle')} className={`flex-1 py-2 text-xs font-bold transition-colors ${mode==='lifestyle'?'bg-indigo-600 text-white':'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-indigo-50 dark:hover:bg-gray-700'}`}>
-          🎨 Lifestyle (AI)
+          <Icon name="palette"/> Lifestyle (AI)
         </button>
       </div>
 
@@ -1624,7 +2266,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
                   </button>
                 ))}
               </div>
-              <p className="text-xs text-indigo-500 dark:text-indigo-400 mt-1.5">💡 Upload your own brand templates under Brand → Ad Templates</p>
+              <p className="text-xs text-indigo-500 dark:text-indigo-400 mt-1.5"><Icon name="bulb"/> Upload your own brand templates under Brand → Ad Templates</p>
             </>
           )}
         </div>
@@ -1633,11 +2275,11 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
         <div>
           <div className="flex items-center justify-between mb-1">
             <Label className="mb-0">Product Photo <span className="text-red-500">*</span></Label>
-            {libImages.length>0 && <button onClick={()=>setShowLib(v=>!v)} className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">{showLib?'Hide ↑':`📚 Library (${libImages.length})`}</button>}
+            {libImages.length>0 && <button onClick={()=>setShowLib(v=>!v)} className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">{showLib?'Hide ↑':<React.Fragment><Icon name="book"/> Library ({libImages.length})</React.Fragment>}</button>}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <Button variant="secondary" size="sm" onClick={()=>prodRef.current?.click()}>📦 Upload Photo</Button>
-            {prodPrev && <button onClick={clearProduct} className="text-xs text-red-500 hover:underline">✕ Clear</button>}
+            <Button variant="secondary" size="sm" onClick={()=>prodRef.current?.click()}><Icon name="package"/> Upload Photo</Button>
+            {prodPrev && <button onClick={clearProduct} className="text-xs text-red-500 hover:underline"><Icon name="close"/> Clear</button>}
           </div>
           <input ref={prodRef} type="file" accept="image/*" className="hidden" onChange={e=>handleProd(e.target.files[0])}/>
           {prodPrev && <img src={prodPrev} alt="" className="mt-2 h-20 rounded-lg object-contain border border-gray-200 dark:border-gray-600 bg-white p-1"/>}
@@ -1652,7 +2294,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
                         <img src={img.data} alt={img.product_name}
                           className="w-full aspect-square object-contain rounded-lg border border-gray-200 dark:border-gray-600 bg-white hover:border-indigo-400 transition-all p-0.5"/>
                         <p className="text-xs text-gray-600 dark:text-gray-400 mt-0.5 truncate font-medium">{img.product_name}</p>
-                        <p className="text-xs text-gray-400">{img.size}{cat?` ${cat.icon}`:''}</p>
+                        <p className="text-xs text-gray-400">{img.size}</p>
                       </div>
                     );
                   })}
@@ -1687,7 +2329,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
         </div>
 
         <Button onClick={generate} loading={isBusy} className="w-full" variant="primary">
-          {isBusy?(stepLabel[genStep]||'Working…'):'📋 Build Price Ad'}
+          {isBusy?(stepLabel[genStep]||'Working…'):<React.Fragment><Icon name="note"/> Build Price Ad</React.Fragment>}
         </Button>
         <p className="text-xs text-center text-gray-400 dark:text-gray-500">No AI image generation — fast, clean, brand-accurate</p>
       </>)}
@@ -1701,11 +2343,11 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
         <div>
           <div className="flex items-center justify-between mb-1">
             <Label className="mb-0">Product (optional — will be composited)</Label>
-            {libImages.length>0 && <button onClick={()=>setShowLib(v=>!v)} className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">{showLib?'Hide ↑':`📚 Library (${libImages.length})`}</button>}
+            {libImages.length>0 && <button onClick={()=>setShowLib(v=>!v)} className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">{showLib?'Hide ↑':<React.Fragment><Icon name="book"/> Library ({libImages.length})</React.Fragment>}</button>}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
-            <Button variant="secondary" size="sm" onClick={()=>prodRef.current?.click()}>📦 Upload</Button>
-            {prodPrev && <button onClick={clearProduct} className="text-xs text-red-500 hover:underline">✕</button>}
+            <Button variant="secondary" size="sm" onClick={()=>prodRef.current?.click()}><Icon name="package"/> Upload</Button>
+            {prodPrev && <button onClick={clearProduct} className="text-xs hover:underline" style={{color:"var(--red)"}}><Icon name="close" size={13}/></button>}
           </div>
           <input ref={prodRef} type="file" accept="image/*" className="hidden" onChange={e=>handleProd(e.target.files[0])}/>
           {prodPrev && <img src={prodPrev} alt="" className="mt-2 h-14 rounded-lg object-contain border border-gray-200 dark:border-gray-600 bg-white p-0.5"/>}
@@ -1732,7 +2374,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
           </div>
         </div>
         <Button onClick={generate} loading={isBusy} className="w-full" variant="primary">
-          {isBusy?(stepLabel[genStep]||'Working…'):'🎨 Generate & Add to Post'}
+          {isBusy?(stepLabel[genStep]||'Working…'):<React.Fragment><Icon name="palette"/> Generate & Add to Post</React.Fragment>}
         </Button>
       </>)}
     </div>
@@ -1757,6 +2399,7 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
   const [showImgGen,  setShowImgGen] = useState(false);
   const [lightbox,    setLightbox]   = useState(null);
   const [results,     setResults]    = useState([]);
+  const [showCreatives, setShowCreatives] = useState(false);
   const [postToFB,    setPostToFB]   = useState(true);
   const [postToIG,    setPostToIG]   = useState(false);
   const [uploading,   setUploading]  = useState(false);
@@ -1874,7 +2517,7 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
     <>
     {lightbox && <Lightbox src={lightbox} onClose={()=>setLightbox(null)}/>}
     <Card>
-      <h2 className="text-base font-bold text-gray-900 dark:text-white mb-4">📝 Compose Post</h2>
+      <h2 className="text-base font-bold text-gray-900 dark:text-white mb-4"><Icon name="note"/> Compose Post</h2>
       <div className="mb-4">
         <Label>Stores</Label>
         <div className="grid grid-cols-2 gap-2">
@@ -1893,12 +2536,12 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
           <label className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer text-sm transition-all
             ${postToFB?'border-blue-500 bg-blue-50 dark:bg-blue-950/50 text-blue-800 dark:text-blue-200 shadow-sm':'border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:border-blue-300'}`}>
             <input type="checkbox" className="rounded accent-blue-600" checked={postToFB} onChange={e=>setPostToFB(e.target.checked)}/>
-            <span className="leading-tight">📘 Facebook</span>
+            <span className="leading-tight"><Icon name="fb"/> Facebook</span>
           </label>
           <label className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer text-sm transition-all
             ${postToIG?'border-pink-500 bg-pink-50 dark:bg-pink-950/50 text-pink-800 dark:text-pink-200 shadow-sm':'border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:border-pink-300'}`}>
             <input type="checkbox" className="rounded accent-pink-500" checked={postToIG} onChange={e=>setPostToIG(e.target.checked)}/>
-            <span className="leading-tight">📸 Instagram <span className="text-gray-400 text-xs">(needs image)</span></span>
+            <span className="leading-tight"><Icon name="ig"/> Instagram <span className="text-gray-400 text-xs">(needs image)</span></span>
           </label>
         </div>
         {!postToFB && !postToIG && (
@@ -1911,7 +2554,7 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
       <div className="mb-3">
         <div className="flex items-center justify-between mb-1">
           <Label className="mb-0">Caption</Label>
-          <button onClick={()=>setShowAI(v=>!v)} className="text-xs font-semibold text-violet-600 dark:text-violet-400 hover:underline">{showAI?'Hide AI Writer ↑':'✨ AI Writer'}</button>
+          <button onClick={()=>setShowAI(v=>!v)} className="text-xs font-semibold text-violet-600 dark:text-violet-400 hover:underline">{showAI?'Hide AI Writer ↑':<React.Fragment><Icon name="spark"/> AI Writer</React.Fragment>}</button>
         </div>
         <Textarea value={caption} onChange={e=>setCaption(e.target.value)} rows={4} placeholder="What's happening at the store?"/>
         <p className="text-xs text-gray-400 mt-1 text-right">{caption.length} chars</p>
@@ -1923,8 +2566,9 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
       <div className="mb-4">
         <div className="flex items-center justify-between mb-2">
           <Label className="mb-0">Image</Label>
-          <div className="flex gap-2">
-            <button onClick={()=>setShowImgGen(v=>!v)} className={`text-xs font-semibold hover:underline ${showImgGen?'text-indigo-600 dark:text-indigo-400':'text-indigo-500 dark:text-indigo-400'}`}>{showImgGen?'Hide Generator ↑':'🎨 Generate with AI'}</button>
+          <div className="flex gap-3 items-center">
+            <button onClick={()=>setShowCreatives(true)} className="text-xs font-semibold hover:underline" style={{color:'var(--cy)'}}><Icon name="image"/> Creative library</button>
+            <button onClick={()=>setShowImgGen(v=>!v)} className="text-xs font-semibold hover:underline" style={{color:'var(--vio)'}}>{showImgGen?'Hide Generator ↑':<React.Fragment><Icon name="palette"/> Generate with AI</React.Fragment>}</button>
           </div>
         </div>
 
@@ -1934,18 +2578,24 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
             <div className="relative inline-block group">
               <img src={genImgUrl||pendingImage} alt="" onClick={()=>setLightbox(genImgUrl||pendingImage)}
                 className="h-36 rounded-xl object-cover border border-indigo-300 dark:border-indigo-600 shadow-sm cursor-zoom-in hover:opacity-90 transition-opacity"/>
-              <button onClick={clearImage} className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full w-5 h-5 text-xs flex items-center justify-center hover:bg-red-600">✕</button>
+              <button onClick={clearImage} className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full w-5 h-5 text-xs flex items-center justify-center hover:bg-red-600"><Icon name="close" size={12}/></button>
               <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
                 <span className="bg-black/50 text-white text-xs px-2 py-1 rounded-lg">Click to enlarge</span>
               </div>
             </div>
-            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">⚠ Post soon — image may expire.</p>
+            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1"><Icon name="warn" className="text-amber-400"/> Post soon — image may expire.</p>
           </div>
         )}
 
         {/* File upload (shown when no generated image) */}
         {!genImgUrl && !(pendingImage&&!imgFile) && (
           <ImagePicker file={imgFile} preview={imgPrev} onFile={handleFile} onClear={clearImage} label="Upload Image"/>
+        )}
+
+        {showCreatives && (
+          <CreativePicker allowed={POST_ASPECTS} storeIds={selected}
+            onPick={c=>{ setGenImgUrl(c.public_url); setImgPrev(c.public_url); setImgFile(null); }}
+            onClose={()=>setShowCreatives(false)}/>
         )}
 
         {/* Inline generator */}
@@ -1960,9 +2610,9 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
         <Label>Schedule (leave blank to post immediately)</Label>
         <Input type="datetime-local" value={schedule} onChange={e=>setSchedule(e.target.value)}/>
       </div>
-      {uploading && <p className="text-xs text-indigo-500 dark:text-indigo-400 mb-2 text-center">⬆ Uploading image…</p>}
+      {uploading && <p className="text-xs text-indigo-500 dark:text-indigo-400 mb-2 text-center"><Icon name="up"/> Uploading image…</p>}
       <Button onClick={post} loading={loading} className="w-full" size="lg">
-        {schedule?'📅 Schedule Post':'🚀 Publish Now'}
+        {schedule?<React.Fragment><Icon name="cal"/> Schedule Post</React.Fragment>:<React.Fragment><Icon name="rocket"/> Publish Now</React.Fragment>}
       </Button>
       {results.length>0 && (
         <div className="mt-4 space-y-2">
@@ -1971,7 +2621,7 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
             <div key={i} className={`flex flex-col gap-1 text-sm p-3 rounded-xl ${r.success?'bg-emerald-50 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300':'bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-400'}`}>
               <div className="flex items-center justify-between">
                 <span>
-                  {r.success?'✓':'✗'} {r.store} — {
+                  <Icon name={r.success?"check":"cross"} style={{color:r.success?"var(--grn)":"var(--red)"}}/> {r.store} — {
                     !r.success ? (r.error || 'Not published')
                     : r.scheduled ? 'Scheduled'
                     : (r.postId && r.igPostId) ? 'Published to Facebook + Instagram'
@@ -1983,8 +2633,8 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
                 {r.postId && <a href={fbPostUrl(r.postId)} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline ml-3 whitespace-nowrap">FB →</a>}
                 {r.igPostId && <a href={'https://www.instagram.com/p/'+r.igPostId} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-pink-600 dark:text-pink-400 hover:underline ml-1 whitespace-nowrap">IG →</a>}
               </div>
-              {r.success && r.error && <p className="text-xs text-amber-600 dark:text-amber-400">⚠ Facebook: {r.error}</p>}
-              {r.igError && <p className="text-xs text-amber-600 dark:text-amber-400">⚠ Instagram: {r.igError}</p>}
+              {r.success && r.error && <p className="text-xs text-amber-600 dark:text-amber-400"><Icon name="warn" className="text-amber-400"/> Facebook: {r.error}</p>}
+              {r.igError && <p className="text-xs text-amber-600 dark:text-amber-400"><Icon name="warn" className="text-amber-400"/> Instagram: {r.igError}</p>}
             </div>
           ))}
         </div>
@@ -2020,7 +2670,7 @@ function PostHistory({ settings, visibleStores }) {
   return (
     <Card>
       <div className="flex items-center gap-2 mb-4 flex-wrap">
-        <h2 className="text-base font-bold text-gray-900 dark:text-white flex-1">📋 Post History</h2>
+        <h2 className="text-base font-bold text-gray-900 dark:text-white flex-1"><Icon name="note"/> Post History</h2>
         <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs">{myStores.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</Select>
         <Button variant="secondary" size="sm" onClick={load} loading={loading}>{loaded?'Refresh':'Load Posts'}</Button>
       </div>
@@ -2039,9 +2689,9 @@ function PostHistory({ settings, visibleStores }) {
                 <p className="text-sm text-gray-800 dark:text-gray-200 line-clamp-3 leading-snug">{text}</p>
                 <p className="text-xs text-gray-400 mt-1">{fmtDate(p.created_time)}</p>
                 <div className="flex items-center gap-3 mt-1.5 flex-wrap">
-                  <span className="text-xs text-gray-500 dark:text-gray-400">👍 {likesCount}</span>
-                  <span className="text-xs text-gray-500 dark:text-gray-400">💬 {commentsCount}</span>
-                  {sharesCount>0 && <span className="text-xs text-gray-500 dark:text-gray-400">🔄 {sharesCount}</span>}
+                  <span className="text-xs text-gray-500 dark:text-gray-400"><Icon name="thumb"/> {likesCount}</span>
+                  <span className="text-xs text-gray-500 dark:text-gray-400"><Icon name="comment"/> {commentsCount}</span>
+                  {sharesCount>0 && <span className="text-xs text-gray-500 dark:text-gray-400"><Icon name="share"/> {sharesCount}</span>}
                   <a href={p.permalink_url||fbPostUrl(p.id)} target="_blank" rel="noopener noreferrer" className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline ml-auto">Open →</a>
                 </div>
               </div>
@@ -2072,6 +2722,8 @@ function CampaignBuilder({ settings }) {
   const [bodyText,    setBodyText]    = useState('');
   const [ctaType,     setCtaType]     = useState('LEARN_MORE');
   const [destUrl,     setDestUrl]     = useState('');
+  const [showAdCreatives, setShowAdCreatives] = useState(false);
+  const [adCreativeUrl, setAdCreativeUrl] = useState(null);
   const [adImg,       setAdImg]       = useState(null);
   const [adImgPrev,   setAdImgPrev]   = useState(null);
   const [showAI,      setShowAI]      = useState(false);
@@ -2105,7 +2757,9 @@ function CampaignBuilder({ settings }) {
     try {
       // Upload ad image to Storage first if provided
       var imageUrl = null;
-      if (adImg) {
+      if (adCreativeUrl) {
+        imageUrl = adCreativeUrl;
+      } else if (adImg) {
         setSteps([{ label: 'Uploading image…', status: 'running', detail: '' }]);
         imageUrl = await uploadImageToStorage(adImg);
       }
@@ -2170,7 +2824,7 @@ function CampaignBuilder({ settings }) {
       <Card>
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-wide">Ad Creative</h3>
-          <button onClick={()=>setShowAI(v=>!v)} className="text-xs font-semibold text-violet-600 dark:text-violet-400 hover:underline">{showAI?'Hide AI ↑':'✨ AI Copy'}</button>
+          <button onClick={()=>setShowAI(v=>!v)} className="text-xs font-semibold text-violet-600 dark:text-violet-400 hover:underline">{showAI?'Hide AI ↑':<React.Fragment><Icon name="spark"/> AI Copy</React.Fragment>}</button>
         </div>
         {showAI && <div className="mb-4"><AIWriter storeName={store.name} mode="ad" onResult={handleAI}/></div>}
         <div className="space-y-3">
@@ -2180,11 +2834,24 @@ function CampaignBuilder({ settings }) {
             <div><Label>Call to Action</Label><Select value={ctaType} onChange={e=>setCtaType(e.target.value)}>{CTA_OPTIONS.map(c=><option key={c} value={c}>{c.replace(/_/g,' ')}</option>)}</Select></div>
             <div><Label>Destination URL</Label><Input value={destUrl} onChange={e=>setDestUrl(e.target.value)} placeholder="https://yourstore.com" type="url"/></div>
           </div>
-          <ImagePicker file={adImg} preview={adImgPrev} onFile={f=>{setAdImg(f);const r=new FileReader();r.onload=()=>setAdImgPrev(r.result);r.readAsDataURL(f);}} onClear={()=>{setAdImg(null);setAdImgPrev(null);}} label="Ad Image (optional)"/>
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <Label className="mb-0">Ad Image (optional)</Label>
+              <button onClick={()=>setShowAdCreatives(true)} className="text-xs font-semibold hover:underline" style={{color:'var(--cy)'}}>
+                <Icon name="image"/> Creative library
+              </button>
+            </div>
+            <ImagePicker file={adImg} preview={adImgPrev} onFile={f=>{setAdCreativeUrl(null);setAdImg(f);const r=new FileReader();r.onload=()=>setAdImgPrev(r.result);r.readAsDataURL(f);}} onClear={()=>{setAdImg(null);setAdImgPrev(null);setAdCreativeUrl(null);}} label=""/>
+            {showAdCreatives && (
+              <CreativePicker allowed={AD_ASPECTS} storeIds={storeId?[storeId]:null}
+                onPick={c=>{ setAdCreativeUrl(c.public_url); setAdImgPrev(c.public_url); setAdImg(null); }}
+                onClose={()=>setShowAdCreatives(false)}/>
+            )}
+          </div>
         </div>
       </Card>
       {steps.length>0 && <Card><h3 className="text-sm font-bold text-gray-900 dark:text-white mb-3 uppercase tracking-wide">Build Progress</h3><StepIndicator steps={steps}/></Card>}
-      <Button onClick={launch} loading={running} className="w-full" size="lg">🚀 Create Campaign (starts Paused)</Button>
+      <Button onClick={launch} loading={running} className="w-full" size="lg"><Icon name="rocket"/> Create Campaign (starts Paused)</Button>
     </div>
   );
 }
@@ -2199,16 +2866,19 @@ function CampaignDashboard({ settings }) {
   const [filter,     setFilter]     = useState('all');
   const [togglingId, setTogglingId] = useState(null);
 
+  const [adStore, setAdStore] = useState(STORES[0]?.id || '');
+
   const load = async () => {
+    if (!adStore) return;
     setLoading(true);
     try {
-      var result = await callEdge('meta-ads', 'listCampaigns', { adAccountId: AD_ACCOUNT_ID });
+      var result = await callEdge('meta-ads', 'listCampaigns', { storeId: adStore });
       setCampaigns(result.campaigns || []);
-    } catch(e) { toast.error('Failed: ' + e.message); }
+    } catch(e) { setCampaigns([]); toast.error('Failed: ' + e.message); }
     finally    { setLoading(false); }
   };
 
-  useEffect(function(){ load(); },[]);
+  useEffect(function(){ load(); },[adStore]);
 
   const toggleStatus = async (camp) => {
     var newStatus = camp.status==='ACTIVE' ? 'PAUSED' : 'ACTIVE';
@@ -2229,9 +2899,13 @@ function CampaignDashboard({ settings }) {
   return (
     <Card>
       <div className="flex items-center gap-3 mb-4 flex-wrap">
-        <h2 className="text-base font-bold text-gray-900 dark:text-white flex-1">📊 Campaign Dashboard</h2>
+        <h2 className="text-base font-bold text-gray-900 dark:text-white flex-1"><Icon name="chart"/> Campaign Dashboard</h2>
+        {/* Each store has its own ad account, so campaigns are fetched per store. */}
+        <Select value={adStore} onChange={e=>setAdStore(e.target.value)} className="w-auto text-xs">
+          {STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+        </Select>
         <Select value={filter} onChange={e=>setFilter(e.target.value)} className="w-auto text-xs">
-          <option value="all">All Stores</option>
+          <option value="all">All Campaigns</option>
           {STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
         </Select>
         <Button variant="secondary" size="sm" onClick={load} loading={loading}>Refresh</Button>
@@ -2278,8 +2952,9 @@ function CampaignDashboard({ settings }) {
 // ─────────────────────────────────────────────
 function ProductLibrary() {
   const toast    = useToast();
-  const [storeId,     setStoreId]     = useState(STORES[0].id);
   const [catFilter,   setCatFilter]   = useState('all');
+  const [editId,      setEditId]      = useState(null);
+  const [search,      setSearch]      = useState('');
   const [showForm,    setShowForm]    = useState(false);
   const [formImg,     setFormImg]     = useState(null);
   const [formPrev,    setFormPrev]    = useState(null);
@@ -2290,7 +2965,7 @@ function ProductLibrary() {
   const [saving,      setSaving]      = useState(false);
   const [deleting,    setDeleting]    = useState(null);
   const fileRef = useRef();
-  const { images, add, remove } = useBrandImageLibrary(storeId);
+  const { images, add, update, remove } = useBrandImageLibrary();
 
   const handleFile = file => {
     if (!file) return;
@@ -2299,17 +2974,37 @@ function ProductLibrary() {
   };
 
   const resetForm = () => {
-    setFormImg(null); setFormPrev(null); setFormName(''); setFormSize('750ml'); setFormCat(''); setFormNotes(''); setShowForm(false);
+    setFormImg(null); setFormPrev(null); setFormName(''); setFormSize('750ml'); setFormCat(''); setFormNotes(''); setShowForm(false); setEditId(null);
+  };
+
+  const startEdit = (prod) => {
+    setEditId(prod.id);
+    setFormName(prod.product_name || '');
+    setFormSize(prod.size || '750ml');
+    setFormCat(prod.category || '');
+    setFormNotes(prod.notes || '');
+    setFormPrev(prod.data || null);
+    setFormImg(null);
+    setShowForm(true);
+    window.scrollTo({ top:0, behavior:'smooth' });
   };
 
   const saveProduct = async () => {
-    if (!formImg)       { toast.error('Upload a product image'); return; }
-    if (!formName.trim()){ toast.error('Enter a product name'); return; }
-    if (!formCat)       { toast.error('Select a category'); return; }
+    if (!editId && !formImg) { toast.error('Upload a product image'); return; }
+    if (!formName.trim())    { toast.error('Enter a product name'); return; }
+    if (!formCat)            { toast.error('Select a category'); return; }
     setSaving(true);
     try {
-      await add({ product_name:formName.trim(), size:formSize, category:formCat, notes:formNotes.trim(), data:formPrev });
-      toast.success('Product added to library!');
+      const fields = { product_name:formName.trim(), size:formSize, category:formCat, notes:formNotes.trim() };
+      if (editId) {
+        // Only send a new image if one was actually chosen this time.
+        if (formImg) fields.data = formPrev;
+        await update(editId, fields);
+        toast.success('Product updated');
+      } else {
+        await add({ ...fields, data:formPrev });
+        toast.success('Product added to library');
+      }
       resetForm();
     } catch(e) { toast.error(e.message); }
     finally { setSaving(false); }
@@ -2324,32 +3019,38 @@ function ProductLibrary() {
 
   const catCounts = {};
   images.forEach(i=>{ catCounts[i.category]=(catCounts[i.category]||0)+1; });
-  const filtered = catFilter==='all' ? images : images.filter(i=>i.category===catFilter);
+  const q = search.trim().toLowerCase();
+  const filtered = images
+    .filter(i=>catFilter==='all' || i.category===catFilter)
+    .filter(i=>!q || (i.product_name||'').toLowerCase().includes(q) || (i.notes||'').toLowerCase().includes(q));
   const usedCats = LIQUOR_CATEGORIES.filter(c=>catCounts[c.id]);
 
   return (
     <div className="space-y-4">
       {/* Header */}
       <div className="flex items-center gap-3 flex-wrap">
-        <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-sm">
-          {STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-        </Select>
+        <div>
+          <span className="ttl">Product Library</span>
+          <p className="lbl mt-1">Shared across all four stores</p>
+        </div>
+        <Input value={search} onChange={e=>setSearch(e.target.value)}
+               placeholder="Search products…" className="max-w-xs text-sm"/>
         <div className="flex-1"/>
-        <Button onClick={()=>setShowForm(v=>!v)} variant={showForm?'secondary':'primary'} size="sm">
-          {showForm?'✕ Cancel':'+ Add Product'}
+        <Button onClick={()=>{ setEditId(null); resetForm(); setShowForm(v=>!v); }} variant={showForm?'secondary':'primary'} size="sm">
+          {showForm?<React.Fragment><Icon name="close"/> Cancel</React.Fragment>:<React.Fragment><Icon name="tag"/> Add Product</React.Fragment>}
         </Button>
       </div>
 
       {/* Add product form */}
       {showForm && (
         <Card className="border-2 border-indigo-200 dark:border-indigo-700">
-          <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4 uppercase tracking-wide">Add Product</h3>
+          <h3 className="ttl mb-4">{editId ? 'Edit Product' : 'Add Product'}</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {/* Image upload */}
             <div className="sm:col-span-2">
-              <Label>Product Photo</Label>
+              <Label>{editId ? 'Product Photo — leave as-is to keep current' : 'Product Photo'}</Label>
               <div className="flex items-center gap-3 flex-wrap">
-                <Button variant="secondary" size="sm" onClick={()=>fileRef.current?.click()}>📷 Choose Image</Button>
+                <Button variant="secondary" size="sm" onClick={()=>fileRef.current?.click()}><Icon name="cam"/> Choose Image</Button>
                 {formImg && <span className="text-xs text-gray-500 truncate max-w-xs">{formImg.name}</span>}
                 {formImg && <button onClick={()=>{setFormImg(null);setFormPrev(null);}} className="text-xs text-red-500 hover:underline">Remove</button>}
               </div>
@@ -2372,7 +3073,7 @@ function ProductLibrary() {
                 {LIQUOR_CATEGORIES.map(c=>(
                   <label key={c.id} className={`flex items-center gap-1.5 p-2 rounded-xl border cursor-pointer text-xs transition-all ${formCat===c.id?'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300':'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-400 hover:border-indigo-300'}`}>
                     <input type="radio" name="formCat" value={c.id} checked={formCat===c.id} onChange={()=>setFormCat(c.id)} className="hidden"/>
-                    <span>{c.icon}</span><span className="font-medium">{c.label}</span>
+                    <Icon name={c.icon} size={15}/><span className="font-medium">{c.label}</span>
                   </label>
                 ))}
               </div>
@@ -2383,7 +3084,7 @@ function ProductLibrary() {
             </div>
           </div>
           <div className="mt-4 flex gap-2">
-            <Button onClick={saveProduct} loading={saving} className="flex-1">Save to Library</Button>
+            <Button onClick={saveProduct} loading={saving} className="flex-1"><Icon name="save"/> {editId ? 'Save changes' : 'Save to Library'}</Button>
             <Button onClick={resetForm} variant="secondary">Cancel</Button>
           </div>
         </Card>
@@ -2397,7 +3098,7 @@ function ProductLibrary() {
           </button>
           {usedCats.map(c=>(
             <button key={c.id} onClick={()=>setCatFilter(c.id)} className={`flex-shrink-0 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border flex items-center gap-1 ${catFilter===c.id?'bg-indigo-600 text-white border-indigo-600':'bg-white dark:bg-gray-800 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-700 hover:border-indigo-300'}`}>
-              {c.icon} {c.label} <span className="opacity-70">({catCounts[c.id]})</span>
+              <Icon name={c.icon} size={13} className="mr-1.5"/>{c.label} <span className="opacity-70">({catCounts[c.id]})</span>
             </button>
           ))}
         </div>
@@ -2406,7 +3107,7 @@ function ProductLibrary() {
       {/* Product grid */}
       {filtered.length===0 && !showForm && (
         <div className="text-center py-16 text-gray-400 dark:text-gray-500">
-          <p className="text-4xl mb-3">📦</p>
+          <p className="mb-3"><Icon name="package" size={40} style={{color:"var(--cy-dim)"}}/></p>
           <p className="text-sm font-medium">No products yet</p>
           <p className="text-xs mt-1">Click "+ Add Product" to build your library</p>
         </div>
@@ -2419,16 +3120,25 @@ function ProductLibrary() {
               <div key={p.id} className="bg-white dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 overflow-hidden group hover:border-indigo-300 dark:hover:border-indigo-600 transition-all shadow-sm">
                 <div className="relative">
                   <img src={p.data} alt={p.product_name} className="w-full aspect-square object-cover"/>
-                  <button onClick={()=>deleteProduct(p.id)} disabled={deleting===p.id}
-                    className="absolute top-1.5 right-1.5 bg-red-500 text-white rounded-full w-6 h-6 text-xs items-center justify-center hidden group-hover:flex hover:bg-red-600 transition-colors">
-                    {deleting===p.id?'…':'✕'}
-                  </button>
+                  <div className="absolute top-1.5 right-1.5 gap-1 hidden group-hover:flex">
+                    <button onClick={()=>startEdit(p)} aria-label={'Edit '+p.product_name}
+                      className="w-6 h-6 flex items-center justify-center transition-colors"
+                      style={{background:'rgba(2,5,11,.85)', color:'var(--cy)', border:'1px solid var(--cy)'}}>
+                      <Icon name="edit" size={12}/>
+                    </button>
+                    <button onClick={()=>deleteProduct(p.id)} disabled={deleting===p.id}
+                      aria-label={'Delete '+p.product_name}
+                      className="w-6 h-6 flex items-center justify-center transition-colors"
+                      style={{background:'rgba(2,5,11,.85)', color:'var(--red)', border:'1px solid var(--red)'}}>
+                      {deleting===p.id?'…':<Icon name="trash" size={12}/>}
+                    </button>
+                  </div>
                 </div>
                 <div className="p-2.5">
                   <p className="text-xs font-bold text-gray-900 dark:text-gray-100 leading-tight truncate" title={p.product_name}>{p.product_name}</p>
                   <div className="flex items-center gap-1 mt-1.5 flex-wrap">
                     <span className="px-1.5 py-0.5 rounded-md bg-gray-100 dark:bg-gray-700 text-gray-600 dark:text-gray-400 text-xs font-medium">{p.size}</span>
-                    {cat && <span className="px-1.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 text-xs font-medium">{cat.icon} {cat.label}</span>}
+                    {cat && <span className="px-1.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 text-xs font-medium"><Icon name={cat.icon} size={12} className="mr-1"/>{cat.label}</span>}
                   </div>
                   {p.notes && <p className="text-xs text-gray-400 mt-1 truncate" title={p.notes}>{p.notes}</p>}
                 </div>
@@ -2479,7 +3189,7 @@ function BrandProfileEditor({ storeId }) {
           {logo ? (
             <div className="relative flex-shrink-0">
               <img src={logo} alt="Logo" className="h-20 w-20 object-contain rounded-xl border border-gray-200 dark:border-gray-600 bg-white p-1"/>
-              <button onClick={async()=>{try{await clearLogo();toast.success('Logo removed.');}catch(e){toast.error(e.message);}}} className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full w-5 h-5 text-xs flex items-center justify-center hover:bg-red-600 leading-none">✕</button>
+              <button onClick={async()=>{try{await clearLogo();toast.success('Logo removed.');}catch(e){toast.error(e.message);}}} className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full w-5 h-5 text-xs flex items-center justify-center hover:bg-red-600 leading-none"><Icon name="close" size={12}/></button>
             </div>
           ) : (
             <div className="h-20 w-20 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-600 flex items-center justify-center text-gray-400 text-xs text-center leading-tight flex-shrink-0 p-2">No logo yet</div>
@@ -2492,19 +3202,19 @@ function BrandProfileEditor({ storeId }) {
         <input ref={logoRef} type="file" accept="image/*" className="hidden" onChange={e=>handleLogo(e.target.files[0])}/>
       </Card>
       <Card>
-        <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4 uppercase tracking-wide">🎙 Voice &amp; Tone</h3>
+        <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4 uppercase tracking-wide"><Icon name="mic"/> Voice &amp; Tone</h3>
         <div className="space-y-4">
           <div><Label>Brand Personality</Label><Input {...f('personality')} placeholder="e.g. Friendly, knowledgeable, local, approachable, authentic"/><p className="text-xs text-gray-400 mt-1">Comma-separated — used in AI caption and image prompts</p></div>
           <div><Label>Tone Description</Label><Textarea {...f('tone')} rows={2} placeholder="e.g. Warm and conversational — like advice from a knowledgeable friend. Never pushy."/></div>
           <div className="grid grid-cols-2 gap-4">
-            <div><Label>✅ Language &amp; Phrases We Use</Label><Textarea {...f('do_say')} rows={4} placeholder={"e.g.\nCheers!\nGreat find.\nLocal favourite."}/></div>
-            <div><Label>🚫 Language to Avoid</Label><Textarea {...f('dont_say')} rows={4} placeholder={"e.g.\nCheapest\nGet wasted"}/></div>
+            <div><Label><Icon name="check" className="text-emerald-400"/> Language &amp; Phrases We Use</Label><Textarea {...f('do_say')} rows={4} placeholder={"e.g.\nCheers!\nGreat find.\nLocal favourite."}/></div>
+            <div><Label><Icon name="ban"/> Language to Avoid</Label><Textarea {...f('dont_say')} rows={4} placeholder={"e.g.\nCheapest\nGet wasted"}/></div>
           </div>
           <div><Label>Target Audience</Label><Input {...f('audience')} placeholder="e.g. Adults 25–55 who enjoy quality craft spirits"/></div>
         </div>
       </Card>
       <Card>
-        <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4 uppercase tracking-wide">🎨 Visual Brand</h3>
+        <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4 uppercase tracking-wide"><Icon name="palette"/> Visual Brand</h3>
         <div className="space-y-4">
           <div className="grid grid-cols-3 gap-3">
             {[{key:'primary_color',label:'Primary'},{key:'secondary_color',label:'Secondary'},{key:'accent_color',label:'Accent'}].map(c=>(
@@ -2529,7 +3239,7 @@ function BrandProfileEditor({ storeId }) {
             <div><Label>Mood / Feeling</Label><Input {...f('mood')} placeholder="e.g. Sophisticated yet approachable. Authentic BC."/></div>
             <div><Label>Style Keywords</Label><Input {...f('style_keywords')} placeholder="e.g. artisan, local, premium, craft, BC"/></div>
           </div>
-          <div><Label>🚫 Avoid Visually</Label><Input {...f('avoid_visually')} placeholder="e.g. Dark nightclub vibes, generic stock photos, neon signs"/></div>
+          <div><Label><Icon name="ban"/> Avoid Visually</Label><Input {...f('avoid_visually')} placeholder="e.g. Dark nightclub vibes, generic stock photos, neon signs"/></div>
         </div>
       </Card>
       <Button onClick={save} loading={saving} size="lg" className="w-full">Save Brand Profile</Button>
@@ -2555,7 +3265,7 @@ function ImageGenerator({ settings, onUseInPost }) {
   const [logo,       setLogo]       = useState(null);
   const [history,    setHistory]    = useState([]);
   const [showLib,    setShowLib]    = useState(false);
-  const { images:libImages, save:saveToLib, remove:removeFromLib } = useProductLibrary(storeId);
+  const { images:libImages, save:saveToLib, remove:removeFromLib } = useProductLibrary();
   const prodRef = useRef();
 
   const store     = STORES.find(s=>s.id===storeId);
@@ -2650,13 +3360,13 @@ function ImageGenerator({ settings, onUseInPost }) {
 
   const storeHistory = history.filter(h=>h.store_id===storeId);
   const isBusy = ['analyzing','building','generating'].includes(genStep);
-  const stepLabel = { analyzing:'🔍 Analysing product image…', building:'⚙️ Building prompt…', generating:'🎨 Generating image…' };
+  const stepLabel = { analyzing:'Analysing product image…', building:'Building prompt…', generating:'Generating image…' };
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
       <div className="space-y-4">
         <Card>
-          <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4 uppercase tracking-wide">🖼 Generate Image</h3>
+          <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4 uppercase tracking-wide"><Icon name="image"/> Generate Image</h3>
           <div className="mb-4">
             <Label>Store</Label>
             <Select value={storeId} onChange={e=>{setStoreId(e.target.value);setResult(null);setShowPrompt(false);}}>
@@ -2666,18 +3376,18 @@ function ImageGenerator({ settings, onUseInPost }) {
               {logo && <img src={logo} alt="logo" className="h-7 w-7 rounded object-contain bg-white border border-gray-200 p-0.5"/>}
               {brand.personality && brand.personality.split(',').slice(0,3).map((p,i)=><Badge key={i} color="indigo">{p.trim()}</Badge>)}
               {brand.style_keywords && brand.style_keywords.split(',').slice(0,2).map((k,i)=><Badge key={i} color="gray">{k.trim()}</Badge>)}
-              {!brand.personality&&!brand.style_keywords && <span className="text-xs text-amber-600 dark:text-amber-400">⚠ No brand profile — add one in the Brand Profile tab</span>}
+              {!brand.personality&&!brand.style_keywords && <span className="text-xs text-amber-600 dark:text-amber-400"><Icon name="warn" className="text-amber-400"/> No brand profile — add one in the Brand Profile tab</span>}
             </div>
           </div>
           <div className="mb-4"><Label>Image Brief</Label><Textarea value={brief} onChange={e=>setBrief(e.target.value)} rows={3} placeholder="e.g. A bottle of Maker's Mark on a warm wooden bar with BC mountain scenery. Cozy summer evening."/></div>
           <div className="mb-4">
             <div className="flex items-center justify-between mb-1">
               <Label className="mb-0">Product Reference Photo (optional)</Label>
-              {libImages.length>0 && <button onClick={()=>setShowLib(v=>!v)} className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">{showLib?'Hide Library ↑':`📚 Library (${libImages.length})`}</button>}
+              {libImages.length>0 && <button onClick={()=>setShowLib(v=>!v)} className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline">{showLib?'Hide Library ↑':<React.Fragment><Icon name="book"/> Library ({libImages.length})</React.Fragment>}</button>}
             </div>
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">GPT-4o Vision will describe it and weave it into the prompt. Photos are auto-saved to your library.</p>
             <div className="flex items-center gap-2 flex-wrap">
-              <Button variant="secondary" size="sm" onClick={()=>prodRef.current?.click()}>📦 Upload Product Photo</Button>
+              <Button variant="secondary" size="sm" onClick={()=>prodRef.current?.click()}><Icon name="package"/> Upload Product Photo</Button>
               {prodFile && <span className="text-xs text-gray-600 dark:text-gray-400 truncate max-w-xs">{prodFile.name}</span>}
               {prodFile && <button onClick={()=>{setProdFile(null);setProdPrev(null);}} className="text-xs text-red-500 hover:underline">Remove</button>}
             </div>
@@ -2687,7 +3397,7 @@ function ImageGenerator({ settings, onUseInPost }) {
             {/* Product Library */}
             {showLib && (
               <div className="mt-3 p-3 rounded-xl border border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-750">
-                <p className="text-xs font-semibold text-gray-600 dark:text-gray-400 mb-2 uppercase tracking-wide">Product Library — {STORES.find(s=>s.id===storeId)?.name}</p>
+                <p className="text-xs font-semibold text-gray-600 dark:text-gray-400 mb-2 uppercase tracking-wide">Product Library</p>
                 <div className="grid grid-cols-5 gap-2">
                   {libImages.map(img=>(
                     <div key={img.id} className="relative group">
@@ -2695,7 +3405,7 @@ function ImageGenerator({ settings, onUseInPost }) {
                         onClick={()=>selectFromLib(img)}
                         className="w-full aspect-square object-cover rounded-lg border border-gray-200 dark:border-gray-600 cursor-pointer hover:border-indigo-400 hover:opacity-90 transition-all"/>
                       <button onClick={()=>removeFromLib(img.id)}
-                        className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full w-4 h-4 text-xs items-center justify-center hidden group-hover:flex leading-none">✕</button>
+                        className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full w-4 h-4 text-xs items-center justify-center hidden group-hover:flex leading-none"><Icon name="close" size={12}/></button>
                       <p className="text-xs text-gray-400 mt-0.5 truncate">{img.name}</p>
                     </div>
                   ))}
@@ -2721,14 +3431,14 @@ function ImageGenerator({ settings, onUseInPost }) {
           <div className="mb-5">
             <div className="flex items-center justify-between mb-1">
               <Label className="mb-0">DALL-E 3 Prompt</Label>
-              <button onClick={previewPrompt} disabled={isBusy} className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline disabled:opacity-50">⚙ Preview &amp; Edit Prompt</button>
+              <button onClick={previewPrompt} disabled={isBusy} className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:underline disabled:opacity-50"><Icon name="gear"/> Preview &amp; Edit Prompt</button>
             </div>
             {showPrompt
               ? <Textarea value={editPrompt} onChange={e=>setEditPrompt(e.target.value)} rows={6} className="text-xs font-mono"/>
               : <div className="rounded-xl border border-dashed border-gray-200 dark:border-gray-700 p-3 text-xs text-gray-400 italic">Click "Preview &amp; Edit Prompt" to see the auto-built prompt — or just click Generate.</div>}
           </div>
           <Button onClick={generate} loading={isBusy} className="w-full" size="lg">
-            {isBusy?(stepLabel[genStep]||'Working…'):'🎨 Generate Image'}
+            {isBusy?(stepLabel[genStep]||'Working…'):<React.Fragment><Icon name="palette"/> Generate Image</React.Fragment>}
           </Button>
         </Card>
       </div>
@@ -2740,10 +3450,10 @@ function ImageGenerator({ settings, onUseInPost }) {
               <div className="flex gap-2">
                 {onUseInPost && (
                   <Button variant="success" size="sm" onClick={()=>onUseInPost(result.url)}>
-                    📝 Use in Post
+                    <Icon name="note"/> Use in Post
                   </Button>
                 )}
-                <a href={result.url} download="generated.png" target="_blank" rel="noopener noreferrer"><Button variant="secondary" size="sm">⬇ Download</Button></a>
+                <a href={result.url} download="generated.png" target="_blank" rel="noopener noreferrer"><Button variant="secondary" size="sm"><Icon name="down"/> Download</Button></a>
               </div>
             </div>
             <img src={result.url} alt="Generated" className="w-full rounded-xl border border-gray-200 dark:border-gray-600 shadow-md"/>
@@ -2760,11 +3470,11 @@ function ImageGenerator({ settings, onUseInPost }) {
                 </a>
               ))}
             </div>
-            <p className="text-xs text-gray-400 mt-2.5">⚠ DALL-E URLs expire in ~1 hour — download images to keep them.</p>
+            <p className="text-xs text-gray-400 mt-2.5"><Icon name="warn" className="text-amber-400"/> DALL-E URLs expire in ~1 hour — download images to keep them.</p>
           </Card>
         )}
         {storeHistory.length===0&&!result && (
-          <Card><div className="text-center py-10 text-gray-400 dark:text-gray-500 text-sm"><p className="text-3xl mb-2">🖼</p><p>Generated images appear here.</p><p className="text-xs mt-1">Set a brand profile first for best results.</p></div></Card>
+          <Card><div className="text-center py-10 text-gray-400 dark:text-gray-500 text-sm"><p className="mb-2"><Icon name="image" size={34} style={{color:"var(--cy-dim)"}}/></p><p>Generated images appear here.</p><p className="text-xs mt-1">Set a brand profile first for best results.</p></div></Card>
         )}
       </div>
     </div>
@@ -2959,7 +3669,7 @@ function STFieldEditor({ templateDataUrl, fields, onChange }) {
                 <span className="flex-1 font-medium text-gray-800 dark:text-gray-200 truncate">{f.label}</span>
                 {f.required && <Badge color="red">req</Badge>}
                 <button onClick={e=>{e.stopPropagation();dupeField(f);}} className="text-gray-400 hover:text-indigo-500 px-1">⧉</button>
-                <button onClick={e=>{e.stopPropagation();deleteField(f.id);}} className="text-gray-400 hover:text-red-500 px-1">✕</button>
+                <button onClick={e=>{e.stopPropagation();deleteField(f.id);}} className="px-1" style={{color:"var(--txt3)"}}><Icon name="close" size={13}/></button>
               </div>
             ))}
           </div>
@@ -3247,7 +3957,7 @@ function STTemplateForm({ onSaved, initialTemplate=null }) {
                 {['global','brand'].map(s=>(
                   <label key={s} className="flex items-center gap-1.5 text-sm cursor-pointer">
                     <input type="radio" checked={scope===s} onChange={()=>setScope(s)} className="accent-indigo-600"/>
-                    {s==='global'?'🌐 Global (all stores)':'🏪 Brand Specific'}
+                    {s==='global'?<React.Fragment><Icon name="globe"/> Global (all stores)</React.Fragment>:<React.Fragment><Icon name="store"/> Brand Specific</React.Fragment>}
                   </label>
                 ))}
               </div>
@@ -3290,7 +4000,7 @@ function STTemplateForm({ onSaved, initialTemplate=null }) {
               {fileData
                 ? <img src={fileData} alt="" className="max-h-64 mx-auto rounded-lg object-contain"/>
                 : <div className="py-8 text-gray-400">
-                    <p className="text-3xl mb-2">📄</p>
+                    <p className="mb-2"><Icon name="file" size={34} style={{color:"var(--cy-dim)"}}/></p>
                     <p className="text-sm font-medium">Click or drag to upload</p>
                     <p className="text-xs mt-1">PNG · JPG · PDF — max 20 MB</p>
                   </div>
@@ -3307,7 +4017,7 @@ function STTemplateForm({ onSaved, initialTemplate=null }) {
         <div className="space-y-4">
           <STFieldEditor templateDataUrl={fileData} fields={fields} onChange={setFields}/>
           <Button onClick={saveFieldLayout} loading={saving} className="w-full">
-            💾 Save Field Layout
+            <Icon name="save"/> Save Field Layout
           </Button>
         </div>
       )}
@@ -3371,7 +4081,7 @@ function STAdminLibrary({ onEditTemplate }) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap gap-2">
-        <Input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 Search templates…" className="max-w-xs"/>
+        <Input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search templates…" className="max-w-xs"/>
         <Select value={catFilter} onChange={e=>setCatFilter(e.target.value)} className="w-auto">
           <option value="all">All Categories</option>
           {ST_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
@@ -3400,7 +4110,7 @@ function STAdminLibrary({ onEditTemplate }) {
                 <img src={tpl.file_data} alt={tpl.name} className="absolute inset-0 w-full h-full object-contain"/>
                 <div className="absolute top-2 left-2 flex gap-1 flex-wrap">
                   {tpl.scope==='global'
-                    ? <Badge color="blue">🌐 Global</Badge>
+                    ? <Badge color="blue"><Icon name="globe"/> Global</Badge>
                     : brandNames.map(n=><Badge key={n} color="indigo">{n}</Badge>)
                   }
                 </div>
@@ -3416,10 +4126,10 @@ function STAdminLibrary({ onEditTemplate }) {
                 </div>
                 <p className="text-xs text-gray-400">{fmtDate(tpl.updated_at)}</p>
                 <div className="flex gap-1 flex-wrap mt-auto">
-                  <Button size="sm" variant="outline" onClick={()=>onEditTemplate(tpl)} className="text-xs">✏️ Edit</Button>
+                  <Button size="sm" variant="outline" onClick={()=>onEditTemplate(tpl)} className="text-xs"><Icon name="edit"/> Edit</Button>
                   <Button size="sm" variant="secondary" onClick={()=>duplicateTemplate(tpl)} className="text-xs">⧉ Dupe</Button>
                   <Button size="sm" variant="ghost" onClick={()=>toggleActive(tpl)} className="text-xs">{tpl.is_active?'Deactivate':'Activate'}</Button>
-                  <Button size="sm" variant="danger" onClick={()=>deleteTemplate(tpl.id)} className="text-xs">🗑</Button>
+                  <Button size="sm" variant="danger" onClick={()=>deleteTemplate(tpl.id)} className="text-xs"><Icon name="trash"/></Button>
                 </div>
               </div>
             </div>
@@ -3591,7 +4301,7 @@ function UserAccountsSection({ currentUserId }) {
 
   return (
     <Card>
-      <h2 className="text-base font-bold text-gray-900 dark:text-white mb-1">👥 Store User Accounts</h2>
+      <h2 className="text-base font-bold text-gray-900 dark:text-white mb-1"><Icon name="users"/> Store User Accounts</h2>
       <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">Create logins for store staff. Store accounts can be assigned to one or more locations.</p>
 
       {/* Create form */}
@@ -3657,11 +4367,11 @@ function UserAccountsSection({ currentUserId }) {
                   <div className="flex items-center gap-2">
                     {u.role === 'store' && (
                       <button onClick={()=>{ if(editStoresId===u.user_id){ setEditStoresId(null); } else { openEditStores(u); } }} className="text-xs text-green-600 hover:text-green-800 dark:text-green-400 font-semibold">
-                        {editStoresId===u.user_id ? 'Cancel' : '🏪 Stores'}
+                        {editStoresId===u.user_id ? 'Cancel' : <React.Fragment><Icon name="store"/> Stores</React.Fragment>}
                       </button>
                     )}
                     <button onClick={()=>{ setResetId(resetId===u.user_id?null:u.user_id); setNewPw(''); setEditStoresId(null); }} className="text-xs text-indigo-500 hover:text-indigo-700 font-semibold">
-                      {resetId===u.user_id ? 'Cancel' : '🔑 Reset PW'}
+                      {resetId===u.user_id ? 'Cancel' : <React.Fragment><Icon name="key"/> Reset PW</React.Fragment>}
                     </button>
                     <button onClick={()=>deleteUser(u.user_id, u.email)} disabled={deletingId===u.user_id} className="text-xs text-red-500 hover:text-red-700 font-semibold disabled:opacity-40">
                       {deletingId===u.user_id ? '…' : 'Remove'}
@@ -3716,7 +4426,7 @@ function SettingsPage({ settings, onSave, currentUserId }) {
     <div className="space-y-4 max-w-2xl">
       <UserAccountsSection currentUserId={currentUserId}/>
       <Card>
-        <h2 className="text-base font-bold text-gray-900 dark:text-white mb-1">🔒 Credentials</h2>
+        <h2 className="text-base font-bold text-gray-900 dark:text-white mb-1"><Icon name="lock"/> Credentials</h2>
         <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
           API keys and page tokens are stored as <strong>Supabase Edge Function secrets</strong> and are
           only ever used server-side. They are deliberately not readable or editable from this browser,
@@ -3783,7 +4493,7 @@ function ScheduledPostsPanel() {
   return (
     <Card>
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-base font-bold text-gray-900 dark:text-white">📅 Scheduled &amp; Recent Posts</h2>
+        <h2 className="text-base font-bold text-gray-900 dark:text-white"><Icon name="cal"/> Scheduled &amp; Recent Posts</h2>
         <Button variant="secondary" size="sm" onClick={load} loading={loading}>Refresh</Button>
       </div>
       {posts.length === 0 && !loading && (
@@ -3801,7 +4511,7 @@ function ScheduledPostsPanel() {
                   <div className="flex-1 min-w-0">
                     <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">{storeName}</p>
                     <p className="text-xs text-gray-600 dark:text-gray-400 line-clamp-2 mt-0.5">{p.caption}</p>
-                    <p className="text-xs text-gray-400 mt-1">🕐 {fmtDate(p.scheduled_at)} · {(p.publish_to || ['facebook']).join(' + ')}</p>
+                    <p className="text-xs text-gray-400 mt-1"><Icon name="clock"/> {fmtDate(p.scheduled_at)} · {(p.publish_to || ['facebook']).join(' + ')}</p>
                   </div>
                   <Button variant="danger" size="sm" loading={canceling === p.id} onClick={function(){ cancel(p.id); }}>Cancel</Button>
                 </div>
@@ -3823,7 +4533,7 @@ function ScheduledPostsPanel() {
                   <div className="flex-1 min-w-0">
                     <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">{storeName} · <span className={'font-bold ' + (isOk ? 'text-emerald-600' : 'text-red-600')}>{p.status}</span></p>
                     <p className="text-xs text-gray-600 dark:text-gray-400 line-clamp-2 mt-0.5">{p.caption}</p>
-                    {p.error_msg && <p className="text-xs text-red-500 mt-0.5">⚠ {p.error_msg}</p>}
+                    {p.error_msg && <p className="text-xs text-red-500 mt-0.5"><Icon name="warn" className="text-amber-400"/> {p.error_msg}</p>}
                     <p className="text-xs text-gray-400 mt-1">{fmtDate(p.scheduled_at)}</p>
                   </div>
                 </div>
@@ -3858,12 +4568,12 @@ function StoreInsightsCard({ store, days }) {
   var ins = data ? data.insights : null;
 
   var metrics = ins ? [
-    { label: 'Followers',      value: ins.followers_count, icon: '👥', desc: 'Total page followers' },
-    { label: 'Page Likes',     value: ins.fan_count,       icon: '❤️',  desc: 'Total page likes' },
-    { label: 'Posts',          value: ins.post_count,      icon: '📝', desc: 'Posts in period' },
-    { label: 'Total Likes',    value: ins.total_likes,     icon: '👍', desc: 'Likes across all posts' },
-    { label: 'Total Comments', value: ins.total_comments,  icon: '💬', desc: 'Comments across all posts' },
-    { label: 'Avg Engagement', value: ins.avg_engagement,  icon: '⭐', desc: 'Avg likes+comments+shares per post' },
+    { label: 'Followers',      value: ins.followers_count, icon: 'users', desc: 'Total page followers' },
+    { label: 'Page Likes',     value: ins.fan_count,       icon: 'heart',  desc: 'Total page likes' },
+    { label: 'Posts',          value: ins.post_count,      icon: 'note', desc: 'Posts in period' },
+    { label: 'Total Likes',    value: ins.total_likes,     icon: 'thumb', desc: 'Likes across all posts' },
+    { label: 'Total Comments', value: ins.total_comments,  icon: 'comment', desc: 'Comments across all posts' },
+    { label: 'Avg Engagement', value: ins.avg_engagement,  icon: 'star', desc: 'Avg likes+comments+shares per post' },
   ] : [];
 
   var recentPosts = data ? (data.recentPosts || []) : [];
@@ -3877,7 +4587,7 @@ function StoreInsightsCard({ store, days }) {
 
       {error && (
         <div className="text-sm text-red-500 dark:text-red-400 bg-red-50 dark:bg-red-900/20 rounded-lg p-3 mb-3">
-          ⚠️ {error}
+          <Icon name="warn" className="mr-1.5"/>{error}
         </div>
       )}
 
@@ -3887,7 +4597,7 @@ function StoreInsightsCard({ store, days }) {
             {metrics.map(function(m) {
               return (
                 <div key={m.label} className="bg-gray-50 dark:bg-gray-800/50 rounded-xl p-3 text-center">
-                  <div className="text-xl mb-0.5">{m.icon}</div>
+                  <div className="mb-1.5 flex justify-center"><Icon name={m.icon} size={19} style={{color:"var(--cy)"}}/></div>
                   <div className="text-lg font-bold text-gray-900 dark:text-white">{m.value != null ? m.value.toLocaleString() : '—'}</div>
                   <div className="text-xs font-medium text-gray-600 dark:text-gray-400">{m.label}</div>
                 </div>
@@ -3903,9 +4613,9 @@ function StoreInsightsCard({ store, days }) {
                   return (
                     <div key={p.id} className="flex items-center gap-3 text-xs text-gray-600 dark:text-gray-400 py-1.5 border-b border-gray-100 dark:border-gray-700 last:border-0">
                       <span className="text-gray-400 dark:text-gray-500 flex-shrink-0 w-20">{fmtDate(p.created_time)}</span>
-                      <span className="flex items-center gap-1">👍 {p.likes}</span>
-                      <span className="flex items-center gap-1">💬 {p.comments}</span>
-                      {p.shares > 0 && <span className="flex items-center gap-1">🔄 {p.shares}</span>}
+                      <span className="flex items-center gap-1"><Icon name="thumb"/> {p.likes}</span>
+                      <span className="flex items-center gap-1"><Icon name="comment"/> {p.comments}</span>
+                      {p.shares > 0 && <span className="flex items-center gap-1"><Icon name="share"/> {p.shares}</span>}
                     </div>
                   );
                 })}
@@ -3927,7 +4637,7 @@ function StoreAnalytics({ visibleStores }) {
   return (
     <div>
       <div className="flex items-center gap-3 mb-5">
-        <h2 className="text-base font-bold text-gray-900 dark:text-white flex-1">📊 Page Analytics</h2>
+        <h2 className="text-base font-bold text-gray-900 dark:text-white flex-1"><Icon name="chart"/> Page Analytics</h2>
         <div className="flex gap-1 bg-gray-100 dark:bg-gray-800 rounded-lg p-1">
           {[7, 28].map(function(d) {
             return (
@@ -3965,9 +4675,9 @@ function PostsPage({ settings, userStoreIds, isAdmin }) {
   return (
     <div>
       <div className="flex border-b border-gray-200 dark:border-gray-700 mb-5">
-        {[{id:'compose',label:'✏️ Compose'},{id:'history',label:'📋 History'},{id:'scheduled',label:'📅 Scheduled'},{id:'images',label:'🖼 Image Generator'},{id:'analytics',label:'📊 Analytics'}].map(t=>(
+        {[{id:'compose',icon:'edit', label:'Compose'},{id:'history',icon:'note', label:'History'},{id:'scheduled',icon:'cal', label:'Scheduled'},{id:'images',icon:'image', label:'Image Generator'},{id:'analytics',icon:'chart', label:'Analytics'}].map(t=>(
           <button key={t.id} onClick={()=>setTab(t.id)} className={`px-4 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}>
-            {t.label}{t.id==='compose'&&pendingImage?' 🟢':''}
+            <Icon name={t.icon} size={14} className="mr-2"/>{t.label}{t.id==='compose'&&pendingImage?' \u2022':''}
           </button>
         ))}
       </div>
@@ -3990,8 +4700,8 @@ function AdsPage({ settings }) {
   return (
     <div>
       <div className="flex border-b border-gray-200 dark:border-gray-700 mb-5">
-        {[{id:'build',label:'🛠 Build Campaign'},{id:'dash',label:'📊 Dashboard'}].map(t=>(
-          <button key={t.id} onClick={()=>setTab(t.id)} className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}>{t.label}</button>
+        {[{id:'build',icon:'tool', label:'Build Campaign'},{id:'dash',icon:'chart', label:'Dashboard'}].map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)} className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}><Icon name={t.icon} size={14} className="mr-2"/>{t.label}</button>
         ))}
       </div>
       {tab==='build' ? <CampaignBuilder settings={settings}/> : <CampaignDashboard settings={settings}/>}
@@ -4060,7 +4770,7 @@ function TemplateManager({ storeId }) {
             </div>
             <div>
               <Label>Template Image</Label>
-              <Button variant="secondary" size="sm" onClick={()=>fileRef.current?.click()}>📂 Choose File</Button>
+              <Button variant="secondary" size="sm" onClick={()=>fileRef.current?.click()}><Icon name="folder"/> Choose File</Button>
               <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={e=>handleFile(e.target.files[0])}/>
             </div>
             <Button onClick={save} loading={saving} className="w-full">Save Template</Button>
@@ -4096,7 +4806,7 @@ function TemplateManager({ storeId }) {
                       <img src={t.data} alt={t.name} className="w-full aspect-video object-cover"/>
                       <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-all flex items-end">
                         <div className="w-full p-2 translate-y-full group-hover:translate-y-0 transition-transform">
-                          <button onClick={()=>remove(t.id)} className="w-full text-xs bg-red-500 hover:bg-red-600 text-white rounded-lg py-1 font-semibold">🗑 Delete</button>
+                          <button onClick={()=>remove(t.id)} className="w-full text-xs bg-red-500 hover:bg-red-600 text-white rounded-lg py-1 font-semibold"><Icon name="trash"/> Delete</button>
                         </div>
                       </div>
                       <div className="absolute top-1.5 left-1.5 bg-black/60 text-white text-xs rounded px-2 py-0.5 font-medium">{t.name}</div>
@@ -4111,7 +4821,7 @@ function TemplateManager({ storeId }) {
 
       {templates.length === 0 && (
         <div className="text-center py-12 text-gray-400 dark:text-gray-500">
-          <p className="text-3xl mb-2">🖼</p>
+          <p className="mb-2"><Icon name="image" size={34} style={{color:"var(--cy-dim)"}}/></p>
           <p className="text-sm font-medium">No templates uploaded yet</p>
           <p className="text-xs mt-1">Upload your first brand template above</p>
         </div>
@@ -4542,15 +5252,15 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
     <div className="rounded-2xl border border-indigo-200 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-950 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
         <h3 className="text-sm font-bold text-indigo-900 dark:text-indigo-200">
-          📋 Print Queue — {printQueue.length} of 4 tags
+          <Icon name="note"/> Print Queue — {printQueue.length} of 4 tags
         </h3>
         <div className="flex gap-2">
           <button onClick={()=>setPrintQueue([])} className="text-xs text-indigo-500 hover:text-red-500 underline">Clear all</button>
           <Button size="sm" onClick={printQueueSheet} loading={queuePrinting}>
-            🖨 Print Sheet ({printQueue.length}-up)
+            <Icon name="print"/> Print Sheet ({printQueue.length}-up)
           </Button>
           <Button size="sm" variant="secondary" onClick={()=>{ const p=buildMixedPrintPage(printQueue.map(q=>q.canvas)); exportPDF([p],'queue-sheet.pdf'); }}>
-            ⬇ PDF
+            <Icon name="down"/> PDF
           </Button>
         </div>
       </div>
@@ -4580,7 +5290,7 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
       {/* Saved Tags */}
       {saves.length > 0 && (
         <div>
-          <h3 className="text-sm font-bold text-gray-700 dark:text-gray-200 mb-2">💾 Saved Tags</h3>
+          <h3 className="text-sm font-bold text-gray-700 dark:text-gray-200 mb-2"><Icon name="save"/> Saved Tags</h3>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
             {saves.map(s => {
               const tpl = s.shelf_talker_templates;
@@ -4617,7 +5327,7 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
       )}
 
       <div className="flex flex-wrap gap-2">
-        <Input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 Search…" className="max-w-xs"/>
+        <Input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search…" className="max-w-xs"/>
         <Select value={catFilter} onChange={e=>setCatFilter(e.target.value)} className="w-auto">
           <option value="all">All Categories</option>
           {ST_CATEGORIES.map(c=><option key={c} value={c}>{c}</option>)}
@@ -4626,7 +5336,7 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
       {tplLoading && <p className="text-sm text-gray-400 animate-pulse">Loading templates…</p>}
       {!tplLoading && filteredTpls.length===0 && (
         <div className="text-center py-16 text-gray-400">
-          <p className="text-4xl mb-3">🏷</p>
+          <p className="mb-3"><Icon name="tag" size={40} style={{color:"var(--cy-dim)"}}/></p>
           <p className="font-medium">No shelf talker templates available</p>
           {isAdmin && <p className="text-sm mt-1">Create one in the Admin tab</p>}
         </div>
@@ -4645,7 +5355,7 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
                 <p className="font-semibold text-sm text-gray-900 dark:text-white truncate">{tpl.name}</p>
                 <p className="text-xs text-gray-500">{tpl.category}</p>
                 <div className="flex gap-1 mt-1 flex-wrap">
-                  {isGlobal ? <Badge color="blue">🌐 Global</Badge> : brandNames.map(n=><Badge key={n} color="indigo">{n}</Badge>)}
+                  {isGlobal ? <Badge color="blue"><Icon name="globe"/> Global</Badge> : brandNames.map(n=><Badge key={n} color="indigo">{n}</Badge>)}
                 </div>
               </div>
             </button>
@@ -4700,7 +5410,7 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
                       </div>
                   }
                   {!isFormula && f.prefix && <p className="text-xs text-gray-400 mt-0.5">"{f.prefix}" is added automatically — just enter the number</p>}
-                  {overflow && <p className="text-xs text-red-500 mt-0.5">⚠ Text too long — please shorten</p>}
+                  {overflow && <p className="text-xs text-red-500 mt-0.5"><Icon name="warn" className="text-amber-400"/> Text too long — please shorten</p>}
                   {missing  && <p className="text-xs text-amber-500 mt-0.5">This field is required</p>}
                 </div>
               );
@@ -4730,12 +5440,12 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
           </p>
           <div className="flex gap-2 mt-4 flex-wrap">
             <Button onClick={buildPreview} loading={printing} disabled={!canPrint} className="flex-1">
-              👁 Preview Copies
+              <Icon name="eye"/> Preview Copies
             </Button>
             <Button variant="secondary" onClick={addToQueue} loading={addingToQueue}
               disabled={!canPrint || printQueue.length >= 4}
               title={printQueue.length>=4?'Queue is full (4/4)':'Add this tag to the mixed print queue'}>
-              📋 {printQueue.length>=4 ? 'Queue Full' : `Add to Queue (${printQueue.length}/4)`}
+              <Icon name="note"/> {printQueue.length>=4 ? 'Queue Full' : `Add to Queue (${printQueue.length}/4)`}
             </Button>
             <Button variant="secondary" loading={savingTag} disabled={!selected}
               onClick={async () => {
@@ -4748,7 +5458,7 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
                 } catch(e) { toast.error('Save failed: ' + e.message); }
                 finally { setSavingTag(false); }
               }}>
-              💾 Save Tag
+              <Icon name="save"/> Save Tag
             </Button>
           </div>
           {(overflowIds.length>0||missingRequired.length>0) && (
@@ -4798,9 +5508,9 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
       ))}
 
       <div className="flex gap-3">
-        <Button onClick={printSheet} size="lg">🖨 Print</Button>
+        <Button onClick={printSheet} size="lg"><Icon name="print"/> Print</Button>
         <Button variant="secondary" size="lg" onClick={()=>exportPDF(printPages, printMode==='queue'?'mixed-sheet.pdf':`${selected?.name||'shelf-talkers'}.pdf`)}>
-          ⬇ Download PDF
+          <Icon name="down"/> Download PDF
         </Button>
       </div>
       <p className="text-xs text-gray-400">Pages include a ¼″ margin. Disable "Print headers and footers" in your browser's print dialog.</p>
@@ -4854,7 +5564,7 @@ function STSavedLibrary({ userId, isAdmin, onLoad }) {
 
       {!displayed.length && (
         <div className="text-center py-16 text-gray-400 dark:text-gray-500">
-          <p className="text-5xl mb-3">🏷</p>
+          <p className="mb-3"><Icon name="tag" size={50} style={{color:"var(--cy-dim)"}}/></p>
           <p className="text-sm font-semibold">{saves.length ? 'No tags match the filters' : 'No saved tags yet'}</p>
           {!saves.length && <p className="text-xs mt-1">Create a shelf talker and click <strong>Save Tag</strong> to build your library</p>}
         </div>
@@ -4870,7 +5580,7 @@ function STSavedLibrary({ userId, isAdmin, onLoad }) {
               <div className="aspect-video bg-gray-100 dark:bg-gray-700 flex items-center justify-center overflow-hidden relative">
                 {tpl && tpl.file_data
                   ? <img src={tpl.file_data} alt={tpl.name} className="w-full h-full object-cover"/>
-                  : <span className="text-4xl">🏷</span>
+                  : <Icon name="tag" size={40} style={{color:"var(--cy-dim)"}}/>
                 }
                 {storeName && (
                   <span className="absolute top-1.5 right-1.5 text-xs bg-indigo-600 text-white px-1.5 py-0.5 rounded-md font-semibold">{storeName}</span>
@@ -4892,13 +5602,11 @@ function STSavedLibrary({ userId, isAdmin, onLoad }) {
                 <button
                   onClick={function() { onLoad(s.template_id, s.values); }}
                   className="flex-1 text-xs bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white font-semibold py-1.5 rounded-lg transition-colors">
-                  ✏️ Edit &amp; Print
+                  <Icon name="edit"/> Edit &amp; Print
                 </button>
                 <button
                   onClick={async function() { if(confirm('Delete "' + s.name + '"?')) await deleteTag(s.id); }}
-                  className="text-xs text-red-500 hover:text-red-700 dark:text-red-400 border border-red-200 dark:border-red-700 rounded-lg px-2.5 py-1.5 transition-colors">
-                  🗑
-                </button>
+                  className="text-xs text-red-500 hover:text-red-700 dark:text-red-400 border border-red-200 dark:border-red-700 rounded-lg px-2.5 py-1.5 transition-colors">                </button>
               </div>
             </div>
           );
@@ -4924,9 +5632,9 @@ function ShelfTalkerPage({ isAdmin, userStoreIds, userId }) {
   };
 
   const tabs = [
-    ...(isAdmin ? [{ id:'admin', label:'⚙️ Admin' }] : []),
-    { id:'create', label:'🏷 Create' },
-    { id:'saved',  label:'💾 My Library' },
+    ...(isAdmin ? [{ id:'admin', icon:'gear', label:'Admin' }] : []),
+    { id:'create', icon:'tag', label:'Create' },
+    { id:'saved',  icon:'save', label:'My Library' },
   ];
 
   return (
@@ -4952,7 +5660,7 @@ function ShelfTalkerPage({ isAdmin, userStoreIds, userId }) {
         <div className="space-y-4">
           <div className="flex gap-2">
             <Button variant={adminSub==='library'?'primary':'secondary'} size="sm" onClick={()=>{ setAdminSub('library'); setEditTpl(null); }}>
-              📚 Template Library
+              <Icon name="book"/> Template Library
             </Button>
             <Button variant={adminSub==='new'?'primary':'secondary'} size="sm" onClick={()=>{ setAdminSub('new'); setEditTpl(null); }}>
               + New Template
@@ -4991,16 +5699,16 @@ function BrandPage({ settings }) {
   const [tab,     setTab]     = useState('profile');
   const [storeId, setStoreId] = useState(STORES[0].id);
   const tabs = [
-    {id:'profile',   label:'🎨 Brand Profile'},
-    {id:'templates', label:'🖼 Ad Templates'},
-    {id:'library',   label:'📦 Product Library'},
+    {id:'profile',   icon:'palette', label:'Brand Profile'},
+    {id:'templates', icon:'image', label:'Ad Templates'},
+    {id:'library',   icon:'package', label:'Product Library'},
   ];
   return (
     <div>
       <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 mb-5 flex-wrap gap-2">
         <div className="flex">
           {tabs.map(t=>(
-            <button key={t.id} onClick={()=>setTab(t.id)} className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}>{t.label}</button>
+            <button key={t.id} onClick={()=>setTab(t.id)} className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}><Icon name={t.icon} size={14} className="mr-2"/>{t.label}</button>
           ))}
         </div>
         {(tab==='profile'||tab==='templates') && <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs mb-1">{STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</Select>}
@@ -5086,18 +5794,19 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
   const [userStoreIds, setUserStoreIds] = useState([]);
 
   const nav = [
-    { id:'shelf', icon:'🏷', label:'Shelf Talkers' },
-    { id:'posts', icon:'📝', label:'Posts' },
+    { id:'shelf', icon:'tag', label:'Shelf Talkers' },
+    { id:'posts', icon:'note', label:'Posts' },
+    { id:'creatives', icon:'image', label:'Creatives' },
     ...(isAdmin ? [
-      { id:'ads',      icon:'📣', label:'Ads' },
-      { id:'brand',    icon:'🎨', label:'Brand' },
-      { id:'settings', icon:'⚙️', label:'Settings' },
+      { id:'ads',      icon:'mega', label:'Ads' },
+      { id:'brand',    icon:'palette', label:'Brand' },
+      { id:'settings', icon:'gear', label:'Settings' },
     ] : []),
   ];
 
   if (!settingsLoaded) return (
     <div className="min-h-screen flex items-center justify-center bg-gray-100 dark:bg-gray-900">
-      <div className="text-center"><div className="text-4xl mb-3">🥃</div><p className="text-gray-500 dark:text-gray-400 text-sm animate-pulse">Loading settings…</p></div>
+      <div className="text-center"><div className="mb-3 flex justify-center"><Icon name="whisky" size={44} style={{color:"var(--cy)"}}/></div><p className="text-gray-500 dark:text-gray-400 text-sm animate-pulse">Loading settings…</p></div>
     </div>
   );
 
@@ -5106,7 +5815,7 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
       <header className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 flex items-center justify-between h-14">
           <div className="flex items-center gap-2.5">
-            <span className="text-2xl">🥃</span>
+            <Icon name="whisky" size={26} style={{color:"var(--cy)"}}/>
             <div>
               <p className="text-sm font-bold text-gray-900 dark:text-white leading-none">Liquor Store Social</p>
               <p className="text-xs text-gray-400 leading-none mt-0.5">4 locations · Meta v25</p>
@@ -5115,20 +5824,20 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
           <div className="flex items-center gap-1">
             {nav.map(n=>(
               <button key={n.id} onClick={()=>setPage(n.id)} className={`px-3 py-2 rounded-xl text-sm font-semibold transition-all ${page===n.id?'bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300':'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-gray-200'}`}>
-                <span className="mr-1">{n.icon}</span><span className="hidden sm:inline">{n.label}</span>
+                <Icon name={n.icon} size={15} className="mr-2"/><span className="hidden sm:inline">{n.label}</span>
               </button>
             ))}
-            <button onClick={()=>onDark(d=>!d)} className="ml-1 p-2 rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" title="Toggle dark mode">{dark?'☀️':'🌙'}</button>
+            <button onClick={()=>onDark(d=>!d)} className="ml-1 p-2 rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" title="Toggle dark mode"><Icon name={dark?"sun":"moon"}/></button>
             {/* User menu */}
             <div className="relative ml-1">
-              <button onClick={()=>setShowUserMenu(function(v){return !v;})} className="p-2 rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors">👤</button>
+              <button onClick={()=>setShowUserMenu(function(v){return !v;})} className="p-2 rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"><Icon name="user"/></button>
               {showUserMenu && (
                 <div className="absolute right-0 top-full mt-1 w-52 bg-white dark:bg-gray-800 rounded-xl shadow-xl border border-gray-100 dark:border-gray-700 z-50 overflow-hidden">
                   <div className="px-3 py-2 border-b border-gray-100 dark:border-gray-700">
                     <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{user ? user.email : ''}</p>
                   </div>
                   <button onClick={()=>{setShowUserMenu(false);setShowChangePw(true);}} className="w-full text-left px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700">
-                    🔑 Change Password
+                    <Icon name="key"/> Change Password
                   </button>
                   <button onClick={()=>{setShowUserMenu(false);signOut();}} className="w-full text-left px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-gray-50 dark:hover:bg-gray-700">
                     Sign Out
@@ -5167,6 +5876,8 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
         {page==='posts'                  && <PostsPage       settings={settings} userStoreIds={isAdmin ? [] : userStoreIds} isAdmin={isAdmin}/>}
         {page==='shelf'                  && <ShelfTalkerPage isAdmin={isAdmin} userStoreIds={isAdmin ? [] : userStoreIds} userId={user ? user.id : null}/>}
+        {page==='creatives'              && <CreativeLibrary isAdmin={isAdmin}
+                                             myStores={isAdmin ? STORES : STORES.filter(st=>userStoreIds.includes(st.id))}/>}
         {page==='ads'      && isAdmin    && <AdsPage         settings={settings}/>}
         {page==='brand'    && isAdmin    && <BrandPage        settings={settings}/>}
         {page==='settings' && isAdmin    && <SettingsPage     settings={settings} onSave={saveSettings} currentUserId={user ? user.id : null}/>}
@@ -5215,7 +5926,7 @@ function App() {
 
   if (authState==='checking') return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900">
-      <div className="text-center"><div className="text-4xl mb-3">🥃</div><p className="text-gray-400 text-sm animate-pulse">Connecting…</p></div>
+      <div className="text-center"><div className="mb-3 flex justify-center"><Icon name="whisky" size={44} style={{color:"var(--cy)"}}/></div><p className="text-gray-400 text-sm animate-pulse">Connecting…</p></div>
     </div>
   );
 

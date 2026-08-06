@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>LRS — Theme Concept</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --void:#04070e; --deep:#070c17; --panel:rgba(10,17,30,.82); --panel-solid:#0a111e;
+  --cy:#38e0f0; --cy-dim:#1a8f9c; --cy-glow:rgba(56,224,240,.14);
+  --amb:#f0a830; --amb-glow:rgba(240,168,48,.13);
+  --red:#ff4d5e; --grn:#3ff08a;
+  --txt:#dbe9f2; --txt-2:#7d93a8; --txt-3:#48596b;
+  --line:rgba(56,224,240,.16); --line-2:rgba(56,224,240,.3);
+  --mono:'JetBrains Mono',monospace; --disp:'Chakra Petch',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:var(--void); color:var(--txt); font-family:var(--disp);
+  min-height:100vh; padding:28px; overflow-x:hidden;
+  background-image:
+    radial-gradient(ellipse 900px 600px at 15% -10%, rgba(56,224,240,.09), transparent 60%),
+    radial-gradient(ellipse 700px 500px at 90% 5%, rgba(240,168,48,.055), transparent 60%),
+    linear-gradient(rgba(56,224,240,.028) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(56,224,240,.028) 1px, transparent 1px);
+  background-size:auto,auto,44px 44px,44px 44px;
+}
+body::after{
+  content:'';position:fixed;inset:0;pointer-events:none;z-index:99;
+  background:repeating-linear-gradient(0deg,rgba(0,0,0,.16) 0 1px,transparent 1px 3px);
+  opacity:.5;
+}
+.wrap{max-width:1320px;margin:0 auto;position:relative;z-index:2}
+
+/* ---- panel ---- */
+.p{
+  position:relative;background:var(--panel);border:1px solid var(--line);
+  padding:20px 22px;backdrop-filter:blur(7px);
+  clip-path:polygon(13px 0,100% 0,100% calc(100% - 13px),calc(100% - 13px) 100%,0 100%,0 13px);
+  box-shadow:inset 0 1px 0 rgba(56,224,240,.09), 0 0 34px rgba(0,0,0,.55);
+}
+.p::before{
+  content:'';position:absolute;top:0;left:13px;right:0;height:1px;
+  background:linear-gradient(90deg,var(--cy),transparent 70%);opacity:.55;
+}
+.brk{position:absolute;width:9px;height:9px;border:1px solid var(--cy);opacity:.5}
+.brk.tr{top:6px;right:6px;border-left:0;border-bottom:0}
+.brk.bl{bottom:6px;left:6px;border-right:0;border-top:0}
+
+/* ---- type ---- */
+.lbl{font-family:var(--mono);font-size:9.5px;letter-spacing:.28em;text-transform:uppercase;color:var(--cy-dim)}
+.ttl{font-size:12px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:var(--cy)}
+.num{font-size:38px;font-weight:300;line-height:1;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
+.mono{font-family:var(--mono)}
+
+/* ---- header ---- */
+header{display:flex;align-items:center;gap:26px;margin-bottom:22px;padding-bottom:16px;border-bottom:1px solid var(--line)}
+.mark{width:38px;height:38px;position:relative;flex:none}
+.mark svg{position:absolute;inset:0;animation:spin 22s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+nav{display:flex;gap:2px;margin-left:auto}
+.nv{
+  display:flex;align-items:center;gap:8px;padding:9px 15px;font-size:11px;font-weight:500;
+  letter-spacing:.16em;text-transform:uppercase;color:var(--txt-2);cursor:pointer;
+  border:1px solid transparent;position:relative;transition:.16s;
+}
+.nv:hover{color:var(--txt);border-color:var(--line);background:rgba(56,224,240,.045)}
+.nv.on{color:var(--cy);border-color:var(--line-2);background:var(--cy-glow)}
+.nv.on::after{content:'';position:absolute;left:0;right:0;bottom:-1px;height:1px;background:var(--cy);box-shadow:0 0 7px var(--cy)}
+.ic{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.6;flex:none}
+
+/* ---- metrics ---- */
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:14px}
+.mrow{display:flex;align-items:flex-end;justify-content:space-between;margin-top:14px}
+.spark{display:flex;align-items:flex-end;gap:2.5px;height:26px}
+.spark i{width:3.5px;background:var(--cy);opacity:.42;display:block}
+.spark i.hi{opacity:1;box-shadow:0 0 6px var(--cy)}
+.delta{font-family:var(--mono);font-size:10px;letter-spacing:.05em}
+.up{color:var(--grn)} .dn{color:var(--red)}
+
+/* ---- status ---- */
+.dot{width:5px;height:5px;border-radius:50%;display:inline-block;flex:none}
+.dot.g{background:var(--grn);box-shadow:0 0 8px var(--grn)}
+.dot.a{background:var(--amb);box-shadow:0 0 8px var(--amb)}
+.dot.r{background:var(--red);box-shadow:0 0 8px var(--red)}
+.pulse{animation:pl 2s ease-in-out infinite}
+@keyframes pl{50%{opacity:.35}}
+
+/* ---- rows ---- */
+.row{display:grid;grid-template-columns:14px 1fr 90px 78px 66px 74px;gap:14px;align-items:center;
+  padding:11px 4px;border-bottom:1px solid rgba(56,224,240,.075);font-size:12.5px;transition:.14s}
+.row:hover{background:rgba(56,224,240,.05)}
+.row.hd{border-bottom:1px solid var(--line-2);padding-bottom:8px}
+.bar{height:2px;background:rgba(56,224,240,.14);position:relative;overflow:hidden}
+.bar span{position:absolute;inset:0 auto 0 0;background:var(--cy);box-shadow:0 0 7px var(--cy)}
+.bar.am span{background:var(--amb);box-shadow:0 0 7px var(--amb)}
+
+/* ---- form ---- */
+.fld{width:100%;background:rgba(4,8,16,.72);border:1px solid var(--line);color:var(--txt);
+  font-family:var(--disp);font-size:13.5px;padding:11px 13px;outline:none;transition:.16s}
+.fld:focus{border-color:var(--cy);box-shadow:0 0 0 1px var(--cy-glow),inset 0 0 22px rgba(56,224,240,.07)}
+.fld::placeholder{color:var(--txt-3)}
+textarea.fld{resize:none;min-height:88px;line-height:1.6}
+
+.chk{display:flex;align-items:center;gap:10px;padding:10px 13px;border:1px solid var(--line);
+  cursor:pointer;font-size:12.5px;transition:.16s;background:rgba(4,8,16,.4)}
+.chk:hover{border-color:var(--line-2)}
+.chk.on{border-color:var(--cy);background:var(--cy-glow);color:var(--cy)}
+.bx{width:13px;height:13px;border:1px solid currentColor;flex:none;position:relative}
+.chk.on .bx::after{content:'';position:absolute;inset:2.5px;background:var(--cy);box-shadow:0 0 6px var(--cy)}
+
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:9px;padding:12px 22px;
+  font-family:var(--disp);font-size:11.5px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;
+  border:1px solid var(--cy);color:var(--cy);background:var(--cy-glow);cursor:pointer;transition:.16s;
+  clip-path:polygon(9px 0,100% 0,100% calc(100% - 9px),calc(100% - 9px) 100%,0 100%,0 9px);position:relative}
+.btn:hover{background:rgba(56,224,240,.2);box-shadow:0 0 22px rgba(56,224,240,.28)}
+.btn.gh{border-color:var(--line);color:var(--txt-2);background:transparent}
+.btn.gh:hover{border-color:var(--line-2);color:var(--txt);box-shadow:none}
+
+.tag{display:inline-flex;align-items:center;gap:6px;font-family:var(--mono);font-size:9.5px;
+  letter-spacing:.14em;text-transform:uppercase;padding:3.5px 9px;border:1px solid currentColor}
+.tag.c{color:var(--cy)} .tag.a{color:var(--amb)} .tag.g{color:var(--grn)} .tag.r{color:var(--red)}
+
+.two{display:grid;grid-template-columns:1.35fr 1fr;gap:14px;align-items:start}
+.sec{display:flex;align-items:center;gap:11px;margin-bottom:15px}
+.sec .ln{flex:1;height:1px;background:linear-gradient(90deg,var(--line-2),transparent)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="mark">
+      <svg viewBox="0 0 40 40">
+        <circle cx="20" cy="20" r="17" fill="none" stroke="#38e0f0" stroke-width="1" opacity=".3"/>
+        <circle cx="20" cy="20" r="17" fill="none" stroke="#38e0f0" stroke-width="1.4"
+                stroke-dasharray="26 80" stroke-linecap="round"/>
+        <circle cx="20" cy="20" r="10" fill="none" stroke="#f0a830" stroke-width="1"
+                stroke-dasharray="14 40" opacity=".85"/>
+      </svg>
+      <svg viewBox="0 0 40 40" style="animation:none">
+        <circle cx="20" cy="20" r="3.2" fill="#38e0f0"/>
+      </svg>
+    </div>
+    <div>
+      <div style="font-size:17px;font-weight:600;letter-spacing:.26em;text-transform:uppercase">
+        Sueño <span style="color:var(--cy)">Command</span>
+      </div>
+      <div class="lbl" style="margin-top:4px">4 locations · graph api v25.0 · operational</div>
+    </div>
+    <nav>
+      <div class="nv on">
+        <svg class="ic" viewBox="0 0 24 24"><path d="M3 13h8V3H3zM13 21h8V11h-8zM3 21h8v-6H3zM13 9h8V3h-8z"/></svg>Posts
+      </div>
+      <div class="nv">
+        <svg class="ic" viewBox="0 0 24 24"><path d="M3 3v18h18M7 15l4-5 3 3 5-7"/></svg>Signal
+      </div>
+      <div class="nv">
+        <svg class="ic" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h10"/></svg>Talkers
+      </div>
+      <div class="nv">
+        <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2v.2a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.6 1.7 1.7 0 0 0-1.9.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.9H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1.1 1.7 1.7 0 0 0-.4-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H10a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V10a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Config
+      </div>
+    </nav>
+  </header>
+
+  <div class="grid4">
+    <div class="p"><span class="brk tr"></span>
+      <div class="lbl">Total reach · 28d</div>
+      <div class="mrow">
+        <div><div class="num">14.2<span style="font-size:17px;color:var(--txt-2)">k</span></div></div>
+        <div class="spark"><i style="height:34%"></i><i style="height:52%"></i><i style="height:41%"></i><i style="height:68%"></i><i style="height:58%"></i><i style="height:81%"></i><i class="hi" style="height:100%"></i></div>
+      </div>
+      <div class="delta up" style="margin-top:9px">▲ 12.4% vs prior</div>
+    </div>
+    <div class="p"><span class="brk tr"></span>
+      <div class="lbl">Engagement rate</div>
+      <div class="mrow">
+        <div><div class="num">3.8<span style="font-size:17px;color:var(--txt-2)">%</span></div></div>
+        <div class="spark"><i style="height:62%"></i><i style="height:48%"></i><i style="height:71%"></i><i style="height:55%"></i><i style="height:44%"></i><i style="height:38%"></i><i class="hi" style="height:52%"></i></div>
+      </div>
+      <div class="delta dn" style="margin-top:9px">▼ 2.1% vs prior</div>
+    </div>
+    <div class="p"><span class="brk tr"></span>
+      <div class="lbl">Posts published</div>
+      <div class="mrow">
+        <div><div class="num">47</div></div>
+        <div class="spark"><i style="height:28%"></i><i style="height:44%"></i><i style="height:62%"></i><i style="height:51%"></i><i style="height:74%"></i><i style="height:66%"></i><i class="hi" style="height:88%"></i></div>
+      </div>
+      <div class="delta up" style="margin-top:9px">▲ 9 this week</div>
+    </div>
+    <div class="p"><span class="brk tr"></span>
+      <div class="lbl">Channel status</div>
+      <div style="margin-top:15px;display:flex;flex-direction:column;gap:9px;font-size:12px">
+        <div style="display:flex;align-items:center;gap:9px"><span class="dot g"></span>Hideaway<span class="mono" style="margin-left:auto;color:var(--txt-3);font-size:10px">NOMINAL</span></div>
+        <div style="display:flex;align-items:center;gap:9px"><span class="dot g"></span>Cobblestone<span class="mono" style="margin-left:auto;color:var(--txt-3);font-size:10px">NOMINAL</span></div>
+        <div style="display:flex;align-items:center;gap:9px"><span class="dot a pulse"></span>Downtown<span class="mono" style="margin-left:auto;color:var(--amb);font-size:10px">PENDING</span></div>
+        <div style="display:flex;align-items:center;gap:9px"><span class="dot r pulse"></span>Brothers<span class="mono" style="margin-left:auto;color:var(--red);font-size:10px">NO ACCESS</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="two">
+    <div class="p"><span class="brk tr"></span><span class="brk bl"></span>
+      <div class="sec"><span class="ttl">Compose transmission</span><span class="ln"></span>
+        <span class="tag c">Draft</span></div>
+
+      <div class="lbl" style="margin-bottom:9px">Target locations</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:18px">
+        <div class="chk on"><span class="bx"></span>Hideaway Liquor</div>
+        <div class="chk"><span class="bx"></span>Downtown Liquor</div>
+        <div class="chk on"><span class="bx"></span>Cobblestone Liquor</div>
+        <div class="chk"><span class="bx"></span>Brothers · Sicamous</div>
+      </div>
+
+      <div class="lbl" style="margin-bottom:9px">Broadcast channels</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:18px">
+        <div class="chk on">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/></svg>Facebook
+        </div>
+        <div class="chk">
+          <svg class="ic" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="20" rx="5"/><circle cx="12" cy="12" r="4"/><circle cx="17.5" cy="6.5" r="1" fill="currentColor" stroke="none"/></svg>Instagram
+        </div>
+      </div>
+
+      <div class="lbl" style="margin-bottom:9px">Message payload</div>
+      <textarea class="fld" placeholder="Compose broadcast…">Weekend feature — Okanagan Crush Pad flight, three pours for $18. Friday through Sunday while stock lasts.</textarea>
+      <div style="display:flex;justify-content:space-between;margin-top:8px" class="mono">
+        <span style="font-size:10px;color:var(--txt-3)">AUTO-APPEND · PRICES EXCLUDE TAX &amp; DEPOSIT</span>
+        <span style="font-size:10px;color:var(--cy)">142 / 280</span>
+      </div>
+
+      <div style="display:flex;gap:10px;margin-top:20px">
+        <button class="btn" style="flex:1">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg>Transmit now
+        </button>
+        <button class="btn gh">
+          <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>Schedule
+        </button>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="p"><span class="brk tr"></span>
+        <div class="sec"><span class="ttl">Active campaigns</span><span class="ln"></span></div>
+        <div class="row hd lbl" style="grid-template-columns:14px 1fr 62px 54px">
+          <span></span><span>Campaign</span><span style="text-align:right">Spend</span><span style="text-align:right">CTR</span>
+        </div>
+        <div class="row" style="grid-template-columns:14px 1fr 62px 54px">
+          <span class="dot g"></span>
+          <div><div>Weekend flight</div><div class="bar" style="margin-top:6px"><span style="width:72%"></span></div></div>
+          <span class="mono" style="text-align:right;font-size:11.5px">$312</span>
+          <span class="mono up" style="text-align:right;font-size:11.5px">4.1%</span>
+        </div>
+        <div class="row" style="grid-template-columns:14px 1fr 62px 54px">
+          <span class="dot a"></span>
+          <div><div>Craft beer push</div><div class="bar am" style="margin-top:6px"><span style="width:38%"></span></div></div>
+          <span class="mono" style="text-align:right;font-size:11.5px">$147</span>
+          <span class="mono up" style="text-align:right;font-size:11.5px">2.8%</span>
+        </div>
+        <div class="row" style="grid-template-columns:14px 1fr 62px 54px;border-bottom:none">
+          <span class="dot r"></span>
+          <div><div>Holiday teaser</div><div class="bar" style="margin-top:6px"><span style="width:11%;background:var(--red);box-shadow:0 0 7px var(--red)"></span></div></div>
+          <span class="mono" style="text-align:right;font-size:11.5px">$28</span>
+          <span class="mono dn" style="text-align:right;font-size:11.5px">0.7%</span>
+        </div>
+      </div>
+
+      <div class="p"><span class="brk tr"></span>
+        <div class="sec"><span class="ttl">System log</span><span class="ln"></span></div>
+        <div class="mono" style="font-size:10.5px;line-height:2.1;color:var(--txt-2)">
+          <div><span style="color:var(--txt-3)">23:04:11</span> <span style="color:var(--grn)">OK</span> &nbsp;token refresh · 4 pages</div>
+          <div><span style="color:var(--txt-3)">23:04:09</span> <span style="color:var(--cy)">TX</span> &nbsp;post → cobblestone</div>
+          <div><span style="color:var(--txt-3)">22:58:02</span> <span style="color:var(--amb)">WRN</span> ig scope missing · downtown</div>
+          <div><span style="color:var(--txt-3)">22:46:04</span> <span style="color:var(--grn)">OK</span> &nbsp;secrets written · 4</div>
+          <div><span style="color:var(--txt-3)">22:31:55</span> <span style="color:var(--red)">ERR</span> ad account unmapped</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

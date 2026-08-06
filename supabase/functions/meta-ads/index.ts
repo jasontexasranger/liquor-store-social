@@ -126,7 +126,15 @@ Deno.serve(async (req) => {
         .single();
       if (!acct) throw new Error('Store not found in meta_accounts');
 
-      const adAccountId = acct.ad_account_id ?? 'act_813974741538881';
+      // No fallback: spending money against a guessed ad account is worse than
+      // failing. Each store must be mapped explicitly in meta_accounts.
+      const adAccountId = acct.ad_account_id;
+      if (!adAccountId) {
+        throw new Error(
+          `No ad account configured for store "${storeId}". ` +
+          'Set meta_accounts.ad_account_id before creating campaigns.'
+        );
+      }
       const token = getSystemToken();
 
       const steps: Array<{ label: string; status: string; detail: string }> = [];
@@ -223,8 +231,20 @@ Deno.serve(async (req) => {
 
     // ── listCampaigns ────────────────────────────────────────────────────────
     if (action === 'listCampaigns') {
-      const { adAccountId } = params as { adAccountId?: string };
-      const accountId = adAccountId ?? 'act_813974741538881';
+      // Resolved server-side from the store, so the client can never point the
+      // dashboard at an arbitrary ad account.
+      const { storeId } = params as { storeId?: string };
+      if (!storeId) throw new Error('storeId required');
+
+      const { data: acct } = await sb
+        .from('meta_accounts')
+        .select('ad_account_id')
+        .eq('store_id', storeId)
+        .single();
+      const accountId = acct?.ad_account_id;
+      if (!accountId) {
+        throw new Error(`No ad account configured for store "${storeId}".`);
+      }
       const token = getSystemToken();
       const data = await gGet(`/${accountId}/campaigns`, {
         fields: 'name,status,objective,daily_budget,insights{spend,impressions,clicks,ctr}',

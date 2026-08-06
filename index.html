@@ -3554,7 +3554,7 @@ function AIWriter({ storeName, apiKey, mode='caption', onResult, seedTopic='' })
 // ─────────────────────────────────────────────
 // INLINE IMAGE GENERATOR (embedded in PostComposer)
 // ─────────────────────────────────────────────
-function InlineImageGenerator({ storeId, settings, onGenerated }) {
+function InlineImageGenerator({ storeId, settings, onGenerated, seedFeature }) {
   const toast = useToast();
   const [mode,        setMode]       = useState('template'); // 'template' | 'lifestyle'
   const [template,    setTemplate]   = useState('classic');
@@ -3578,6 +3578,37 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
   const [selectedTpl, setSelectedTpl]= useState(null); // uploaded template object
   const { images:libImages, remove:removeFromLib } = useBrandImageLibrary();
   const { templates: uploadedTpls }  = useBrandTemplates(storeId);
+
+  // Seeded from a monthly feature: switch to price-ad mode, fill the copy, and
+  // pick the store's price ad template so it's ready to render immediately.
+  const seedRef = useRef(null);
+  useEffect(function(){
+    if (!seedFeature || seedFeature.stamp === seedRef.current) return;
+    seedRef.current = seedFeature.stamp;
+    const f = seedFeature.feature, prod = seedFeature.product;
+
+    setMode('template');
+    setProductName(f.name || '');
+    setProductSize(f.size || '');
+    setNameTouched(true); setSizeTouched(true);
+    if (f.sale_price != null) setPriceText(Number(f.sale_price).toFixed(2));
+    if (f.savings != null)    setSaveText('$' + Number(f.savings).toFixed(2));
+
+    if (prod) {
+      const src = prodSrc(prod);
+      setProdPrev(src);
+      fetch(src).then(r=>r.blob())
+        .then(b=>setProdFile(new File([b], (prod.product_name||'product')+'.jpg', {type:'image/jpeg'})))
+        .catch(()=>{});
+    }
+  }, [seedFeature]);
+
+  // Auto-select a price ad template once templates have loaded.
+  useEffect(function(){
+    if (!seedFeature || selectedTpl) return;
+    const priceAd = uploadedTpls.find(t => t.kind === 'price_ad');
+    if (priceAd) setSelectedTpl(priceAd);
+  }, [seedFeature, uploadedTpls]);
   const { save:saveToQuickLib } = useProductLibrary();
   const prodRef = useRef();
 
@@ -3992,6 +4023,7 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
   const [showCreatives, setShowCreatives] = useState(false);
   const [showFeaturePick, setShowFeaturePick] = useState(false);
   const [featureSeed, setFeatureSeed] = useState('');
+  const [imageSeed, setImageSeed] = useState(null);
   const [postToFB,    setPostToFB]   = useState(true);
   const [postToIG,    setPostToIG]   = useState(false);
   const [uploading,   setUploading]  = useState(false);
@@ -4047,14 +4079,16 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
     if (onClearPending) onClearPending();
   };
 
+  // One click sets up the whole post: caption topic, price ad builder, product
+  // photo and template — everything the feature row already knows.
   const applyFeatureToPost = (f, prod) => {
     setFeatureSeed(featureBrief(f));
     setShowAI(true);
-    if (prod) {
-      const src = prodSrc(prod);
-      setImages(prev => prev.some(x=>x.url===src) ? prev : prev.concat([{ url:src, file:null }]));
-    }
-    toast.success(prod ? 'Feature loaded — photo added' : 'Feature loaded into the AI writer');
+    setImageSeed({ feature:f, product:prod, stamp:Date.now() });
+    setShowImgGen(true);
+    toast.success(prod
+      ? 'Feature loaded — copy writer and price ad ready'
+      : 'Feature loaded — link a product photo for the ad image');
   };
 
   const handleGenerated = (url) => {
@@ -4194,19 +4228,28 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
           <p className="text-xs text-amber-600 dark:text-amber-400 mt-1.5">Instagram needs an image — add one below.</p>
         )}
       </div>
+      <div className="mb-4">
+        <button onClick={()=>setShowFeaturePick(true)} disabled={selected.length===0}
+          className="clip w-full flex items-center justify-center gap-2.5 py-3 font-semibold uppercase tracking-[.2em] transition-all disabled:opacity-40"
+          style={{ fontSize:'11.5px', border:'1px solid var(--cy)', color:'var(--cy)', background:'var(--cy-glow)' }}
+          onMouseEnter={e=>{ if(!e.currentTarget.disabled) e.currentTarget.style.boxShadow='0 0 22px rgba(56,224,240,.3)'; }}
+          onMouseLeave={e=>{ e.currentTarget.style.boxShadow='none'; }}>
+          <Icon name="tag" size={15}/> Use feature
+        </button>
+        <p className="lbl mt-1.5 text-center">
+          {selected.length === 0
+            ? 'Select a store first'
+            : 'Fills the caption writer and builds the price ad in one step'}
+        </p>
+      </div>
+
       <div className="mb-3">
         <div className="flex items-center justify-between mb-1">
           <Label className="mb-0">Caption</Label>
-          <div className="flex items-center gap-3">
-            <button onClick={()=>setShowFeaturePick(true)} className="text-xs font-semibold hover:underline"
-                    style={{color:'var(--cy)'}}>
-              <Icon name="tag"/> Pull from features
-            </button>
-            <button onClick={()=>setShowAI(v=>!v)} className="text-xs font-semibold hover:underline"
-                    style={{color:'var(--vio)'}}>
-              {showAI?'Hide AI Writer ↑':<React.Fragment><Icon name="spark"/> AI Writer</React.Fragment>}
-            </button>
-          </div>
+          <button onClick={()=>setShowAI(v=>!v)} className="text-xs font-semibold hover:underline"
+                  style={{color:'var(--vio)'}}>
+            {showAI?'Hide AI Writer ↑':<React.Fragment><Icon name="spark"/> AI Writer</React.Fragment>}
+          </button>
         </div>
         {showFeaturePick && (
           <FeaturePicker storeId={selected[0] || (myStores[0]||{}).id}
@@ -4299,7 +4342,7 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
         {/* Inline generator */}
         {showImgGen && (
           <div className="mt-3">
-            <InlineImageGenerator storeId={activeStoreId} settings={settings} onGenerated={handleGenerated}/>
+            <InlineImageGenerator storeId={activeStoreId} settings={settings} seedFeature={imageSeed} onGenerated={handleGenerated}/>
           </div>
         )}
       </div>

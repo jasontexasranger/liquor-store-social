@@ -3285,6 +3285,18 @@ function ImageGenerator({ settings, onUseInPost }) {
   const [size,       setSize]       = useState('1024x1024');
   const [prodFile,   setProdFile]   = useState(null);
   const [prodPrev,   setProdPrev]   = useState(null);
+  const pickFromGallery = prod => {
+    setProdPrev(prod.data);
+    // Vision needs a File; rebuild one from the stored data URL.
+    fetch(prod.data).then(r=>r.blob())
+      .then(blob=>setProdFile(new File([blob], (prod.product_name||'product')+'.jpg', {type:'image/jpeg'})))
+      .catch(()=>{});
+    if (!brief.trim()) {
+      setBrief([prod.product_name, prod.size].filter(Boolean).join(' '));
+    }
+    setShowGallery(false);
+  };
+
   const [editPrompt, setEditPrompt] = useState('');
   const [showPrompt, setShowPrompt] = useState(false);
   const [genStep,    setGenStep]    = useState('idle');
@@ -3293,7 +3305,11 @@ function ImageGenerator({ settings, onUseInPost }) {
   const [logo,       setLogo]       = useState(null);
   const [history,    setHistory]    = useState([]);
   const [showLib,    setShowLib]    = useState(false);
+  const [showGallery,setShowGallery] = useState(false);
+  const [galQ,       setGalQ]       = useState('');
+  const [galCat,     setGalCat]     = useState('all');
   const { images:libImages, save:saveToLib, remove:removeFromLib } = useProductLibrary();
+  const { images:galleryImages } = useBrandImageLibrary();
   const prodRef = useRef();
 
   const store     = STORES.find(s=>s.id===storeId);
@@ -3416,9 +3432,55 @@ function ImageGenerator({ settings, onUseInPost }) {
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">GPT-4o Vision will describe it and weave it into the prompt. Photos are auto-saved to your library.</p>
             <div className="flex items-center gap-2 flex-wrap">
               <Button variant="secondary" size="sm" onClick={()=>prodRef.current?.click()}><Icon name="package"/> Upload Product Photo</Button>
-              {prodFile && <span className="text-xs text-gray-600 dark:text-gray-400 truncate max-w-xs">{prodFile.name}</span>}
-              {prodFile && <button onClick={()=>{setProdFile(null);setProdPrev(null);}} className="text-xs text-red-500 hover:underline">Remove</button>}
+              <Button variant="outline" size="sm" onClick={()=>setShowGallery(v=>!v)}>
+                <Icon name="grid"/> {showGallery ? 'Hide gallery' : 'Choose from gallery'}
+                {galleryImages.length>0 && <span className="mono ml-1" style={{opacity:.7}}>({galleryImages.length})</span>}
+              </Button>
+              {prodFile && <span className="text-xs truncate max-w-xs" style={{color:'var(--txt2)'}}>{prodFile.name}</span>}
+              {prodFile && <button onClick={()=>{setProdFile(null);setProdPrev(null);}} className="text-xs hover:underline" style={{color:'var(--red)'}}>Remove</button>}
             </div>
+
+            {showGallery && (
+              <div className="mt-3 p-3" style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.45)'}}>
+                <div className="flex items-center gap-2 mb-3 flex-wrap">
+                  <span className="ttl">Product Gallery</span>
+                  <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+                  <Input value={galQ} onChange={e=>setGalQ(e.target.value)} placeholder="Search…"
+                         className="text-xs" style={{width:'150px'}}/>
+                  <Select value={galCat} onChange={e=>setGalCat(e.target.value)} className="w-auto text-xs">
+                    <option value="all">All categories</option>
+                    {LIQUOR_CATEGORIES.filter(c=>galleryImages.some(g=>g.category===c.id))
+                      .map(c=><option key={c.id} value={c.id}>{c.label}</option>)}
+                  </Select>
+                </div>
+                {(() => {
+                  const q = galQ.trim().toLowerCase();
+                  const list = galleryImages
+                    .filter(g=>galCat==='all' || g.category===galCat)
+                    .filter(g=>!q || (g.product_name||'').toLowerCase().includes(q));
+                  if (galleryImages.length===0) return (
+                    <p className="lbl py-6 text-center">Nothing in the gallery yet — add products under Brand → Product Library</p>
+                  );
+                  if (list.length===0) return <p className="lbl py-6 text-center">No products match</p>;
+                  return (
+                    <div className="grid grid-cols-4 sm:grid-cols-6 gap-2 max-h-64 overflow-auto">
+                      {list.map(g=>(
+                        <button key={g.id} onClick={()=>pickFromGallery(g)} className="group text-left"
+                                title={[g.product_name,g.size].filter(Boolean).join(' · ')}>
+                          <img src={g.data} alt={g.product_name}
+                               className="w-full aspect-square object-cover transition-all"
+                               style={{border:'1px solid var(--line)'}}
+                               onMouseEnter={e=>e.currentTarget.style.borderColor='var(--cy)'}
+                               onMouseLeave={e=>e.currentTarget.style.borderColor='var(--line)'}/>
+                          <p className="text-xs mt-1 truncate" style={{color:'var(--txt2)'}}>{g.product_name}</p>
+                          {g.size && <p className="lbl truncate" style={{fontSize:'8.5px'}}>{g.size}</p>}
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
             <input ref={prodRef} type="file" accept="image/*" className="hidden" onChange={e=>handleProd(e.target.files[0])}/>
             {prodPrev && <img src={prodPrev} alt="" className="mt-2 h-24 rounded-xl object-contain border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 p-1"/>}
 

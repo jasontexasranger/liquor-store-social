@@ -5525,6 +5525,21 @@ function ScheduledPostsPanel() {
   const [editId,   setEditId]   = useState(null);
   const [draft,    setDraft]    = useState({});
   const [saving,   setSaving]   = useState(false);
+  const [uploading,setUploading]= useState(false);
+  const [showLib,  setShowLib]  = useState(false);
+  const [lightbox, setLightbox] = useState(null);
+  const imgRef = useRef();
+
+  const replaceImage = async function(file) {
+    if (!file) return;
+    setUploading(true);
+    try {
+      const url = await uploadImageToStorage(file);
+      setDraft(function(d){ return { ...d, imageUrl: url }; });
+      toast.success('Image swapped — save to keep it');
+    } catch(e) { toast.error('Upload failed: ' + e.message); }
+    finally { setUploading(false); }
+  };
 
   const toLocalInput = iso => {
     // <input type="datetime-local"> wants local time without a zone suffix.
@@ -5560,6 +5575,7 @@ function ScheduledPostsPanel() {
         id: p.id,
         caption: draft.caption,
         publishTo: draft.publishTo,
+        imageUrl: draft.imageUrl,
         scheduledAt: new Date(draft.scheduledAt).toISOString(),
       });
       toast.success('Scheduled post updated');
@@ -5595,6 +5611,7 @@ function ScheduledPostsPanel() {
 
   return (
     <Card>
+      {lightbox && <Lightbox src={lightbox} onClose={function(){ setLightbox(null); }}/>}
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-base font-bold text-gray-900 dark:text-white"><Icon name="cal"/> Scheduled &amp; Recent Posts</h2>
         <Button variant="secondary" size="sm" onClick={load} loading={loading}>Refresh</Button>
@@ -5614,7 +5631,53 @@ function ScheduledPostsPanel() {
                     <div className="space-y-3">
                       <div className="flex items-center gap-3">
                         <span className="ttl flex-1">Editing — {storeName}</span>
-                        {p.image_url && <img src={p.image_url} alt="" className="w-10 h-10 object-cover"/>}
+                      </div>
+
+                      <div>
+                        <Label>Image</Label>
+                        <div className="flex items-start gap-3">
+                          <div className="flex-none" style={{width:'104px'}}>
+                            {draft.imageUrl ? (
+                              <img src={draft.imageUrl} alt="" onClick={function(){ setLightbox(draft.imageUrl); }}
+                                   className="w-full object-cover cursor-zoom-in"
+                                   style={{border:'1px solid var(--line)', aspectRatio:'1'}}/>
+                            ) : (
+                              <div className="w-full flex items-center justify-center"
+                                   style={{border:'1px dashed var(--line2)', aspectRatio:'1'}}>
+                                <Icon name="image" size={22} style={{color:'var(--cy-dim)'}}/>
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex-1 space-y-2">
+                            <div className="flex flex-wrap gap-2">
+                              <Button size="sm" variant="secondary" loading={uploading}
+                                      onClick={function(){ imgRef.current?.click(); }}>
+                                <Icon name="up"/> {draft.imageUrl ? 'Replace' : 'Upload'}
+                              </Button>
+                              <Button size="sm" variant="outline" onClick={function(){ setShowLib(true); }}>
+                                <Icon name="image"/> Library
+                              </Button>
+                              {draft.imageUrl && (
+                                <Button size="sm" variant="ghost"
+                                        onClick={function(){ setDraft({...draft, imageUrl:null}); }}>
+                                  <Icon name="close"/> Remove
+                                </Button>
+                              )}
+                            </div>
+                            <p className="lbl">
+                              {draft.imageUrl === (p.image_url || null)
+                                ? 'Click the image to view it full size'
+                                : 'Changed — save to apply'}
+                            </p>
+                          </div>
+                        </div>
+                        <input ref={imgRef} type="file" accept="image/*" className="hidden"
+                               onChange={function(e){ replaceImage(e.target.files?.[0]); e.target.value=''; }}/>
+                        {showLib && (
+                          <CreativePicker allowed={POST_ASPECTS} storeIds={[p.store_id]}
+                            onPick={function(c){ setDraft(function(d){ return { ...d, imageUrl: c.public_url }; }); }}
+                            onClose={function(){ setShowLib(false); }}/>
+                        )}
                       </div>
                       <div>
                         <Label>Caption</Label>
@@ -5660,7 +5723,14 @@ function ScheduledPostsPanel() {
                     </div>
                   ) : (
                     <div className="flex items-start gap-3">
-                      {p.image_url && <img src={p.image_url} alt="" className="w-12 h-12 object-cover flex-shrink-0"/>}
+                      {p.image_url
+                        ? <img src={p.image_url} alt="" onClick={function(){ setLightbox(p.image_url); }}
+                               className="w-16 h-16 object-cover flex-shrink-0 cursor-zoom-in"
+                               style={{border:'1px solid var(--line)'}}/>
+                        : <div className="w-16 h-16 flex-shrink-0 flex items-center justify-center"
+                               style={{border:'1px dashed var(--line)'}} title="No image">
+                            <Icon name="note" size={16} style={{color:'var(--txt3)'}}/>
+                          </div>}
                       <div className="flex-1 min-w-0">
                         <p className="text-xs font-semibold" style={{color:'var(--txt)'}}>{storeName}</p>
                         <p className="text-xs line-clamp-2 mt-0.5" style={{color:'var(--txt2)'}}>{p.caption}</p>

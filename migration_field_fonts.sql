@@ -18,3 +18,10 @@ UPDATE public.ad_template_fields
        font_weight = COALESCE(font_weight, 400);
 
 NOTIFY pgrst, 'reload schema';
+
+-- Per-field breathing room inside its box, as a percentage of the smaller
+-- dimension. Stops glyphs sitting flush against the clip edge.
+ALTER TABLE public.ad_template_fields
+  ADD COLUMN IF NOT EXISTS padding_pct NUMERIC DEFAULT 2;
+
+NOTIFY pgrst, 'reload schema';

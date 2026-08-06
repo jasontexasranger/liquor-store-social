@@ -641,6 +641,9 @@ UPDATE public.ad_template_fields
 
 NOTIFY pgrst, 'reload schema';
 
+ALTER TABLE public.ad_template_fields
+  ADD COLUMN IF NOT EXISTS padding_pct NUMERIC DEFAULT 2;
+
 
 -- ============================================================================
 -- Tell PostgREST about the new tables.

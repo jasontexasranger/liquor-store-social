@@ -846,7 +846,7 @@ const AD_FIELD_KEYS = [
 const AD_FIELD_DEFAULTS = {
   field_key:'custom', field_type:'text', label:'New field',
   align:'left', valign:'top', color:'#1b365d', bold:true, uppercase:true,
-  font_family:'Anton', font_weight:400,
+  font_family:'Anton', font_weight:400, padding_pct:2,
   wrap:true, max_lines:2, min_font_size:8, max_font_size:200,
   line_spacing:1.15, prefix:'', suffix:'',
   fit_mode:'contain', remove_bg:true,
@@ -976,6 +976,8 @@ async function renderFieldTemplate(tpl, fields, values, productDataUrl, onStep) 
       suffix: f.suffix || '',
       fontFamily: fontStack(f.font_family),
       fontWeight: f.font_weight || null,
+      // Breathing room so glyphs never sit flush against the clip edge.
+      padding: Math.round(Math.min(box.w, box.h) * ((f.padding_pct ?? 2) / 100)),
     });
     if (res && res.overflow) overflows.push(f.label || f.field_key);
   }
@@ -1169,6 +1171,14 @@ function AdFieldEditor({ templateDataUrl, fields, onChange }) {
                   <div><Label>Max lines</Label>
                     <Input type="number" min="1" max="6" value={cur.max_lines||2}
                            onChange={e=>patch(cur.id,{max_lines:+e.target.value})}/></div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div><Label>Padding %</Label>
+                    <Input type="number" min="0" max="25" value={cur.padding_pct ?? 2}
+                           onChange={e=>patch(cur.id,{padding_pct:+e.target.value})}/></div>
+                  <div><Label>Line spacing</Label>
+                    <Input type="number" min="0.8" max="2" step="0.05" value={cur.line_spacing ?? 1.15}
+                           onChange={e=>patch(cur.id,{line_spacing:+e.target.value})}/></div>
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div><Label>Prefix</Label>
@@ -2409,7 +2419,9 @@ function drawTextField(ctx, text, box, settings={}, fit=null) {
 
   ctx.save();
   ctx.beginPath();
-  ctx.rect(box.x, box.y, box.w, box.h);
+  // Inflated by 1px: the fit already guarantees containment, so this is only a
+  // safety net and must not shave antialiased glyph edges.
+  ctx.rect(box.x - 1, box.y - 1, box.w + 2, box.h + 2);
   ctx.clip();
 
   ctx.fillStyle = color;
@@ -2426,6 +2438,10 @@ function drawTextField(ctx, text, box, settings={}, fit=null) {
   let top = innerY;
   if (valign === 'middle')      top = innerY + (innerH - totalH) / 2;
   else if (valign === 'bottom') top = innerY + innerH - totalH;
+  // If the text is taller than the box (overflow), middle/bottom would push it
+  // above the top edge and the clip would shear the caps. Never start higher
+  // than the box itself.
+  top = Math.max(top, innerY);
 
   const firstAsc = inks && inks[0] ? inks[0].asc : fontSize * 0.8;
   let baseline = top + firstAsc;

@@ -1859,6 +1859,7 @@ function FeaturesPage({ isAdmin, myStores }) {
   const [period,  setPeriod]  = useState(monthKey(new Date()));
   const [showPaste, setShowPaste] = useState(false);
   const [showCsv, setShowCsv] = useState(false);
+  const [view, setView] = useState('month');   // month | dashboard
   const [mode, setMode] = useState('plan');   // plan | sales
 
   const { periodRow, rows, loading, reload, addRows, updateRow, deleteRow, setStatus, ensurePeriod } =
@@ -1882,8 +1883,41 @@ function FeaturesPage({ isAdmin, myStores }) {
   const totalRev = rows.reduce((a,r)=>a + (Number(r.revenue)||0), 0);
   const totalQty = rows.reduce((a,r)=>a + (Number(r.qty_sold)||0), 0);
 
+  if (view === 'dashboard') {
+    return (
+      <div className="space-y-4">
+        <div className="flex" style={{border:'1px solid var(--line)', width:'fit-content'}}>
+          {[['month','Month view'],['dashboard','Dashboard']].map(function(v){
+            const on = view===v[0];
+            return (
+              <button key={v[0]} onClick={()=>setView(v[0])}
+                className="px-4 py-2 text-xs uppercase tracking-[.16em]"
+                style={{ background:on?'var(--cy-glow)':'transparent', color:on?'var(--cy)':'var(--txt2)' }}>
+                {v[1]}
+              </button>
+            );
+          })}
+        </div>
+        <FeaturesDashboard/>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
+      <div className="flex" style={{border:'1px solid var(--line)', width:'fit-content'}}>
+        {[['month','Month view'],['dashboard','Dashboard']].map(function(v){
+          const on = view===v[0];
+          return (
+            <button key={v[0]} onClick={()=>setView(v[0])}
+              className="px-4 py-2 text-xs uppercase tracking-[.16em]"
+              style={{ background:on?'var(--cy-glow)':'transparent', color:on?'var(--cy)':'var(--txt2)' }}>
+              {v[1]}
+            </button>
+          );
+        })}
+      </div>
+
       <Card>
         <div className="flex items-center gap-3 flex-wrap mb-4">
           <span className="ttl">Monthly features</span>
@@ -2319,6 +2353,277 @@ function FeatureCsvImport({ onDone, onClose }) {
             <Button size="sm" variant="ghost" onClick={onClose}>Cancel</Button>
           </div>
         </React.Fragment>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// FEATURES DASHBOARD
+// ─────────────────────────────────────────────
+const STORE_COLORS = ['var(--cy)','var(--amb)','var(--grn)','var(--vio)'];
+const storeColor = id => STORE_COLORS[Math.max(0, STORES.findIndex(s=>s.id===id)) % 4];
+
+const fmtMoney = v => '$' + Math.round(Number(v)||0).toLocaleString();
+const fmtCompact = v => {
+  const n = Math.round(Number(v)||0);
+  return n >= 1000 ? (n/1000).toFixed(n >= 10000 ? 0 : 1) + 'k' : String(n);
+};
+
+// Loads every period with its rows. A few hundred rows total, so one fetch.
+function useAllFeatures() {
+  const [periods, setPeriods] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(function(){
+    const sb = getSB(); if (!sb) return;
+    let live = true;
+    sb.from('feature_periods')
+      .select('id, store_id, period, status, features(*)')
+      .order('period')
+      .then(function(r){
+        if (!live) return;
+        setPeriods(r.data || []);
+        setLoading(false);
+      });
+    return function(){ live = false; };
+  }, []);
+
+  return { periods, loading };
+}
+
+function StatCard({ label, value, sub, tone }) {
+  return (
+    <div className="hud hud-brk p-4">
+      <p className="lbl">{label}</p>
+      <p className="mono mt-2" style={{fontSize:'26px', lineHeight:1, color:tone||'var(--txt)'}}>{value}</p>
+      {sub && <p className="lbl mt-1.5" style={{color:'var(--txt3)'}}>{sub}</p>}
+    </div>
+  );
+}
+
+// Grouped bars: one cluster per month, one bar per store.
+function GroupedBars({ months, series, height=210 }) {
+  const max = Math.max(1, ...series.flatMap(s => s.values));
+  const W = 760, padL = 46, padB = 26, padT = 8;
+  const plotW = W - padL - 8, plotH = height - padB - padT;
+  const groupW = plotW / Math.max(1, months.length);
+  const barW = Math.min(16, (groupW - 10) / Math.max(1, series.length));
+
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map(f => Math.round(max*f));
+
+  return (
+    <svg viewBox={'0 0 '+W+' '+height} style={{width:'100%', height:'auto', display:'block'}}
+         role="img" aria-label="Revenue by month and store">
+      {ticks.map(function(t,i){
+        const y = padT + plotH - (t/max)*plotH;
+        return (
+          <g key={i}>
+            <line x1={padL} x2={W-8} y1={y} y2={y} stroke="rgba(56,224,240,.12)" strokeWidth="1"/>
+            <text x={padL-6} y={y+3} textAnchor="end"
+                  style={{fontSize:'9px', fill:'var(--txt3)', fontFamily:'var(--mono)'}}>{fmtCompact(t)}</text>
+          </g>
+        );
+      })}
+      {months.map(function(m,gi){
+        const gx = padL + gi*groupW;
+        return (
+          <g key={m}>
+            {series.map(function(s,si){
+              const v = s.values[gi] || 0;
+              const h = (v/max)*plotH;
+              const x = gx + (groupW - barW*series.length)/2 + si*barW;
+              return <rect key={s.id} x={x} y={padT+plotH-h} width={barW-2} height={Math.max(0,h)}
+                           fill={s.color} opacity={v?0.85:0.15}>
+                       <title>{s.label + ' · ' + m + ' · ' + fmtMoney(v)}</title>
+                     </rect>;
+            })}
+            <text x={gx+groupW/2} y={height-8} textAnchor="middle"
+                  style={{fontSize:'9.5px', fill:'var(--txt2)', fontFamily:'var(--mono)'}}>{m}</text>
+          </g>
+        );
+      })}
+      <line x1={padL} x2={W-8} y1={padT+plotH} y2={padT+plotH} stroke="var(--line2)" strokeWidth="1"/>
+    </svg>
+  );
+}
+
+// Horizontal bars for rankings.
+function RankBars({ rows, max, colorOf, valueFmt }) {
+  const top = max || Math.max(1, ...rows.map(r=>r.value));
+  return (
+    <div className="space-y-2">
+      {rows.map(function(r,i){
+        const pct = Math.max(1, (r.value/top)*100);
+        return (
+          <div key={i}>
+            <div className="flex items-baseline gap-2 mb-1">
+              <span className="text-xs truncate flex-1" style={{color:'var(--txt)'}}>{r.label}</span>
+              {r.note && <span className="lbl" style={{color:'var(--txt3)'}}>{r.note}</span>}
+              <span className="mono text-xs" style={{color:'var(--cy)'}}>{(valueFmt||fmtMoney)(r.value)}</span>
+            </div>
+            <div style={{height:'3px', background:'rgba(56,224,240,.1)'}}>
+              <div style={{height:'100%', width:pct+'%',
+                           background: colorOf ? colorOf(r) : 'var(--cy)',
+                           boxShadow:'0 0 6px '+(colorOf ? colorOf(r) : 'var(--cy)')}}/>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function FeaturesDashboard() {
+  const { periods, loading } = useAllFeatures();
+  const [year, setYear] = useState(String(new Date().getFullYear()));
+
+  const inYear = periods.filter(p => String(p.period).startsWith(year));
+  const years = [...new Set(periods.map(p => String(p.period).slice(0,4)))].sort().reverse();
+
+  // Flatten to rows tagged with their store and month.
+  const rows = inYear.flatMap(p =>
+    (p.features||[]).map(f => ({ ...f, store_id:p.store_id, period:p.period })));
+
+  const withSales = rows.filter(r => r.revenue != null);
+  const totalRev  = withSales.reduce((a,r)=>a+Number(r.revenue||0), 0);
+  const totalQty  = rows.reduce((a,r)=>a+Number(r.qty_sold||0), 0);
+  const discounts = rows.filter(r => r.reg_price && r.savings)
+                        .map(r => Number(r.savings)/Number(r.reg_price)*100);
+  const avgDisc   = discounts.length ? discounts.reduce((a,b)=>a+b,0)/discounts.length : 0;
+
+  const months = [...new Set(inYear.map(p => String(p.period).slice(0,7)))].sort();
+  const monthLabels = months.map(m => new Date(+m.slice(0,4), +m.slice(5,7)-1, 1)
+                        .toLocaleString(undefined,{month:'short'}));
+
+  const series = STORES.map(function(st){
+    return {
+      id: st.id, label: st.name, color: storeColor(st.id),
+      values: months.map(function(m){
+        return rows.filter(r => r.store_id===st.id && String(r.period).startsWith(m))
+                   .reduce((a,r)=>a+Number(r.revenue||0), 0);
+      }),
+    };
+  });
+
+  const byStore = STORES.map(function(st){
+    const mine = rows.filter(r => r.store_id===st.id);
+    return {
+      label: st.name,
+      value: mine.reduce((a,r)=>a+Number(r.revenue||0), 0),
+      note: mine.length + ' features',
+      store: st.id,
+    };
+  }).sort((a,b)=>b.value-a.value);
+
+  // Same product can run in several stores or months — roll them up.
+  const byProduct = Object.values(rows.reduce(function(acc,r){
+    if (!r.revenue) return acc;
+    const k = (r.name||'').trim().toUpperCase();
+    if (!k) return acc;
+    if (!acc[k]) acc[k] = { label:k, value:0, runs:0, qty:0 };
+    acc[k].value += Number(r.revenue||0);
+    acc[k].qty   += Number(r.qty_sold||0);
+    acc[k].runs  += 1;
+    return acc;
+  }, {})).sort((a,b)=>b.value-a.value).slice(0,10)
+     .map(p => ({ ...p, note: p.runs + (p.runs===1?' run':' runs') }));
+
+  // Store-months where features were planned but no sales were ever entered.
+  const gaps = inYear.filter(p => (p.features||[]).length &&
+                                  !(p.features||[]).some(f => f.revenue != null))
+    .map(p => ({ store:(STORES.find(s=>s.id===p.store_id)||{}).name || p.store_id,
+                 month:monthLabel(p.period), n:(p.features||[]).length }));
+
+  if (loading) return <Card><p className="lbl text-center py-12">Loading…</p></Card>;
+  if (!rows.length) return (
+    <Card>
+      <div className="text-center py-14">
+        <Icon name="chart" size={38} style={{color:'var(--cy-dim)'}}/>
+        <p className="lbl mt-3">No feature data for {year}</p>
+      </div>
+    </Card>
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3 flex-wrap">
+        <span className="ttl">Performance</span>
+        <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+        <Select value={year} onChange={e=>setYear(e.target.value)} className="w-auto text-xs">
+          {years.map(y=><option key={y} value={y}>{y}</option>)}
+        </Select>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <StatCard label="Feature revenue" value={fmtMoney(totalRev)} tone="var(--cy)"
+                  sub={withSales.length + ' of ' + rows.length + ' rows recorded'}/>
+        <StatCard label="Units sold" value={totalQty.toLocaleString()}
+                  sub={totalQty ? fmtMoney(totalRev/totalQty) + ' average' : '—'}/>
+        <StatCard label="Features run" value={rows.length}
+                  sub={months.length + ' months · ' + new Set(rows.map(r=>r.store_id)).size + ' stores'}/>
+        <StatCard label="Average discount" value={avgDisc.toFixed(1) + '%'} tone="var(--amb)"
+                  sub="off regular price"/>
+      </div>
+
+      <Card>
+        <div className="flex items-center gap-3 mb-4 flex-wrap">
+          <span className="ttl">Revenue by month</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          {STORES.map(st=>(
+            <span key={st.id} className="flex items-center gap-1.5">
+              <span style={{width:'8px',height:'8px',background:storeColor(st.id),display:'block'}}/>
+              <span className="lbl">{st.name.split(' ')[0]}</span>
+            </span>
+          ))}
+        </div>
+        <GroupedBars months={monthLabels} series={series}/>
+      </Card>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Card>
+          <div className="flex items-center gap-3 mb-4">
+            <span className="ttl">By store</span>
+            <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          </div>
+          <RankBars rows={byStore} colorOf={r=>storeColor(r.store)}/>
+        </Card>
+
+        <Card>
+          <div className="flex items-center gap-3 mb-4">
+            <span className="ttl">Top features</span>
+            <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          </div>
+          {byProduct.length
+            ? <RankBars rows={byProduct}/>
+            : <p className="lbl py-6 text-center">No sales figures recorded yet</p>}
+        </Card>
+      </div>
+
+      {gaps.length > 0 && (
+        <Card>
+          <div className="flex items-center gap-3 mb-3">
+            <span className="ttl">Missing sales figures</span>
+            <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+            <Badge color="yellow">{gaps.length}</Badge>
+          </div>
+          <p className="lbl mb-3">
+            Features were planned for these months but no sales were entered — the totals above understate by however much these sold
+          </p>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {gaps.map(function(g,i){
+              return (
+                <div key={i} className="flex items-center gap-2 p-2"
+                     style={{border:'1px solid var(--line)', background:'rgba(240,168,48,.06)'}}>
+                  <Icon name="warn" size={12} style={{color:'var(--amb)'}}/>
+                  <span className="text-xs truncate flex-1" style={{color:'var(--txt2)'}}>{g.store}</span>
+                  <span className="lbl">{g.month.split(' ')[0]}</span>
+                  <span className="mono text-xs" style={{color:'var(--txt3)'}}>{g.n}</span>
+                </div>
+              );
+            })}
+          </div>
+        </Card>
       )}
     </div>
   );

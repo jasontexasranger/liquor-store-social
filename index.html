@@ -1592,6 +1592,33 @@ function RecipesPage({ isAdmin, myStores }) {
 
   const productOf = r => products.find(p => p.id === (r && r.product_id)) || null;
 
+  // The bottle you're trying to sell belongs in the ingredient list by name.
+  // Written into the first empty row if there is one, otherwise added at the
+  // top — never overwriting something already typed.
+  function withProductIngredient(list, label) {
+    if (!label) return list;
+    const rows = (list || []).slice();
+    // Asked for "BACARDI WHITE", the model often writes "Bacardi Superior white
+    // rum" — the same bottle, so adding ours on top would list it twice. The
+    // brand is nearly always the first word, and that's what's matched on.
+    // Apostrophes are dropped rather than turned into spaces, so RYAN'S and
+    // RYANS are the same bottle.
+    const norm = t => String(t||'').toLowerCase()
+      .replace(/['’]/g, '')
+      .replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
+    const brand = norm(label).split(' ')[0];
+    const already = rows.some(function(i) {
+      const item = norm(i.item);
+      if (!item) return false;
+      if (item === norm(label)) return true;
+      return brand.length > 2 && item.indexOf(brand) !== -1;
+    });
+    if (already) return rows;
+    const blank = rows.findIndex(i => !(i.item||'').trim() && !(i.amount||'').trim());
+    if (blank >= 0) { rows[blank] = { amount:'2 oz', item:label }; return rows; }
+    return [{ amount:'2 oz', item:label }].concat(rows);
+  }
+
   // Redraw whenever the name or the look changes. Free — canvas only, no
   // network, and never a new photo.
   useEffect(function() {
@@ -1618,8 +1645,11 @@ function RecipesPage({ isAdmin, myStores }) {
 
   const writeRecipe = async function() {
     const prod = productOf(draft);
-    const base = prod ? prod.product_name + (prod.size ? ' (' + prod.size + ')' : '') : (draft.name || '');
-    if (!base) { toast.error('Pick a product first, or type a name'); return; }
+    // The feature's name is the one the price is quoted against; fall back to
+    // the linked product, then to whatever's been typed.
+    const label = (offer && offer.name) || (prod && prod.product_name) || draft.name || '';
+    const base  = label + (prod && prod.size ? ' (' + prod.size + ')' : '');
+    if (!label) { toast.error('Pick a product first, or type a name'); return; }
     setBusy('write');
     try {
       const prompt =
@@ -1629,8 +1659,12 @@ function RecipesPage({ isAdmin, myStores }) {
         'Reply with JSON only, no code fence, in exactly this shape:\n' +
         '{"name":"","blurb":"","glass":"","garnish":"",' +
         '"ingredients":[{"amount":"","item":""}],"method":[""]}\n\n' +
+        'The first ingredient must be exactly "' + label + '" — name the product itself, ' +
+        'not a generic spirit, and give it a measure. Every other ingredient should be ' +
+        'something an ordinary kitchen already has.\n' +
         'name: the drink name, 1 to 3 words. ' +
-        'blurb: one sentence on what it tastes like. method: 2 to 4 short steps. ' +
+        'blurb: one sentence on what it tastes like. method: 2 to 4 short steps, ' +
+        'referring to the product by name in the first step. ' +
         'No hashtags, no emoji, no brand claims beyond the product name.';
       const r = await callEdge('meta-social', 'aiWrite', { prompt, maxTokens: 700 });
       const raw = (r.text || '').replace(/^```(?:json)?/i, '').replace(/```$/,'').trim();
@@ -1643,9 +1677,13 @@ function RecipesPage({ isAdmin, myStores }) {
         blurb:    parsed.blurb || '',
         glass:    parsed.glass || '',
         garnish:  parsed.garnish || '',
+        // Told to lead with the product, the model usually does — but not
+        // always, and a recipe post that never names the bottle is pointless.
         ingredients: Array.isArray(parsed.ingredients) && parsed.ingredients.length
-                     ? parsed.ingredients.map(i=>({ amount:i.amount||'', item:i.item||'' }))
-                     : prev.ingredients,
+                     ? withProductIngredient(
+                         parsed.ingredients.map(i=>({ amount:i.amount||'', item:i.item||'' })),
+                         label)
+                     : withProductIngredient(prev.ingredients, label),
         method:   Array.isArray(parsed.method) && parsed.method.length ? parsed.method : prev.method,
       }));
       toast.success('Recipe drafted — check it before you save');
@@ -2005,6 +2043,7 @@ function RecipesPage({ isAdmin, myStores }) {
               onPick={function(p){
                 setDraft(prev => Object.assign({}, prev, {
                   product_id: p.id,
+                  ingredients: withProductIngredient(prev.ingredients, p.product_name),
                 }));
                 setShowPick(false);
               }}
@@ -2018,6 +2057,9 @@ function RecipesPage({ isAdmin, myStores }) {
                 setDraft(prev => Object.assign({}, prev, {
                   feature_id: f.id,
                   product_id: prod ? prod.id : prev.product_id,
+                  // The feature's own name is what the price is quoted against,
+                  // so it beats the linked product's name if they differ.
+                  ingredients: withProductIngredient(prev.ingredients, f.name || (prod||{}).product_name),
                 }));
                 setShowFeat(false);
               }}

@@ -1,6 +1,7 @@
 // supabase/functions/meta-social/index.ts
 // Social publishing edge function — Facebook + Instagram
-// Actions: publish | schedule | listPosts | listScheduled | cancelScheduled
+// Actions: publish | schedule | listPosts | listScheduled | updateScheduled
+//          cancelScheduled
 //          listComments | replyComment | deletePost | getIgAccountId
 //
 // Required edge function secrets (Dashboard → Edge Functions → Secrets):
@@ -311,6 +312,62 @@ Deno.serve(async (req) => {
       const { data, error } = await query;
       if (error) throw error;
       return Response.json({ posts: data }, { headers: corsHeaders });
+    }
+
+    // ── updateScheduled ──────────────────────────────────────────────────────
+    // Only pending posts can be edited. Anything already published is history.
+    if (action === 'updateScheduled') {
+      const { id, caption, imageUrl, publishTo, scheduledAt } = params as {
+        id: string; caption?: string; imageUrl?: string | null;
+        publishTo?: string[]; scheduledAt?: string;
+      };
+      if (!id) throw new Error('id required');
+
+      const { data: existing } = await sb
+        .from('scheduled_posts').select('*').eq('id', id).single();
+      if (!existing) throw new Error('Scheduled post not found');
+      if (existing.status !== 'pending') {
+        throw new Error('That post has already been published and cannot be edited');
+      }
+      if (!userInfo.isAdmin && existing.created_by !== userInfo.userId) {
+        throw new Error('Not authorized to edit that post');
+      }
+      if (!userInfo.isAdmin && userInfo.storeIds.length > 0 &&
+          !userInfo.storeIds.includes(existing.store_id)) {
+        throw new Error('Not authorized for that store');
+      }
+
+      const patch: Record<string, unknown> = {};
+
+      if (caption !== undefined) {
+        if (!caption.trim()) throw new Error('caption required');
+        patch.caption = caption;
+      }
+      if (imageUrl !== undefined) patch.image_url = imageUrl;
+      if (publishTo !== undefined) {
+        if (!publishTo.length) throw new Error('Choose at least one channel');
+        patch.publish_to = publishTo;
+      }
+      if (scheduledAt !== undefined) {
+        const ts = new Date(scheduledAt);
+        if (isNaN(ts.getTime())) throw new Error('Invalid scheduled time');
+        // Same floor as creating one — the cron needs room to pick it up.
+        if (ts.getTime() < Date.now() + 10 * 60 * 1000) {
+          throw new Error('Scheduled time must be at least 10 minutes in the future');
+        }
+        patch.scheduled_at = scheduledAt;
+      }
+      if (Object.keys(patch).length === 0) throw new Error('Nothing to update');
+
+      // Re-check status in the write itself so a post that publishes mid-edit
+      // can't be silently overwritten.
+      const { data, error } = await sb
+        .from('scheduled_posts').update(patch)
+        .eq('id', id).eq('status', 'pending').select().single();
+      if (error) throw error;
+      if (!data) throw new Error('That post just published — edit no longer applies');
+
+      return Response.json({ post: data }, { headers: corsHeaders });
     }
 
     // ── cancelScheduled ──────────────────────────────────────────────────────

@@ -5522,6 +5522,52 @@ function ScheduledPostsPanel() {
   const [posts,    setPosts]    = useState([]);
   const [loading,  setLoading]  = useState(false);
   const [canceling,setCanceling]= useState(null);
+  const [editId,   setEditId]   = useState(null);
+  const [draft,    setDraft]    = useState({});
+  const [saving,   setSaving]   = useState(false);
+
+  const toLocalInput = iso => {
+    // <input type="datetime-local"> wants local time without a zone suffix.
+    const d = new Date(iso);
+    const pad = n => String(n).padStart(2,'0');
+    return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());
+  };
+
+  const startEdit = p => {
+    setEditId(p.id);
+    setDraft({
+      caption: p.caption || '',
+      scheduledAt: p.scheduled_at ? toLocalInput(p.scheduled_at) : '',
+      publishTo: p.publish_to || ['facebook'],
+      imageUrl: p.image_url || null,
+    });
+  };
+
+  const toggleChannel = ch => setDraft(function(d) {
+    const on = (d.publishTo || []).includes(ch);
+    return { ...d, publishTo: on ? d.publishTo.filter(x=>x!==ch) : [...(d.publishTo||[]), ch] };
+  });
+
+  const saveEdit = async function(p) {
+    if (!draft.caption.trim())        { toast.error('Caption cannot be empty'); return; }
+    if (!(draft.publishTo||[]).length){ toast.error('Choose at least one channel'); return; }
+    if ((draft.publishTo||[]).includes('instagram') && !draft.imageUrl) {
+      toast.error('Instagram needs an image — remove that channel or cancel and rebuild the post'); return;
+    }
+    setSaving(true);
+    try {
+      await callEdge('meta-social', 'updateScheduled', {
+        id: p.id,
+        caption: draft.caption,
+        publishTo: draft.publishTo,
+        scheduledAt: new Date(draft.scheduledAt).toISOString(),
+      });
+      toast.success('Scheduled post updated');
+      setEditId(null);
+      await load();
+    } catch(e) { toast.error(e.message); }
+    finally { setSaving(false); }
+  };
 
   const load = useCallback(async function() {
     setLoading(true);
@@ -5563,14 +5609,72 @@ function ScheduledPostsPanel() {
             {pending.map(function(p) {
               var storeName = (STORES.find(function(s) { return s.id === p.store_id; }) || {}).name || p.store_id;
               return (
-                <div key={p.id} className="flex items-start gap-3 p-3 rounded-xl border border-amber-200 dark:border-amber-700 bg-amber-50 dark:bg-amber-900/20">
-                  {p.image_url && <img src={p.image_url} alt="" className="w-12 h-12 rounded-lg object-cover flex-shrink-0"/>}
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-semibold text-gray-700 dark:text-gray-300">{storeName}</p>
-                    <p className="text-xs text-gray-600 dark:text-gray-400 line-clamp-2 mt-0.5">{p.caption}</p>
-                    <p className="text-xs text-gray-400 mt-1"><Icon name="clock"/> {fmtDate(p.scheduled_at)} · {(p.publish_to || ['facebook']).join(' + ')}</p>
-                  </div>
-                  <Button variant="danger" size="sm" loading={canceling === p.id} onClick={function(){ cancel(p.id); }}>Cancel</Button>
+                <div key={p.id} className="p-3" style={{border:'1px solid var(--amb)', background:'rgba(240,168,48,.08)'}}>
+                  {editId === p.id ? (
+                    <div className="space-y-3">
+                      <div className="flex items-center gap-3">
+                        <span className="ttl flex-1">Editing — {storeName}</span>
+                        {p.image_url && <img src={p.image_url} alt="" className="w-10 h-10 object-cover"/>}
+                      </div>
+                      <div>
+                        <Label>Caption</Label>
+                        <Textarea rows={3} value={draft.caption}
+                                  onChange={function(e){ setDraft({...draft, caption:e.target.value}); }}/>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <Label>Send at</Label>
+                          <Input type="datetime-local" value={draft.scheduledAt}
+                                 onChange={function(e){ setDraft({...draft, scheduledAt:e.target.value}); }}/>
+                        </div>
+                        <div>
+                          <Label>Channels</Label>
+                          <div className="flex gap-2">
+                            {[['facebook','fb','Facebook'],['instagram','ig','Instagram']].map(function(c){
+                              const on = (draft.publishTo||[]).includes(c[0]);
+                              return (
+                                <button key={c[0]} onClick={function(){ toggleChannel(c[0]); }}
+                                  className="flex-1 flex items-center justify-center gap-1.5 p-2 text-xs border transition-all"
+                                  style={{ borderColor:on?'var(--cy)':'var(--line)',
+                                           background:on?'var(--cy-glow)':'rgba(4,8,16,.4)',
+                                           color:on?'var(--cy)':'var(--txt2)' }}>
+                                  <Icon name={c[1]} size={13}/>{c[2]}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+                      {!p.image_url && (draft.publishTo||[]).includes('instagram') && (
+                        <p className="text-xs" style={{color:'var(--amb)'}}>
+                          <Icon name="warn" size={12} className="mr-1"/>
+                          This post has no image, so Instagram will fail
+                        </p>
+                      )}
+                      <div className="flex gap-2">
+                        <Button size="sm" loading={saving} onClick={function(){ saveEdit(p); }}>
+                          <Icon name="save"/> Save changes
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={function(){ setEditId(null); }}>Cancel</Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-start gap-3">
+                      {p.image_url && <img src={p.image_url} alt="" className="w-12 h-12 object-cover flex-shrink-0"/>}
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-semibold" style={{color:'var(--txt)'}}>{storeName}</p>
+                        <p className="text-xs line-clamp-2 mt-0.5" style={{color:'var(--txt2)'}}>{p.caption}</p>
+                        <p className="lbl mt-1.5"><Icon name="clock" size={11}/> {fmtDate(p.scheduled_at)} · {(p.publish_to || ['facebook']).join(' + ')}</p>
+                      </div>
+                      <div className="flex gap-1.5 flex-none">
+                        <Button size="sm" variant="outline" onClick={function(){ startEdit(p); }}>
+                          <Icon name="edit" size={12}/> Edit
+                        </Button>
+                        <Button variant="danger" size="sm" loading={canceling === p.id}
+                                onClick={function(){ cancel(p.id); }}>Cancel</Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}

@@ -2611,9 +2611,12 @@ function PostPlanBuilder({ storeId, storeName, period, rows, products, onClose, 
 
         {result ? (
           <div>
-            <p className="text-sm mb-3" style={{color:'var(--txt)'}}>
-              {result.made.length} post{result.made.length===1?'':'s'} waiting for approval
+            <p className="text-sm" style={{color:'var(--txt)'}}>
+              {result.made.length} post{result.made.length===1?'':'s'} drafted
               {result.failed.length ? ', ' + result.failed.length + ' skipped' : ''}.
+            </p>
+            <p className="text-xs mb-3" style={{color:'var(--cy)'}}>
+              Nothing publishes yet. Go to Posts → Scheduled to read and approve them.
             </p>
             <div className="mb-4" style={{maxHeight:'280px', overflowY:'auto'}}>
               {result.made.map(function(m, i) {
@@ -8172,12 +8175,253 @@ function SettingsPage({ settings, onSave, currentUserId }) {
 // ─────────────────────────────────────────────
 // SCHEDULED POSTS PANEL
 // ─────────────────────────────────────────────
+// Rows written before multi-image support only carry image_url.
+function imagesOfPost(p) {
+  if (p.image_urls && p.image_urls.length) return p.image_urls;
+  return p.image_url ? [p.image_url] : [];
+}
+
+// ─────────────────────────────────────────────
+// POST REVIEW
+// ─────────────────────────────────────────────
+// The whole post, at a size you can actually judge: images large enough to read
+// the price off, the full caption, and every field editable in place. Approving
+// is the last thing on the page rather than a button next to a thumbnail,
+// because approving is the thing that lets it publish unattended.
+function PostReviewModal({ post, index, count, onStep, onClose, onChanged }) {
+  const dragPanel = useDragPanel();
+  const toast = useToast();
+  const fileRef = useRef();
+
+  const toLocalInput = iso => {
+    const d = new Date(iso);
+    const pad = n => String(n).padStart(2,'0');
+    return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+'T'+pad(d.getHours())+':'+pad(d.getMinutes());
+  };
+
+  const [caption,  setCaption]  = useState(post.caption || '');
+  const [images,   setImages]   = useState(imagesOfPost(post));
+  const [when,     setWhen]     = useState(post.scheduled_at ? toLocalInput(post.scheduled_at) : '');
+  const [channels, setChannels] = useState(post.publish_to || ['facebook']);
+  const [busy,     setBusy]     = useState(null);
+  const [showLib,  setShowLib]  = useState(false);
+  const [lightbox, setLightbox] = useState(null);
+
+  // Moving to the next post in the queue reuses this component, so the fields
+  // have to be refilled rather than kept from the post before.
+  useEffect(function() {
+    setCaption(post.caption || '');
+    setImages(imagesOfPost(post));
+    setWhen(post.scheduled_at ? toLocalInput(post.scheduled_at) : '');
+    setChannels(post.publish_to || ['facebook']);
+  }, [post.id]);
+
+  const storeName = (STORES.find(s => s.id === post.store_id) || {}).name || post.store_id;
+
+  const dirty =
+    caption !== (post.caption || '') ||
+    JSON.stringify(images) !== JSON.stringify(imagesOfPost(post)) ||
+    JSON.stringify(channels) !== JSON.stringify(post.publish_to || ['facebook']) ||
+    when !== (post.scheduled_at ? toLocalInput(post.scheduled_at) : '');
+
+  const igNoImage = channels.includes('instagram') && !images.length;
+
+  const upload = async function(file) {
+    if (!file) return;
+    setBusy('upload');
+    try {
+      const url = await uploadImageToStorage(file);
+      setImages(prev => prev.concat(url));
+    } catch(e) { toast.error('Upload failed: ' + e.message); }
+    finally { setBusy(null); }
+  };
+
+  const save = async function() {
+    if (!caption.trim())  { toast.error('Caption cannot be empty'); return false; }
+    if (!channels.length) { toast.error('Choose at least one channel'); return false; }
+    if (igNoImage)        { toast.error('Instagram needs an image'); return false; }
+    setBusy('save');
+    try {
+      await callEdge('meta-social', 'updateScheduled', {
+        id: post.id,
+        caption,
+        imageUrls: images,
+        publishTo: channels,
+        scheduledAt: new Date(when).toISOString(),
+      });
+      await onChanged();
+      return true;
+    } catch(e) { toast.error(e.message); return false; }
+    finally { setBusy(null); }
+  };
+
+  const approve = async function() {
+    if (igNoImage) { toast.error('Instagram needs an image'); return; }
+    if (dirty) {
+      const ok = await save();
+      if (!ok) return;
+    }
+    setBusy('approve');
+    try {
+      const sb = getSB();
+      // Straight to the database on the reviewer's own token: the trigger that
+      // records who approved it reads their identity from the request, and the
+      // edge function runs as the service role with no identity to record.
+      const { error } = await sb.from('scheduled_posts')
+        .update({ status:'pending' }).eq('id', post.id).eq('status','needs_approval');
+      if (error) throw error;
+      toast.success('Approved — it will post at the scheduled time');
+      await onChanged();
+      onStep(1);
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(null); }
+  };
+
+  const reject = async function() {
+    if (!confirm('Reject this post? It will not publish, and it stays in the list marked rejected.')) return;
+    setBusy('reject');
+    try {
+      const sb = getSB();
+      const { error } = await sb.from('scheduled_posts')
+        .update({ status:'missed', error_msg:'Rejected in review' })
+        .eq('id', post.id).eq('status','needs_approval');
+      if (error) throw error;
+      toast.success('Rejected');
+      await onChanged();
+      onStep(1);
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(null); }
+  };
+
+  return (
+    <Portal>
+    {lightbox && <Lightbox src={lightbox} onClose={function(){ setLightbox(null); }}/>}
+    <div className="fixed inset-0 z-[205] flex items-center justify-center p-6"
+         style={{background:'rgba(2,5,11,.9)', backdropFilter:'blur(4px)'}} onClick={onClose}>
+      <div className="hud hud-brk w-full max-w-3xl max-h-[92vh] overflow-auto p-6"
+           style={dragPanel.style} onClick={e=>e.stopPropagation()}>
+        <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-1">
+          <span className="ttl">Review post</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          <span className="mono text-xs" style={{color:'var(--txt2)'}}>{index+1} of {count}</span>
+          <Button size="sm" variant="ghost" onClick={function(){ onStep(-1); }} disabled={index===0}>
+            <Icon name="back" size={12}/>
+          </Button>
+          <Button size="sm" variant="ghost" onClick={function(){ onStep(1); }} disabled={index>=count-1}>
+            <Icon name="fwd" size={12}/>
+          </Button>
+          <button onClick={onClose} style={{color:'var(--txt2)'}}><Icon name="close"/></button>
+        </div>
+        <p className="lbl mb-4">{storeName}</p>
+
+        <Label>Images</Label>
+        <div className="flex gap-2 flex-wrap mb-2">
+          {images.map(function(u, i) {
+            return (
+              <div key={u+i} className="relative group">
+                <img src={u} alt="" onClick={function(){ setLightbox(u); }}
+                     className="object-cover cursor-zoom-in"
+                     style={{width:'132px', height:'132px', border:'1px solid var(--line2)'}}/>
+                <button onClick={function(){ setImages(images.filter((_,ix)=>ix!==i)); }}
+                        className="absolute top-1 right-1 p-1 opacity-0 group-hover:opacity-100"
+                        style={{background:'rgba(2,5,11,.85)', color:'var(--red)', border:'1px solid var(--red)'}}
+                        aria-label="Remove image">
+                  <Icon name="close" size={11}/>
+                </button>
+                {i === 0 && images.length > 1 && (
+                  <span className="lbl absolute bottom-1 left-1 px-1"
+                        style={{background:'rgba(2,5,11,.85)', color:'var(--cy)'}}>First</span>
+                )}
+              </div>
+            );
+          })}
+          {images.length === 0 && (
+            <div className="flex items-center justify-center"
+                 style={{width:'132px', height:'132px', border:'1px dashed var(--line2)'}}>
+              <Icon name="image" size={22} style={{color:'var(--cy-dim)'}}/>
+            </div>
+          )}
+        </div>
+        <div className="flex gap-2 flex-wrap mb-4">
+          <Button size="sm" variant="secondary" loading={busy==='upload'}
+                  onClick={function(){ fileRef.current?.click(); }}>
+            <Icon name="up"/> Upload
+          </Button>
+          <Button size="sm" variant="outline" onClick={function(){ setShowLib(true); }}>
+            <Icon name="image"/> From library
+          </Button>
+          <input ref={fileRef} type="file" accept="image/*" className="hidden"
+                 onChange={function(e){ upload(e.target.files?.[0]); e.target.value=''; }}/>
+        </div>
+        {showLib && (
+          <CreativePicker allowed={POST_ASPECTS} storeIds={[post.store_id]}
+            onPick={function(c){ setImages(function(prev){ return prev.concat(c.public_url); }); }}
+            onClose={function(){ setShowLib(false); }}/>
+        )}
+
+        <Label>Caption</Label>
+        <Textarea rows={7} value={caption} onChange={function(e){ setCaption(e.target.value); }}/>
+        <p className="lbl mt-1 mb-4">
+          "Prices exclude tax &amp; deposit - while supplies last" is added automatically when it posts.
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+          <div>
+            <Label>Send at</Label>
+            <Input type="datetime-local" value={when} onChange={function(e){ setWhen(e.target.value); }}/>
+          </div>
+          <div>
+            <Label>Channels</Label>
+            <div className="flex gap-2">
+              {[['facebook','fb','Facebook'],['instagram','ig','Instagram']].map(function(c) {
+                const on = channels.includes(c[0]);
+                return (
+                  <button key={c[0]} onClick={function(){
+                            setChannels(on ? channels.filter(x=>x!==c[0]) : channels.concat(c[0]));
+                          }}
+                    className="flex-1 flex items-center justify-center gap-1.5 p-2 text-xs border"
+                    style={{ borderColor:on?'var(--cy)':'var(--line)',
+                             background:on?'var(--cy-glow)':'rgba(4,8,16,.4)',
+                             color:on?'var(--cy)':'var(--txt2)' }}>
+                    <Icon name={c[1]} size={13}/>{c[2]}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        {igNoImage && (
+          <p className="text-xs mb-3" style={{color:'var(--amb)'}}>
+            <Icon name="warn" size={12} className="mr-1"/>
+            Instagram needs at least one image — add one or turn Instagram off.
+          </p>
+        )}
+
+        <div className="flex gap-2 items-center pt-3" style={{borderTop:'1px solid var(--line)'}}>
+          <span className="lbl mr-auto">
+            {dirty ? 'Unsaved edits — approving saves them too' : 'Approving lets this publish on its own'}
+          </span>
+          <Button size="sm" variant="ghost" onClick={reject} loading={busy==='reject'}>Reject</Button>
+          {dirty && (
+            <Button size="sm" variant="outline" onClick={save} loading={busy==='save'}>Save only</Button>
+          )}
+          <Button size="sm" onClick={approve} loading={busy==='approve'} disabled={igNoImage}>
+            <Icon name="check"/> Approve
+          </Button>
+        </div>
+      </div>
+    </div>
+    </Portal>
+  );
+}
+
 function ScheduledPostsPanel() {
   const toast = useToast();
   const [posts,    setPosts]    = useState([]);
   const [loading,  setLoading]  = useState(false);
   const [canceling,setCanceling]= useState(null);
-  const [deciding, setDeciding] = useState(null);
+  const [reviewIx, setReviewIx] = useState(null);
   const [editId,   setEditId]   = useState(null);
   const [draft,    setDraft]    = useState({});
   const [saving,   setSaving]   = useState(false);
@@ -8262,40 +8506,6 @@ function ScheduledPostsPanel() {
     finally { setCanceling(null); }
   };
 
-  // Approving goes straight to the database on the user's own token, not
-  // through the edge function. The trigger that stamps who approved a post
-  // reads the caller's identity from their JWT, and the edge function holds the
-  // service role — it has no identity to stamp.
-  const decide = async function(p, ok) {
-    setDeciding(p.id);
-    try {
-      const sb = getSB();
-      const { error } = await sb.from('scheduled_posts')
-        .update(ok ? { status:'pending' } : { status:'missed', error_msg:'Rejected' })
-        .eq('id', p.id).eq('status', 'needs_approval');
-      if (error) throw error;
-      toast.success(ok ? 'Approved — it will post on schedule' : 'Rejected');
-      await load();
-    } catch(e) { toast.error(e.message); }
-    finally { setDeciding(null); }
-  };
-
-  const approveAll = async function() {
-    const ids = review.map(p => p.id);
-    if (!ids.length) return;
-    if (!confirm('Approve all ' + ids.length + ' posts? Read them first — they publish automatically once approved.')) return;
-    setDeciding('all');
-    try {
-      const sb = getSB();
-      const { error } = await sb.from('scheduled_posts')
-        .update({ status:'pending' }).in('id', ids).eq('status', 'needs_approval');
-      if (error) throw error;
-      toast.success(ids.length + ' approved');
-      await load();
-    } catch(e) { toast.error(e.message); }
-    finally { setDeciding(null); }
-  };
-
   const review  = posts.filter(function(p) { return p.status === 'needs_approval'; });
   const pending = posts.filter(function(p) { return p.status === 'pending'; });
   const past    = posts.filter(function(p) { return p.status !== 'pending' && p.status !== 'needs_approval'; });
@@ -8309,71 +8519,62 @@ function ScheduledPostsPanel() {
       </div>
 
       {review.length > 0 && (
-        <div className="mb-5">
-          <div className="flex items-center gap-3 mb-2">
-            <p className="text-xs font-semibold uppercase tracking-wide" style={{color:'var(--cy)'}}>
-              Waiting for approval ({review.length})
+        <div className="mb-5 p-3" style={{border:'1px solid var(--cy)', background:'var(--cy-glow)'}}>
+          <div className="flex items-center gap-3 mb-3 flex-wrap">
+            <Icon name="warn" size={15} style={{color:'var(--cy)'}}/>
+            <p className="text-xs font-semibold uppercase tracking-[.16em]" style={{color:'var(--cy)'}}>
+              {review.length} post{review.length===1?'':'s'} waiting for your approval
             </p>
             <span className="flex-1"/>
-            <Button size="sm" variant="ghost" onClick={approveAll} loading={deciding==='all'}>
-              Approve all
+            <Button size="sm" onClick={function(){ setReviewIx(0); }}>
+              <Icon name="edit"/> Review {review.length===1?'it':'them'}
             </Button>
           </div>
-          <div className="space-y-2">
-            {review.map(function(p) {
-              var storeName = (STORES.find(function(s) { return s.id === p.store_id; }) || {}).name || p.store_id;
-              var imgs = (p.image_urls && p.image_urls.length) ? p.image_urls : (p.image_url ? [p.image_url] : []);
-              return (
-                <div key={p.id} className="p-3" style={{border:'1px solid var(--cy)', background:'var(--cy-glow)'}}>
-                  <div className="flex items-start gap-3">
-                    {imgs.length > 0 && (
-                      <div className="flex-none flex gap-1">
-                        {imgs.slice(0,3).map(function(u, i) {
-                          return (
-                            <button key={i} onClick={function(){ setLightbox(u); }} className="block">
-                              <img src={u} alt="" className="w-14 h-14 object-cover"
-                                   style={{border:'1px solid var(--line2)'}}/>
-                            </button>
-                          );
-                        })}
-                        {imgs.length > 3 && <span className="lbl self-end">+{imgs.length-3}</span>}
-                      </div>
-                    )}
-                    <div className="flex-1 min-w-0">
-                      <p className="text-xs mb-1" style={{color:'var(--txt2)'}}>
-                        {storeName} · {fmtDate(p.scheduled_at)} · {(p.publish_to||['facebook']).join(' + ')}
-                      </p>
-                      <p className="text-sm whitespace-pre-wrap" style={{color:'var(--txt)'}}>{p.caption}</p>
-                    </div>
-                  </div>
-                  <div className="flex gap-2 mt-3 justify-end">
-                    <Button size="sm" variant="ghost" onClick={function(){ startEdit(p); }}>Edit</Button>
-                    <Button size="sm" variant="outline" onClick={function(){ decide(p, false); }}
-                            loading={deciding===p.id}>Reject</Button>
-                    <Button size="sm" onClick={function(){ decide(p, true); }}
-                            loading={deciding===p.id}>Approve</Button>
-                  </div>
 
-                  {editId === p.id && (
-                    <div className="mt-3 pt-3" style={{borderTop:'1px solid var(--line)'}}>
-                      <Label>Caption</Label>
-                      <Textarea rows={5} value={draft.caption}
-                                onChange={function(e){ setDraft({...draft, caption:e.target.value}); }}/>
-                      <div className="flex gap-2 mt-2 justify-end">
-                        <Button size="sm" variant="ghost" onClick={function(){ setEditId(null); }}>Cancel</Button>
-                        <Button size="sm" onClick={function(){ saveEdit(p); }} loading={saving}>Save</Button>
-                      </div>
-                    </div>
-                  )}
-                </div>
+          <div className="space-y-1.5">
+            {review.map(function(p, ix) {
+              var storeName = (STORES.find(function(s) { return s.id === p.store_id; }) || {}).name || p.store_id;
+              var imgs = imagesOfPost(p);
+              return (
+                <button key={p.id} onClick={function(){ setReviewIx(ix); }}
+                  className="flex items-center gap-3 w-full p-2 text-left"
+                  style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.45)'}}>
+                  {imgs.length
+                    ? <img src={imgs[0]} alt="" className="w-11 h-11 object-cover flex-none"
+                           style={{border:'1px solid var(--line2)'}}/>
+                    : <div className="w-11 h-11 flex-none flex items-center justify-center"
+                           style={{border:'1px dashed var(--line2)'}}>
+                        <Icon name="note" size={14} style={{color:'var(--txt3)'}}/>
+                      </div>}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs truncate" style={{color:'var(--txt)'}}>{p.caption}</p>
+                    <p className="lbl mt-0.5">
+                      {storeName} · {fmtDate(p.scheduled_at)} · {(p.publish_to||['facebook']).join(' + ')}
+                      {imgs.length > 1 ? ' · ' + imgs.length + ' images' : ''}
+                    </p>
+                  </div>
+                  <Icon name="fwd" size={13} style={{color:'var(--cy)'}}/>
+                </button>
               );
             })}
           </div>
+
+          <p className="lbl mt-2">Nothing here publishes until you approve it.</p>
         </div>
       )}
-      {posts.length === 0 && !loading && (
-        <p className="text-center py-8 text-gray-400 dark:text-gray-500 text-sm">No scheduled posts.</p>
+
+      {reviewIx !== null && review[reviewIx] && (
+        <PostReviewModal
+          post={review[reviewIx]}
+          index={reviewIx} count={review.length}
+          onStep={function(d){
+            const next = reviewIx + d;
+            setReviewIx(next >= 0 && next < review.length ? next : null);
+          }}
+          onClose={function(){ setReviewIx(null); }}
+          onChanged={load}/>
       )}
+
       {pending.length > 0 && (
         <div className="mb-4">
           <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide mb-2">Pending ({pending.length})</p>

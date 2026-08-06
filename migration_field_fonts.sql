@@ -34,3 +34,8 @@ ALTER TABLE public.ad_template_fields
   ADD COLUMN IF NOT EXISTS suffix_valign TEXT    DEFAULT 'bottom';
 
 NOTIFY pgrst, 'reload schema';
+
+ALTER TABLE public.ad_template_fields
+  ADD COLUMN IF NOT EXISTS bg_tolerance NUMERIC DEFAULT 42;
+
+NOTIFY pgrst, 'reload schema';

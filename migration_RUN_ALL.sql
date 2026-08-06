@@ -650,6 +650,9 @@ ALTER TABLE public.ad_template_fields
   ADD COLUMN IF NOT EXISTS suffix_scale  NUMERIC DEFAULT 35,
   ADD COLUMN IF NOT EXISTS suffix_valign TEXT    DEFAULT 'bottom';
 
+ALTER TABLE public.ad_template_fields
+  ADD COLUMN IF NOT EXISTS bg_tolerance NUMERIC DEFAULT 42;
+
 
 -- ============================================================================
 -- Tell PostgREST about the new tables.

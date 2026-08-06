@@ -850,8 +850,21 @@ const AD_FIELD_DEFAULTS = {
   prefix_scale:55, prefix_valign:'middle', suffix_scale:35, suffix_valign:'bottom',
   wrap:true, max_lines:2, min_font_size:8, max_font_size:200,
   line_spacing:1.15, prefix:'', suffix:'',
-  fit_mode:'contain', remove_bg:true,
+  fit_mode:'contain', remove_bg:true, bg_tolerance:42,
 };
+
+// Rows saved before a column existed come back null. Every read path must go
+// through this — reading the table directly is what silently disabled
+// background removal and fell back to Arial.
+function withFieldDefaults(rows) {
+  return (rows || []).map(f => {
+    const out = { ...AD_FIELD_DEFAULTS, ...f };
+    for (const k of Object.keys(AD_FIELD_DEFAULTS)) {
+      if (out[k] === null || out[k] === undefined) out[k] = AD_FIELD_DEFAULTS[k];
+    }
+    return out;
+  });
+}
 
 function useAdTemplateFields(templateId) {
   const [fields, setFields] = useState([]);
@@ -863,17 +876,7 @@ function useAdTemplateFields(templateId) {
     setLoading(true);
     const { data } = await sb.from('ad_template_fields')
       .select('*').eq('template_id', templateId).order('field_order');
-    // Rows saved before a column existed come back with nulls. Merging the
-    // defaults means an old field renders — and displays in the editor — the
-    // same as a freshly created one.
-    const merged = (data || []).map(f => {
-      const out = { ...AD_FIELD_DEFAULTS, ...f };
-      for (const k of Object.keys(AD_FIELD_DEFAULTS)) {
-        if (out[k] === null || out[k] === undefined) out[k] = AD_FIELD_DEFAULTS[k];
-      }
-      return out;
-    });
-    setFields(merged);
+    setFields(withFieldDefaults(data));
     setLoading(false);
   }, [templateId]);
 
@@ -944,7 +947,8 @@ async function renderFieldTemplate(tpl, fields, values, productDataUrl, onStep) 
     let src = productDataUrl;
     if (imageFields.some(f => f.remove_bg)) {
       if (onStep) onStep('removing');
-      try { src = await removeProductBackground(productDataUrl); } catch(e) { /* keep original */ }
+      const tol = imageFields.find(f=>f.remove_bg)?.bg_tolerance ?? 42;
+      try { src = await removeProductBackground(productDataUrl, 228, tol); } catch(e) { /* keep original */ }
     }
     try { productImg = await loadImg(src); }
     catch(e) {
@@ -1136,6 +1140,16 @@ function AdFieldEditor({ templateDataUrl, fields, onChange }) {
                          onChange={e=>patch(cur.id,{remove_bg:e.target.checked})}/>
                   Remove background before placing
                 </label>
+                {cur.remove_bg !== false && (
+                  <div>
+                    <Label>Background tolerance</Label>
+                    <Input type="number" min="8" max="120" value={cur.bg_tolerance ?? 42}
+                           onChange={e=>patch(cur.id,{bg_tolerance:+e.target.value})}/>
+                    <p className="lbl mt-1">
+                      Higher removes more — raise it if a backdrop survives, lower it if the product gets eaten
+                    </p>
+                  </div>
+                )}
               </React.Fragment>
             ) : (
               <React.Fragment>
@@ -1710,7 +1724,7 @@ function useBrandTemplates(storeId) {
 // Flood-fills from all 4 edges to cut out near-white/near-cream backgrounds.
 // Returns a transparent-background PNG data URL.
 // ─────────────────────────────────────────────
-function removeProductBackground(dataUrl, threshold=228) {
+function removeProductBackground(dataUrl, threshold=228, tolerance=42) {
   return new Promise(resolve => {
     if (!dataUrl) { resolve(dataUrl); return; }
 
@@ -1740,8 +1754,38 @@ function removeProductBackground(dataUrl, threshold=228) {
       const { data, width, height } = imgData;
       const visited = new Uint8Array(width * height);
 
-      const isBg = i =>
-        data[i] >= threshold && data[i+1] >= threshold && data[i+2] >= threshold && data[i+3] > 0;
+      // Learn the actual backdrop colour from the border rather than assuming
+      // white. Product shots are often off-white, light grey or faintly warm,
+      // and a fixed brightness cutoff leaves those untouched.
+      const samples = [];
+      const push = (x,y) => {
+        const i = (y*width + x) * 4;
+        if (data[i+3] > 0) samples.push([data[i], data[i+1], data[i+2]]);
+      };
+      for (let x = 0; x < width;  x += Math.max(1, Math.floor(width/24)))  { push(x, 0); push(x, height-1); }
+      for (let y = 0; y < height; y += Math.max(1, Math.floor(height/24))) { push(0, y); push(width-1, y); }
+      const med = ch => {
+        const v = samples.map(s=>s[ch]).sort((a,b)=>a-b);
+        return v.length ? v[Math.floor(v.length/2)] : 255;
+      };
+      const bgR = med(0), bgG = med(1), bgB = med(2);
+      const bgIsLight = (bgR + bgG + bgB) / 3 >= 200;
+
+      // Squared-distance tolerance around the sampled colour.
+      const tol = Math.max(8, tolerance);
+      const tolSq = tol * tol * 3;
+
+      const isBg = (i) => {
+        if (data[i+3] === 0) return false;
+        const dr = data[i]   - bgR;
+        const dg = data[i+1] - bgG;
+        const db = data[i+2] - bgB;
+        if (dr*dr + dg*dg + db*db <= tolSq) return true;
+        // Keep the original near-white rule as a safety net for backdrops that
+        // blow out to pure white in places.
+        return bgIsLight &&
+               data[i] >= threshold && data[i+1] >= threshold && data[i+2] >= threshold;
+      };
 
       // Iterative flood fill seeded from all 4 edges (avoids recursion stack overflow)
       const stack = [];
@@ -2965,8 +3009,9 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
       // badges, so only the positioned boxes get filled.
       if (selectedTpl && selectedTpl.kind === 'price_ad') {
         const sb = getSB();
-        const { data: tplFields } = await sb.from('ad_template_fields')
+        const { data: rawFields } = await sb.from('ad_template_fields')
           .select('*').eq('template_id', selectedTpl.id).order('field_order');
+        const tplFields = withFieldDefaults(rawFields);
         if (!tplFields || tplFields.length === 0) {
           toast.error('That template has no fields yet — set them up under Ad Templates');
           return;

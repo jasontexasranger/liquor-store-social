@@ -359,8 +359,16 @@ Deno.serve(async (req) => {
         .select('*')
         .order('scheduled_at', { ascending: true });
 
+      // Approval is somebody else's job by design, so a store's people have to
+      // see posts the planner created under whoever pressed the button.
       if (!userInfo.isAdmin) {
-        query.eq('created_by', userInfo.userId);
+        if (userInfo.storeIds.length) {
+          query.or(
+            `created_by.eq.${userInfo.userId},store_id.in.(${userInfo.storeIds.join(',')})`,
+          );
+        } else {
+          query.eq('created_by', userInfo.userId);
+        }
       }
 
       const { data, error } = await query;
@@ -380,15 +388,15 @@ Deno.serve(async (req) => {
       const { data: existing } = await sb
         .from('scheduled_posts').select('*').eq('id', id).single();
       if (!existing) throw new Error('Scheduled post not found');
-      if (existing.status !== 'pending') {
+      if (existing.status !== 'pending' && existing.status !== 'needs_approval') {
         throw new Error('That post has already been published and cannot be edited');
       }
-      if (!userInfo.isAdmin && existing.created_by !== userInfo.userId) {
+      // Either owning the post or belonging to its store is enough — a store's
+      // manager has to be able to fix copy on a post the planner drafted.
+      const ownsIt   = existing.created_by === userInfo.userId;
+      const inStore  = userInfo.storeIds.includes(existing.store_id);
+      if (!userInfo.isAdmin && !ownsIt && !inStore) {
         throw new Error('Not authorized to edit that post');
-      }
-      if (!userInfo.isAdmin && userInfo.storeIds.length > 0 &&
-          !userInfo.storeIds.includes(existing.store_id)) {
-        throw new Error('Not authorized for that store');
       }
 
       const patch: Record<string, unknown> = {};
@@ -420,11 +428,23 @@ Deno.serve(async (req) => {
       }
       if (Object.keys(patch).length === 0) throw new Error('Nothing to update');
 
+      // Changing what an approved post says withdraws the approval. The
+      // database trigger does this for edits made with a user's own token, but
+      // this function holds the service role, which the trigger deliberately
+      // lets through untouched — so it has to be repeated here.
+      const contentChanged =
+        patch.caption !== undefined || patch.image_url !== undefined || patch.image_urls !== undefined;
+      if (existing.auto_generated && existing.status === 'pending' && contentChanged) {
+        patch.status      = 'needs_approval';
+        patch.approved_by = null;
+        patch.approved_at = null;
+      }
+
       // Re-check status in the write itself so a post that publishes mid-edit
       // can't be silently overwritten.
       const { data, error } = await sb
         .from('scheduled_posts').update(patch)
-        .eq('id', id).eq('status', 'pending').select().single();
+        .eq('id', id).in('status', ['pending', 'needs_approval']).select().single();
       if (error) throw error;
       if (!data) throw new Error('That post just published — edit no longer applies');
 
@@ -470,6 +490,89 @@ Deno.serve(async (req) => {
         pageToken,
       );
       return Response.json({ posts: data.data ?? [] }, { headers: corsHeaders });
+    }
+
+    // ── bestTimes ────────────────────────────────────────────────────────────
+    // When has this Page actually got engagement? Derived from the Page's own
+    // published posts rather than from Meta's audience metrics: page_fans and
+    // the impressions family were deprecated in November 2025, and the
+    // "when your fans are online" metrics sit in the same family. Post
+    // timestamps and reaction counts are ordinary edge fields and keep working.
+    //
+    // The obvious caveat, which the UI states plainly: this measures when the
+    // Page has posted well, not when its audience is present. A page that has
+    // only ever posted on Tuesdays will recommend Tuesdays.
+    if (action === 'bestTimes') {
+      const { storeId } = params as { storeId: string };
+      if (!storeId) throw new Error('storeId required');
+      if (!userInfo.isAdmin && userInfo.storeIds.length > 0 && !userInfo.storeIds.includes(storeId)) {
+        throw new Error('Not authorized for this store');
+      }
+
+      const { data: acct } = await sb
+        .from('meta_accounts').select('fb_page_id').eq('store_id', storeId).single();
+      if (!acct) throw new Error('Store not found in meta_accounts');
+
+      const pageToken = await getPageToken(acct.fb_page_id);
+
+      // Two pages of history is plenty to see a weekly shape without making
+      // the planner wait on a long pagination walk.
+      const posts: Record<string, unknown>[] = [];
+      let url: string | null = null;
+      for (let page = 0; page < 2; page++) {
+        const data: Record<string, unknown> = url
+          ? await (await fetch(url)).json()
+          : await gGet(`/${acct.fb_page_id}/feed`, {
+              fields: 'id,created_time,likes.summary(true),comments.summary(true),shares',
+              limit: '100',
+            }, pageToken);
+        const batch = (data.data ?? []) as Record<string, unknown>[];
+        posts.push(...batch);
+        url = ((data.paging as Record<string, string>)?.next) ?? null;
+        if (!url || batch.length === 0) break;
+      }
+
+      const TZ = 'America/Vancouver';
+      const fmt = new Intl.DateTimeFormat('en-CA', {
+        timeZone: TZ, weekday: 'short', hour: 'numeric', hour12: false,
+      });
+      const DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+      const buckets: Record<string, { dow: number; hour: number; n: number; total: number }> = {};
+      for (const p of posts) {
+        const when = p.created_time as string | undefined;
+        if (!when) continue;
+        const parts = fmt.formatToParts(new Date(when));
+        const wd = parts.find(x => x.type === 'weekday')?.value ?? '';
+        const hr = Number(parts.find(x => x.type === 'hour')?.value ?? NaN);
+        const dow = DOW.indexOf(wd);
+        if (dow < 0 || !Number.isFinite(hr)) continue;
+
+        const likes    = Number((p.likes    as Record<string, Record<string, number>>)?.summary?.total_count ?? 0);
+        const comments = Number((p.comments as Record<string, Record<string, number>>)?.summary?.total_count ?? 0);
+        const shares   = Number((p.shares   as Record<string, number>)?.count ?? 0);
+        // Comments and shares cost more effort than a like, so they say more
+        // about whether the timing landed.
+        const score = likes + comments * 3 + shares * 5;
+
+        const key = dow + ':' + hr;
+        if (!buckets[key]) buckets[key] = { dow, hour: hr, n: 0, total: 0 };
+        buckets[key].n     += 1;
+        buckets[key].total += score;
+      }
+
+      const slots = Object.values(buckets)
+        .map(b => ({ dow: b.dow, hour: b.hour, n: b.n, avg: b.total / b.n }))
+        // One lucky post is not a pattern.
+        .filter(b => b.n >= 2)
+        .sort((a, b) => b.avg - a.avg);
+
+      return Response.json({
+        slots: slots.slice(0, 12),
+        sampled: posts.length,
+        distinctSlots: slots.length,
+        timezone: TZ,
+      }, { headers: corsHeaders });
     }
 
     // ── listComments ─────────────────────────────────────────────────────────

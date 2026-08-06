@@ -2377,6 +2377,419 @@ function FeatureCreativeBatch({ storeId, storeName, period, rows, products, camp
   );
 }
 
+// ─────────────────────────────────────────────
+// POST PLANNER
+// ─────────────────────────────────────────────
+// Turns a month of features into a queue of scheduled posts. Everything it
+// produces lands as 'needs_approval' — the scheduler only ever publishes
+// 'pending', so nothing written here can go out until a person moves it.
+
+const DOW_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+
+const hourLabel = h => {
+  const ampm = h < 12 ? 'am' : 'pm';
+  const base = h % 12 === 0 ? 12 : h % 12;
+  return base + ampm;
+};
+
+// Sensible retail defaults for when Meta has nothing useful to say. Thursday
+// and Friday afternoons are when a liquor store's weekend starts.
+const DEFAULT_SLOTS = [
+  { dow:4, hour:16 }, { dow:5, hour:15 }, { dow:6, hour:11 },
+  { dow:2, hour:16 }, { dow:3, hour:17 }, { dow:0, hour:12 }, { dow:1, hour:16 },
+];
+
+// Every occurrence of the chosen weekday/hour slots inside the month, in order,
+// starting from `from` so a plan built mid-month doesn't schedule into the past.
+function planSlots(period, times, count, from) {
+  if (!times.length || count <= 0) return [];
+  const [y, m] = String(period).split('-').map(Number);
+  const first = new Date(y, m-1, 1);
+  const last  = new Date(y, m, 0);
+  const out = [];
+
+  for (let d = new Date(first); d <= last; d.setDate(d.getDate()+1)) {
+    const hits = times.filter(t => t.dow === d.getDay())
+                      .sort((a,b) => a.hour - b.hour);
+    for (const t of hits) {
+      const when = new Date(d.getFullYear(), d.getMonth(), d.getDate(), t.hour, 0, 0, 0);
+      if (from && when <= from) continue;
+      out.push(when);
+    }
+  }
+  return out.slice(0, count);
+}
+
+// Features batched into posts. One per product, or grouped by the linked
+// product's category into carousels.
+function groupFeatures(rows, products, grouping, maxPerPost) {
+  const prodOf = id => products.find(p => p.id === id) || null;
+  if (grouping !== 'category') return rows.map(r => [r]);
+
+  const byCat = {};
+  rows.forEach(function(r) {
+    const p = prodOf(r.product_id);
+    const cat = (p && p.category) ? p.category : 'Other';
+    (byCat[cat] = byCat[cat] || []).push(r);
+  });
+
+  const groups = [];
+  Object.keys(byCat).sort().forEach(function(cat) {
+    const list = byCat[cat];
+    for (let i = 0; i < list.length; i += maxPerPost) {
+      const chunk = list.slice(i, i + maxPerPost);
+      chunk.category = cat;
+      groups.push(chunk);
+    }
+  });
+  return groups;
+}
+
+function PostPlanBuilder({ storeId, storeName, period, rows, products, onClose, onDone }) {
+  const dragPanel = useDragPanel();
+  const toast = useToast();
+  const { creatives } = useCreatives();
+
+  const [cadence,  setCadence]  = useState('2x');
+  const [perWeek,  setPerWeek]  = useState(2);
+  const [grouping, setGrouping] = useState('product');
+  const [channels, setChannels] = useState(['facebook']);
+  const [times,    setTimes]    = useState(DEFAULT_SLOTS.slice(0, 2));
+  const [reco,     setReco]     = useState(null);
+  const [recoErr,  setRecoErr]  = useState(null);
+  const [loadingReco, setLoadingReco] = useState(false);
+  const [busy,     setBusy]     = useState(false);
+  const [progress, setProgress] = useState({ n:0, total:0, label:'' });
+  const [result,   setResult]   = useState(null);
+
+  const n = cadence === 'custom' ? perWeek : Number(cadence[0]);
+
+  // Keep the slot list the same length as the cadence.
+  useEffect(function() {
+    setTimes(function(prev) {
+      if (prev.length === n) return prev;
+      if (prev.length > n) return prev.slice(0, n);
+      const extra = DEFAULT_SLOTS.filter(d => !prev.some(p => p.dow === d.dow));
+      return prev.concat(extra.slice(0, n - prev.length));
+    });
+  }, [n]);
+
+  const fetchReco = async function() {
+    setLoadingReco(true); setRecoErr(null);
+    try {
+      const r = await callEdge('meta-social', 'bestTimes', { storeId });
+      setReco(r);
+      if (r.slots && r.slots.length) {
+        // One slot per weekday — three posts stacked on the same Thursday is
+        // not what "3x weekly" means.
+        const picked = [];
+        r.slots.forEach(function(s) {
+          if (picked.length < n && !picked.some(p => p.dow === s.dow)) {
+            picked.push({ dow:s.dow, hour:s.hour });
+          }
+        });
+        if (picked.length) setTimes(picked.concat(DEFAULT_SLOTS.filter(d=>!picked.some(p=>p.dow===d.dow)).slice(0, n - picked.length)));
+      }
+    } catch(e) { setRecoErr(e.message); }
+    finally { setLoadingReco(false); }
+  };
+
+  const eligible = rows.filter(r => r.product_id && products.some(p => p.id === r.product_id));
+  const maxPerPost = channels.includes('instagram') ? 10 : 10;
+  const groups = groupFeatures(eligible, products, grouping, 4);
+  const slots  = planSlots(period, times, groups.length, new Date());
+  const planned = groups.slice(0, slots.length);
+  const overflow = groups.length - planned.length;
+
+  const creativeFor = row =>
+    creatives.filter(c => c.feature_id === row.id)
+             .sort((a,b) => (a.aspect === '1:1' ? -1 : 1))[0] || null;
+
+  const toggleChannel = ch => setChannels(function(prev) {
+    return prev.includes(ch) ? prev.filter(x=>x!==ch) : prev.concat(ch);
+  });
+
+  const setSlot = (i, patch) => setTimes(prev => prev.map((t,ix) => ix===i ? { ...t, ...patch } : t));
+
+  const generate = async function() {
+    if (!planned.length) { toast.error('Nothing to schedule'); return; }
+    if (!channels.length) { toast.error('Pick at least one channel'); return; }
+    setBusy(true);
+    const made = [], failed = [];
+    try {
+      const sb = getSB();
+      const { data:{ user } } = await sb.auth.getUser();
+
+      const { data: plan, error: planErr } = await sb.from('post_plans').insert({
+        store_id: storeId, period, cadence, per_week: n, grouping,
+        publish_to: channels, time_source: reco ? 'meta' : 'manual',
+        created_by: user?.id,
+      }).select().single();
+      if (planErr) throw planErr;
+
+      for (let i = 0; i < planned.length; i++) {
+        const group = planned[i];
+        const when  = slots[i];
+        setProgress({ n:i+1, total:planned.length, label: group.map(g=>g.name).join(', ') });
+
+        const lines = group.map(function(r) {
+          const bits = [r.name];
+          if (r.size) bits.push(r.size);
+          if (r.sale_price != null) bits.push('on sale at ' + money(r.sale_price));
+          if (r.reg_price  != null) bits.push('regular ' + money(r.reg_price));
+          if (r.savings    != null) bits.push('save ' + money(r.savings));
+          return '- ' + bits.join(', ');
+        }).join('\n');
+
+        const prompt =
+          'Write a short Facebook and Instagram post for ' + storeName + ', a liquor store in British Columbia.\n\n' +
+          (group.category ? 'This post features our ' + group.category + ' specials:\n' : 'This post features:\n') +
+          lines + '\n\n' +
+          'Rules: 2 to 3 sentences, warm and straightforward, no hashtag spam (2 to 4 at most), ' +
+          'no emoji, do not invent prices or claims, do not mention delivery. ' +
+          'Do not add a disclaimer about tax or deposit — one is appended automatically. ' +
+          'Return only the post text.';
+
+        let caption = '';
+        try {
+          const r = await callEdge('meta-social', 'aiWrite', { prompt, maxTokens: 400 });
+          caption = (r.text || '').trim();
+        } catch(e) {
+          failed.push(group.map(g=>g.name).join(', ') + ': copy failed — ' + e.message);
+          continue;
+        }
+        if (!caption) { failed.push(group.map(g=>g.name).join(', ') + ': no copy returned'); continue; }
+
+        const imgs = group.map(creativeFor).filter(Boolean).map(c => c.public_url);
+        if (channels.includes('instagram') && !imgs.length) {
+          failed.push(group.map(g=>g.name).join(', ') + ': Instagram needs an image and none is in the library yet');
+          continue;
+        }
+
+        const { error } = await sb.from('scheduled_posts').insert({
+          store_id: storeId,
+          caption,
+          image_url: imgs[0] || null,
+          image_urls: imgs,
+          publish_to: channels,
+          scheduled_at: when.toISOString(),
+          status: 'needs_approval',
+          auto_generated: true,
+          plan_id: plan.id,
+          feature_ids: group.map(g => g.id),
+          created_by: user?.id,
+        });
+        if (error) { failed.push(group.map(g=>g.name).join(', ') + ': ' + error.message); continue; }
+
+        made.push({ when, names: group.map(g=>g.name), images: imgs.length, caption });
+      }
+    } catch(e) {
+      failed.push(e.message);
+    }
+    setBusy(false);
+    setResult({ made, failed });
+    if (made.length) toast.success(made.length + ' post' + (made.length===1?'':'s') + ' drafted — waiting for approval');
+    if (onDone) onDone();
+  };
+
+  return (
+    <Portal>
+    <div className="fixed inset-0 z-[210] flex items-center justify-center p-6"
+         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}}
+         onClick={busy ? undefined : onClose}>
+      <div className="hud hud-brk w-full max-w-3xl max-h-[90vh] overflow-auto p-6"
+           style={dragPanel.style} onClick={e=>e.stopPropagation()}>
+        <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-4">
+          <span className="ttl">Plan posts</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          {!busy && <button onClick={onClose} style={{color:'var(--txt2)'}}><Icon name="close"/></button>}
+        </div>
+
+        <p className="text-xs mb-5" style={{color:'var(--txt2)'}}>
+          {storeName} · {monthLabel(period)} · nothing publishes until it's approved
+        </p>
+
+        {result ? (
+          <div>
+            <p className="text-sm mb-3" style={{color:'var(--txt)'}}>
+              {result.made.length} post{result.made.length===1?'':'s'} waiting for approval
+              {result.failed.length ? ', ' + result.failed.length + ' skipped' : ''}.
+            </p>
+            <div className="mb-4" style={{maxHeight:'280px', overflowY:'auto'}}>
+              {result.made.map(function(m, i) {
+                return (
+                  <div key={i} className="p-2.5 mb-2" style={{border:'1px solid var(--line)'}}>
+                    <p className="mono text-xs" style={{color:'var(--cy)'}}>
+                      {DOW_NAMES[m.when.getDay()]} {m.when.getDate()} · {hourLabel(m.when.getHours())}
+                      {m.images ? ' · ' + m.images + ' image' + (m.images===1?'':'s') : ' · no image'}
+                    </p>
+                    <p className="text-xs mt-1" style={{color:'var(--txt2)'}}>{m.caption}</p>
+                  </div>
+                );
+              })}
+            </div>
+            {result.failed.length > 0 && (
+              <div className="p-3 mb-4" style={{border:'1px solid var(--red)', background:'rgba(255,77,94,.07)'}}>
+                {result.failed.map((f,i)=><p key={i} className="text-xs" style={{color:'var(--red)'}}>{f}</p>)}
+              </div>
+            )}
+            <div className="flex gap-2 justify-end">
+              <Button size="sm" variant="outline" onClick={()=>setResult(null)}>Plan more</Button>
+              <Button size="sm" onClick={onClose}>Done</Button>
+            </div>
+          </div>
+        ) : busy ? (
+          <div className="py-8">
+            <p className="lbl mb-2">Writing copy · {progress.n} of {progress.total}</p>
+            <div style={{height:'4px', background:'rgba(56,224,240,.12)'}}>
+              <div style={{height:'100%', width:(progress.total?progress.n/progress.total*100:0)+'%',
+                           background:'var(--cy)', transition:'width .2s'}}/>
+            </div>
+            <p className="text-xs mt-3 truncate" style={{color:'var(--txt2)'}}>{progress.label}</p>
+          </div>
+        ) : (
+          <div>
+            <div className="mb-4">
+              <Label>How often</Label>
+              <div className="flex gap-2 flex-wrap items-center">
+                <div className="flex" style={{border:'1px solid var(--line)'}}>
+                  {[['1x','1× weekly'],['2x','2× weekly'],['3x','3× weekly'],['custom','Custom']].map(function(c) {
+                    const on = cadence===c[0];
+                    return (
+                      <button key={c[0]} onClick={()=>setCadence(c[0])}
+                        className="px-3 py-1.5 text-xs uppercase tracking-[.14em]"
+                        style={{ background:on?'var(--cy-glow)':'transparent', color:on?'var(--cy)':'var(--txt2)' }}>
+                        {c[1]}
+                      </button>
+                    );
+                  })}
+                </div>
+                {cadence==='custom' && (
+                  <Input type="number" min="1" max="7" value={perWeek} className="w-20 text-xs"
+                         onChange={e=>setPerWeek(Math.min(7, Math.max(1, Number(e.target.value)||1)))}/>
+                )}
+              </div>
+            </div>
+
+            <div className="mb-4">
+              <Label>What goes in a post</Label>
+              <div className="flex" style={{border:'1px solid var(--line)', width:'fit-content'}}>
+                {[['product','One product each'],['category','Grouped by category']].map(function(g) {
+                  const on = grouping===g[0];
+                  return (
+                    <button key={g[0]} onClick={()=>setGrouping(g[0])}
+                      className="px-3 py-1.5 text-xs uppercase tracking-[.14em]"
+                      style={{ background:on?'var(--cy-glow)':'transparent', color:on?'var(--cy)':'var(--txt2)' }}>
+                      {g[1]}
+                    </button>
+                  );
+                })}
+              </div>
+              {grouping==='category' && (
+                <p className="lbl mt-2">Up to 4 products per carousel, split by the product's category.</p>
+              )}
+            </div>
+
+            <div className="mb-4">
+              <Label>Where</Label>
+              <div className="flex gap-2">
+                {[['facebook','Facebook'],['instagram','Instagram']].map(function(c) {
+                  const on = channels.includes(c[0]);
+                  return (
+                    <button key={c[0]} onClick={()=>toggleChannel(c[0])}
+                      className="px-3 py-1.5 text-xs uppercase tracking-[.14em]"
+                      style={{ border:'1px solid ' + (on?'var(--cy)':'var(--line)'),
+                               background:on?'var(--cy-glow)':'transparent',
+                               color:on?'var(--cy)':'var(--txt2)' }}>
+                      {c[1]}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="mb-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Label className="mb-0">When</Label>
+                <span className="flex-1"/>
+                <Button size="sm" variant="outline" onClick={fetchReco} loading={loadingReco}>
+                  <Icon name="chart"/> Suggest from history
+                </Button>
+              </div>
+
+              {recoErr && <p className="text-xs mb-2" style={{color:'var(--amb)'}}>{recoErr}</p>}
+              {reco && (
+                <p className="text-xs mb-2" style={{color:'var(--txt2)'}}>
+                  {reco.distinctSlots > 0
+                    ? 'From ' + reco.sampled + ' past posts. This is when this Page has posted well before, not when its audience is online — Meta removed those metrics.'
+                    : 'Not enough history yet (' + reco.sampled + ' posts). Keeping the defaults.'}
+                </p>
+              )}
+
+              {times.map(function(t, i) {
+                return (
+                  <div key={i} className="flex gap-2 items-center mb-2">
+                    <Select value={t.dow} className="w-auto text-xs"
+                            onChange={e=>setSlot(i,{dow:Number(e.target.value)})}>
+                      {DOW_NAMES.map((d,ix)=><option key={ix} value={ix}>{d}</option>)}
+                    </Select>
+                    <Select value={t.hour} className="w-auto text-xs"
+                            onChange={e=>setSlot(i,{hour:Number(e.target.value)})}>
+                      {Array.from({length:15},(_,k)=>k+8).map(h=>
+                        <option key={h} value={h}>{hourLabel(h)}</option>)}
+                    </Select>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="p-3 mb-4" style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.4)'}}>
+              <p className="lbl mb-2">Plan preview</p>
+              {planned.length === 0 ? (
+                <p className="text-xs" style={{color:'var(--amb)'}}>
+                  Nothing to schedule — features need a linked product photo, and there must be
+                  slots left in {monthLabel(period)}.
+                </p>
+              ) : (
+                <div style={{maxHeight:'170px', overflowY:'auto'}}>
+                  {planned.map(function(g, i) {
+                    return (
+                      <div key={i} className="flex gap-2 text-xs py-0.5">
+                        <span className="mono flex-none" style={{color:'var(--cy)', width:'92px'}}>
+                          {DOW_NAMES[slots[i].getDay()]} {slots[i].getDate()} {hourLabel(slots[i].getHours())}
+                        </span>
+                        <span className="truncate" style={{color:'var(--txt2)'}}>
+                          {g.category ? g.category + ' — ' : ''}{g.map(x=>x.name).join(', ')}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {overflow > 0 && (
+                <p className="text-xs mt-2" style={{color:'var(--amb)'}}>
+                  {overflow} more won't fit before the month ends — raise the frequency or plan them next month.
+                </p>
+              )}
+            </div>
+
+            <div className="flex gap-2 justify-end items-center">
+              <span className="lbl mr-auto">
+                {planned.length} post{planned.length===1?'':'s'} · copy written by AI · all need approval
+              </span>
+              <Button size="sm" variant="outline" onClick={onClose}>Cancel</Button>
+              <Button size="sm" onClick={generate} disabled={!planned.length}>
+                <Icon name="cal"/> Create drafts
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+    </Portal>
+  );
+}
+
 function FeaturesPage({ isAdmin, myStores }) {
   const toast = useToast();
   const [storeId, setStoreId] = useState((myStores[0]||{}).id || '');
@@ -2384,6 +2797,7 @@ function FeaturesPage({ isAdmin, myStores }) {
   const [showPaste, setShowPaste] = useState(false);
   const [showCsv, setShowCsv] = useState(false);
   const [showBatch, setShowBatch] = useState(false);
+  const [showPlan,  setShowPlan]  = useState(false);
   const [view, setView] = useState('month');   // month | dashboard
   const [mode, setMode] = useState('plan');   // plan | sales
 
@@ -2489,6 +2903,9 @@ function FeaturesPage({ isAdmin, myStores }) {
           </Button>
           <Button size="sm" variant="outline" onClick={()=>setShowBatch(true)} disabled={rows.length===0}>
             <Icon name="image"/> Generate creatives
+          </Button>
+          <Button size="sm" variant="outline" onClick={()=>setShowPlan(true)} disabled={rows.length===0}>
+            <Icon name="cal"/> Plan posts
           </Button>
           <Button size="sm" onClick={addBlank}><Icon name="tag"/> Add row</Button>
           {periodRow && periodRow.status !== 'closed' && (
@@ -2610,6 +3027,14 @@ function FeaturesPage({ isAdmin, myStores }) {
           period={period} rows={rows} products={products}
           campaigns={campaigns.filter(c=>!c.archived && (!c.store_id || c.store_id===storeId))}
           onClose={()=>setShowBatch(false)} onDone={reload}/>
+      )}
+
+      {showPlan && (
+        <PostPlanBuilder
+          storeId={storeId}
+          storeName={(myStores.find(s=>s.id===storeId)||{}).name || ''}
+          period={period} rows={rows} products={products}
+          onClose={()=>setShowPlan(false)} onDone={reload}/>
       )}
     </div>
   );
@@ -7752,6 +8177,7 @@ function ScheduledPostsPanel() {
   const [posts,    setPosts]    = useState([]);
   const [loading,  setLoading]  = useState(false);
   const [canceling,setCanceling]= useState(null);
+  const [deciding, setDeciding] = useState(null);
   const [editId,   setEditId]   = useState(null);
   const [draft,    setDraft]    = useState({});
   const [saving,   setSaving]   = useState(false);
@@ -7836,8 +8262,43 @@ function ScheduledPostsPanel() {
     finally { setCanceling(null); }
   };
 
+  // Approving goes straight to the database on the user's own token, not
+  // through the edge function. The trigger that stamps who approved a post
+  // reads the caller's identity from their JWT, and the edge function holds the
+  // service role — it has no identity to stamp.
+  const decide = async function(p, ok) {
+    setDeciding(p.id);
+    try {
+      const sb = getSB();
+      const { error } = await sb.from('scheduled_posts')
+        .update(ok ? { status:'pending' } : { status:'missed', error_msg:'Rejected' })
+        .eq('id', p.id).eq('status', 'needs_approval');
+      if (error) throw error;
+      toast.success(ok ? 'Approved — it will post on schedule' : 'Rejected');
+      await load();
+    } catch(e) { toast.error(e.message); }
+    finally { setDeciding(null); }
+  };
+
+  const approveAll = async function() {
+    const ids = review.map(p => p.id);
+    if (!ids.length) return;
+    if (!confirm('Approve all ' + ids.length + ' posts? Read them first — they publish automatically once approved.')) return;
+    setDeciding('all');
+    try {
+      const sb = getSB();
+      const { error } = await sb.from('scheduled_posts')
+        .update({ status:'pending' }).in('id', ids).eq('status', 'needs_approval');
+      if (error) throw error;
+      toast.success(ids.length + ' approved');
+      await load();
+    } catch(e) { toast.error(e.message); }
+    finally { setDeciding(null); }
+  };
+
+  const review  = posts.filter(function(p) { return p.status === 'needs_approval'; });
   const pending = posts.filter(function(p) { return p.status === 'pending'; });
-  const past    = posts.filter(function(p) { return p.status !== 'pending'; });
+  const past    = posts.filter(function(p) { return p.status !== 'pending' && p.status !== 'needs_approval'; });
 
   return (
     <Card>
@@ -7846,6 +8307,70 @@ function ScheduledPostsPanel() {
         <h2 className="text-base font-bold text-gray-900 dark:text-white"><Icon name="cal"/> Scheduled &amp; Recent Posts</h2>
         <Button variant="secondary" size="sm" onClick={load} loading={loading}>Refresh</Button>
       </div>
+
+      {review.length > 0 && (
+        <div className="mb-5">
+          <div className="flex items-center gap-3 mb-2">
+            <p className="text-xs font-semibold uppercase tracking-wide" style={{color:'var(--cy)'}}>
+              Waiting for approval ({review.length})
+            </p>
+            <span className="flex-1"/>
+            <Button size="sm" variant="ghost" onClick={approveAll} loading={deciding==='all'}>
+              Approve all
+            </Button>
+          </div>
+          <div className="space-y-2">
+            {review.map(function(p) {
+              var storeName = (STORES.find(function(s) { return s.id === p.store_id; }) || {}).name || p.store_id;
+              var imgs = (p.image_urls && p.image_urls.length) ? p.image_urls : (p.image_url ? [p.image_url] : []);
+              return (
+                <div key={p.id} className="p-3" style={{border:'1px solid var(--cy)', background:'var(--cy-glow)'}}>
+                  <div className="flex items-start gap-3">
+                    {imgs.length > 0 && (
+                      <div className="flex-none flex gap-1">
+                        {imgs.slice(0,3).map(function(u, i) {
+                          return (
+                            <button key={i} onClick={function(){ setLightbox(u); }} className="block">
+                              <img src={u} alt="" className="w-14 h-14 object-cover"
+                                   style={{border:'1px solid var(--line2)'}}/>
+                            </button>
+                          );
+                        })}
+                        {imgs.length > 3 && <span className="lbl self-end">+{imgs.length-3}</span>}
+                      </div>
+                    )}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs mb-1" style={{color:'var(--txt2)'}}>
+                        {storeName} · {fmtDate(p.scheduled_at)} · {(p.publish_to||['facebook']).join(' + ')}
+                      </p>
+                      <p className="text-sm whitespace-pre-wrap" style={{color:'var(--txt)'}}>{p.caption}</p>
+                    </div>
+                  </div>
+                  <div className="flex gap-2 mt-3 justify-end">
+                    <Button size="sm" variant="ghost" onClick={function(){ startEdit(p); }}>Edit</Button>
+                    <Button size="sm" variant="outline" onClick={function(){ decide(p, false); }}
+                            loading={deciding===p.id}>Reject</Button>
+                    <Button size="sm" onClick={function(){ decide(p, true); }}
+                            loading={deciding===p.id}>Approve</Button>
+                  </div>
+
+                  {editId === p.id && (
+                    <div className="mt-3 pt-3" style={{borderTop:'1px solid var(--line)'}}>
+                      <Label>Caption</Label>
+                      <Textarea rows={5} value={draft.caption}
+                                onChange={function(e){ setDraft({...draft, caption:e.target.value}); }}/>
+                      <div className="flex gap-2 mt-2 justify-end">
+                        <Button size="sm" variant="ghost" onClick={function(){ setEditId(null); }}>Cancel</Button>
+                        <Button size="sm" onClick={function(){ saveEdit(p); }} loading={saving}>Save</Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       {posts.length === 0 && !loading && (
         <p className="text-center py-8 text-gray-400 dark:text-gray-500 text-sm">No scheduled posts.</p>
       )}

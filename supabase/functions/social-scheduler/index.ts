@@ -124,6 +124,20 @@ Deno.serve(async (req) => {
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
   );
 
+  // Anything still waiting on a person once its slot has been and gone is
+  // marked missed rather than published late. A short grace window covers the
+  // case where someone is approving as the clock ticks over.
+  const GRACE_MS = 15 * 60 * 1000;
+  const { data: missed } = await sb
+    .from('scheduled_posts')
+    .update({ status: 'missed', error_msg: 'Not approved before its scheduled time' })
+    .eq('status', 'needs_approval')
+    .lt('scheduled_at', new Date(Date.now() - GRACE_MS).toISOString())
+    .select('id');
+  if (missed && missed.length) {
+    console.log(`scheduler: ${missed.length} post(s) missed their slot unapproved`);
+  }
+
   // Claim all pending posts that are due (scheduled_at <= now)
   const { data: due, error: fetchErr } = await sb
     .from('scheduled_posts')

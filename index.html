@@ -456,6 +456,7 @@ function useCreatives() {
 
 // Reusable picker — Posts passes POST_ASPECTS, Ads passes AD_ASPECTS.
 function CreativePicker({ allowed, storeIds, onPick, onClose }) {
+  const dragPanel = useDragPanel();
   const { creatives, loading } = useCreatives();
   const { campaigns } = useCampaigns();
   const [camp, setCamp] = useState('all');
@@ -473,8 +474,8 @@ function CreativePicker({ allowed, storeIds, onPick, onClose }) {
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-6"
          style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
-      <div className="hud hud-brk w-full max-w-4xl max-h-[86vh] overflow-auto p-6" onClick={e=>e.stopPropagation()}>
-        <div className="flex items-center gap-3 mb-5">
+      <div className="hud hud-brk w-full max-w-4xl max-h-[86vh] overflow-auto p-6" style={dragPanel.style} onClick={e=>e.stopPropagation()}>
+        <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-5">
           <span className="ttl">Creative Library</span>
           <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
           <button onClick={onClose} style={{color:'var(--txt2)'}}><Icon name="close"/></button>
@@ -527,6 +528,7 @@ function CreativePicker({ allowed, storeIds, onPick, onClose }) {
 // CREATIVE LIBRARY SCREEN
 // ─────────────────────────────────────────────
 function UploadCreativeModal({ campaigns, myStores, onClose, onUpload }) {
+  const dragPanel = useDragPanel();
   const toast = useToast();
   const [file, setFile]   = useState(null);
   const [prev, setPrev]   = useState(null);
@@ -563,8 +565,8 @@ function UploadCreativeModal({ campaigns, myStores, onClose, onUpload }) {
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-6"
          style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
-      <div className="hud hud-brk w-full max-w-lg max-h-[88vh] overflow-auto p-6" onClick={e=>e.stopPropagation()}>
-        <div className="flex items-center gap-3 mb-5">
+      <div className="hud hud-brk w-full max-w-lg max-h-[88vh] overflow-auto p-6" style={dragPanel.style} onClick={e=>e.stopPropagation()}>
+        <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-5">
           <span className="ttl">Add Creative</span>
           <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
           <button onClick={onClose} style={{color:'var(--txt2)'}}><Icon name="close"/></button>
@@ -1761,6 +1763,7 @@ function FeaturePasteBox({ onImport, onClose }) {
 // Creates a library product without leaving the features grid. Prefilled from
 // the feature row, so the common case is: pick an image, save.
 function QuickProductCreate({ seedName, seedSize, onCreated, onClose }) {
+  const dragPanel = useDragPanel();
   const toast = useToast();
   const { add } = useBrandImageLibrary();
   const [name, setName]   = useState(seedName || '');
@@ -1811,8 +1814,8 @@ function QuickProductCreate({ seedName, seedSize, onCreated, onClose }) {
     <div className="fixed inset-0 z-[210] flex items-center justify-center p-6"
          style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
       <div className="hud hud-brk w-full max-w-lg max-h-[88vh] overflow-auto p-6"
-           onClick={e=>e.stopPropagation()}>
-        <div className="flex items-center gap-3 mb-4">
+           style={dragPanel.style} onClick={e=>e.stopPropagation()}>
+        <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-4">
           <span className="ttl flex-1">New product</span>
           <button onClick={onClose} style={{color:'var(--txt2)'}}><Icon name="close"/></button>
         </div>
@@ -2213,6 +2216,7 @@ function FeaturesPage({ isAdmin, myStores }) {
 // Pulls the month's feature rows into the price ad builder so the copy that was
 // already typed into the feature sheet never gets typed a second time.
 function FeaturePicker({ storeId, onPick, onClose }) {
+  const dragPanel = useDragPanel();
   const [period, setPeriod] = useState(monthKey(new Date()));
   const { rows, loading } = useFeaturePeriod(storeId, period);
   const { images: products } = useBrandImageLibrary();
@@ -2225,8 +2229,8 @@ function FeaturePicker({ storeId, onPick, onClose }) {
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-6"
          style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
-      <div className="hud hud-brk w-full max-w-2xl max-h-[85vh] overflow-auto p-6" onClick={e=>e.stopPropagation()}>
-        <div className="flex items-center gap-3 mb-4 flex-wrap">
+      <div className="hud hud-brk w-full max-w-2xl max-h-[85vh] overflow-auto p-6" style={dragPanel.style} onClick={e=>e.stopPropagation()}>
+        <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-4 flex-wrap">
           <span className="ttl">This month's features</span>
           <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
           <Button size="sm" variant="ghost" onClick={()=>shift(-1)}><Icon name="back" size={12}/></Button>
@@ -2624,6 +2628,7 @@ function RankBars({ rows, max, colorOf, valueFmt, onSelect }) {
 // Shows exactly which rows add up to a headline number, so a total on the
 // dashboard can always be traced back to the feature rows behind it.
 function FeatureDrill({ title, subtitle, rows, onClose }) {
+  const dragPanel = useDragPanel();
   const sorted = [...rows].sort(function(a,b){
     return String(a.period).localeCompare(String(b.period)) ||
            String(a.store_id).localeCompare(String(b.store_id));
@@ -2648,8 +2653,8 @@ function FeatureDrill({ title, subtitle, rows, onClose }) {
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-6"
          style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
       <div className="hud hud-brk w-full max-w-3xl max-h-[86vh] overflow-auto p-6"
-           onClick={e=>e.stopPropagation()}>
-        <div className="flex items-start gap-3 mb-1">
+           style={dragPanel.style} onClick={e=>e.stopPropagation()}>
+        <div {...dragPanel.handleProps} className="flex items-start gap-3 mb-1">
           <div className="flex-1 min-w-0">
             <p className="ttl truncate">{title}</p>
             {subtitle && <p className="lbl mt-1">{subtitle}</p>}
@@ -3041,6 +3046,59 @@ function ImageDropZone({ onImage, children, className='', style={} }) {
       )}
     </div>
   );
+}
+
+// ─────────────────────────────────────────────
+// DRAGGABLE PANELS
+// ─────────────────────────────────────────────
+// Lets a dialog be moved out of the way to see what's underneath — useful when
+// a picker covers the row you're working on.
+//
+// Returns a style to spread on the panel and props for its header. Movement is
+// a transform, so it doesn't disturb the centring layout, and it's clamped so a
+// panel can never be dragged fully off screen.
+function useDragPanel() {
+  const [pos, setPos] = useState({ x:0, y:0 });
+  const drag = useRef(null);
+
+  useEffect(function(){
+    function move(e) {
+      if (!drag.current) return;
+      const d = drag.current;
+      const maxX = Math.max(0, window.innerWidth  / 2 - 60);
+      const maxY = Math.max(0, window.innerHeight / 2 - 40);
+      setPos({
+        x: Math.max(-maxX, Math.min(maxX, d.ox + (e.clientX - d.sx))),
+        y: Math.max(-maxY, Math.min(maxY, d.oy + (e.clientY - d.sy))),
+      });
+    }
+    function up() {
+      if (!drag.current) return;
+      drag.current = null;
+      document.body.style.userSelect = '';
+    }
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+    return function(){
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+    };
+  }, []);
+
+  const onMouseDown = function(e) {
+    // Don't start a drag from a control inside the header.
+    if (e.target.closest('button, a, input, select, textarea')) return;
+    drag.current = { sx:e.clientX, sy:e.clientY, ox:pos.x, oy:pos.y };
+    document.body.style.userSelect = 'none';
+    e.preventDefault();
+  };
+
+  return {
+    style: { transform: `translate(${pos.x}px, ${pos.y}px)` },
+    handleProps: { onMouseDown, style: { cursor: 'move' }, title: 'Drag to move' },
+    moved: pos.x !== 0 || pos.y !== 0,
+    reset: function(){ setPos({ x:0, y:0 }); },
+  };
 }
 
 // ─────────────────────────────────────────────

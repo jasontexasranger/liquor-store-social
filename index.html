@@ -1533,9 +1533,26 @@ const suggestSavings = (reg, sale) => {
   return Math.round((reg - sale) * 4) / 4;
 };
 
+// One line of plain English the copy writer can work from, built from whatever
+// the feature row actually has.
+function featureBrief(f) {
+  if (!f) return '';
+  const bits = [f.name];
+  if (f.size) bits.push('(' + f.size + ')');
+  const parts = [bits.join(' ')];
+  if (f.sale_price != null) {
+    let price = 'on feature at $' + Number(f.sale_price).toFixed(2);
+    if (f.reg_price != null) price += ', regularly $' + Number(f.reg_price).toFixed(2);
+    parts.push(price);
+  }
+  if (f.savings != null) parts.push('save $' + Number(f.savings).toFixed(2));
+  if (f.notes) parts.push(f.notes);
+  return parts.join(' — ');
+}
+
 const FEATURE_BLANK = {
   name:'', size:'', reg_price:null, sale_price:null,
-  savings:null, on_social:false, on_digital:false, on_ads:false, on_radio:false,
+  savings:null,
   qty_sold:null, revenue:null, notes:'', product_id:null, campaign_id:null,
 };
 
@@ -1551,7 +1568,6 @@ function parseFeaturePaste(text) {
     reg_price:['reg price','regular','reg','regular price'],
     sale_price:['sale price','sale','feature price','price'],
     savings:['savings','save'],
-    on_social:['social'], on_digital:['digital'], on_ads:['ads','ad'], on_radio:['radio'],
     qty_sold:['qty sold','qty','units','quantity'],
     revenue:['revenue','sales','$'],
     notes:['notes','note','comments'],
@@ -1571,7 +1587,6 @@ function parseFeaturePaste(text) {
     const i = map && map[key] != null ? map[key] : fallbackIdx;
     return i == null ? '' : (cells[i] ?? '');
   };
-  const tick = v => /^(x|y|yes|true|✓|done|1)$/i.test(String(v || '').trim());
 
   return rows.map(function(line) {
     const c = split(line);
@@ -1584,10 +1599,6 @@ function parseFeaturePaste(text) {
       reg_price:  parseMoney(at(c,'reg_price',2)),
       sale_price: parseMoney(at(c,'sale_price',3)),
       savings:    parseMoney(at(c,'savings',4)),
-      on_social:  tick(at(c,'on_social',5)),
-      on_digital: tick(at(c,'on_digital',6)),
-      on_ads:     tick(at(c,'on_ads',7)),
-      on_radio:   tick(at(c,'on_radio',8)),
       qty_sold:   parseInt10(at(c,'qty_sold',9)),
       revenue:    parseMoney(at(c,'revenue',10)),
       notes:      String(at(c,'notes',12) || '').trim(),
@@ -1598,15 +1609,13 @@ function parseFeaturePaste(text) {
 // The three readiness bars from the sheet, computed rather than typed.
 function featureStats(rows) {
   const n = rows.length;
-  if (!n) return { data:0, marketing:0, sales:0, n:0 };
+  if (!n) return { data:0, sales:0, n:0 };
   const complete = rows.filter(r => r.name && r.size && r.reg_price != null && r.sale_price != null).length;
-  const marketed = rows.filter(r => r.on_social && r.on_digital && r.on_ads && r.on_radio).length;
   const withSales = rows.filter(r => r.qty_sold != null || r.revenue != null).length;
   return {
     n,
-    data:      Math.round(complete/n*100),
-    marketing: Math.round(marketed/n*100),
-    sales:     Math.round(withSales/n*100),
+    data:  Math.round(complete/n*100),
+    sales: Math.round(withSales/n*100),
   };
 }
 
@@ -1803,6 +1812,47 @@ function ProductLink({ row, products, onLink }) {
   );
 }
 
+// Defined at module scope on purpose. Declaring this inside FeaturesPage makes
+// React see a brand-new component type on every render, remounting every input
+// and stealing focus after each keystroke.
+function FeatureCell({ row, field, type='text', align='left', onCommit }) {
+  return (
+    <input
+      defaultValue={row[field] ?? ''}
+      onFocus={e=>{ e.target.style.borderBottomColor='var(--cy)'; e.target.style.background='rgba(56,224,240,.06)'; }}
+      onBlur={function(e){
+        e.target.style.borderBottomColor = 'transparent';
+        e.target.style.background = 'transparent';
+        const raw = e.target.value;
+        let v = raw === '' ? null : raw;
+        if (type === 'money') v = parseMoney(raw);
+        if (type === 'int')   v = parseInt10(raw);
+        const prev = row[field] ?? null;
+        if (String(v ?? '') === String(prev ?? '')) return;
+
+        const patch = { [field]: v };
+        // Savings tracks the prices unless someone has overridden it by hand.
+        if (field === 'reg_price' || field === 'sale_price') {
+          const reg  = field==='reg_price'  ? v : row.reg_price;
+          const sale = field==='sale_price' ? v : row.sale_price;
+          const auto = suggestSavings(reg, sale);
+          const wasAuto = row.savings == null ||
+            Number(row.savings) === suggestSavings(row.reg_price, row.sale_price);
+          if (wasAuto && auto != null) patch.savings = auto;
+        }
+        onCommit(row.id, patch);
+      }}
+      onKeyDown={e=>{ if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') { e.target.value = row[field] ?? ''; e.target.blur(); } }}
+      style={{
+        width:'100%', background:'transparent', border:'none',
+        borderBottom:'1px solid transparent', color:'var(--txt)',
+        fontSize:'12px', padding:'4px 5px', textAlign:align, outline:'none',
+        fontFamily: type==='text' ? 'var(--disp)' : 'var(--mono)',
+      }}
+    />
+  );
+}
+
 function FeaturesPage({ isAdmin, myStores }) {
   const toast = useToast();
   const [storeId, setStoreId] = useState((myStores[0]||{}).id || '');
@@ -1827,50 +1877,6 @@ function FeaturesPage({ isAdmin, myStores }) {
     try { await addRows([{ ...FEATURE_BLANK, name:'New feature' }]); }
     catch(e){ toast.error(e.message); }
   };
-
-  // Editable cell — commits on blur so we're not writing on every keystroke.
-  const Cell = ({ row, field, type='text', width, align='left', prefix }) => (
-    <input
-      defaultValue={row[field] ?? ''}
-      onBlur={function(e){
-        const raw = e.target.value;
-        let v = raw === '' ? null : raw;
-        if (type === 'money') v = parseMoney(raw);
-        if (type === 'int')   v = parseInt10(raw);
-        if (v === (row[field] ?? null)) return;
-        const p = { [field]: v };
-        // Keep savings in step with the prices unless it's been set by hand.
-        if (field === 'reg_price' || field === 'sale_price') {
-          const reg  = field==='reg_price'  ? v : row.reg_price;
-          const sale = field==='sale_price' ? v : row.sale_price;
-          const auto = suggestSavings(reg, sale);
-          const wasAuto = row.savings == null ||
-            row.savings === suggestSavings(row.reg_price, row.sale_price);
-          if (wasAuto && auto != null) p.savings = auto;
-        }
-        patch(row.id, p);
-      }}
-      style={{
-        width: width || '100%', background:'transparent', border:'none',
-        borderBottom:'1px solid transparent', color:'var(--txt)',
-        fontSize:'12px', padding:'4px 5px', textAlign:align, outline:'none',
-        fontFamily: type==='text' ? 'var(--disp)' : 'var(--mono)',
-      }}
-      onFocus={e=>{ e.target.style.borderBottomColor='var(--cy)'; e.target.style.background='rgba(56,224,240,.06)'; }}
-      onBlurCapture={e=>{ e.target.style.borderBottomColor='transparent'; e.target.style.background='transparent'; }}
-      placeholder={prefix || ''}
-    />
-  );
-
-  const Tick = ({ row, field }) => (
-    <button onClick={()=>patch(row.id, { [field]: !row[field] })}
-            aria-label={field}
-            style={{ width:'16px', height:'16px', border:'1px solid '+(row[field]?'var(--grn)':'var(--line2)'),
-                     background: row[field] ? 'rgba(63,240,138,.2)' : 'transparent',
-                     display:'flex', alignItems:'center', justifyContent:'center' }}>
-      {row[field] && <Icon name="check" size={11} style={{color:'var(--grn)'}}/>}
-    </button>
-  );
 
   const totalRev = rows.reduce((a,r)=>a + (Number(r.revenue)||0), 0);
   const totalQty = rows.reduce((a,r)=>a + (Number(r.qty_sold)||0), 0);
@@ -1898,7 +1904,6 @@ function FeaturesPage({ isAdmin, myStores }) {
 
         <div className="flex gap-4 flex-wrap mb-4">
           <ReadinessBar label="Data completeness" pct={stats.data}/>
-          <ReadinessBar label="Marketing readiness" pct={stats.marketing}/>
           <ReadinessBar label="Sales entered" pct={stats.sales}/>
         </div>
 
@@ -1947,13 +1952,13 @@ function FeaturesPage({ isAdmin, myStores }) {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table style={{width:'100%', minWidth: mode==='sales' ? '760px' : '980px', borderCollapse:'collapse'}}>
+            <table style={{width:'100%', minWidth:'760px', borderCollapse:'collapse'}}>
               <thead>
                 <tr style={{borderBottom:'1px solid var(--line2)'}}>
                   {['','Name','Size','Reg','Sale','Save'].map(h=>(
                     <th key={h} className="lbl" style={{textAlign:'left', padding:'0 5px 8px'}}>{h}</th>
                   ))}
-                  {mode==='plan' && ['Social','Digital','Ads','Radio','Campaign','Notes',''].map(h=>(
+                  {mode==='plan' && ['Campaign','Notes',''].map(h=>(
                     <th key={h} className="lbl" style={{textAlign:'left', padding:'0 5px 8px'}}>{h}</th>
                   ))}
                   {mode==='sales' && ['Qty sold','Revenue','Notes',''].map(h=>(
@@ -1964,23 +1969,19 @@ function FeaturesPage({ isAdmin, myStores }) {
               <tbody>
                 {rows.map(function(r){
                   return (
-                    <tr key={r.id} style={{borderBottom:'1px solid rgba(56,224,240,.07)'}}>
+                    <tr key={r.id + ':' + (r.updated_at || '')} style={{borderBottom:'1px solid rgba(56,224,240,.07)'}}>
                       <td style={{padding:'5px'}}>
                         <ProductLink row={r} products={products}
                                      onLink={(id,pid)=>patch(id,{product_id:pid})}/>
                       </td>
-                      <td style={{padding:'2px 0', minWidth:'190px'}}><Cell row={r} field="name"/></td>
-                      <td style={{padding:'2px 0', width:'80px'}}><Cell row={r} field="size"/></td>
-                      <td style={{padding:'2px 0', width:'80px'}}><Cell row={r} field="reg_price"  type="money" align="right"/></td>
-                      <td style={{padding:'2px 0', width:'80px'}}><Cell row={r} field="sale_price" type="money" align="right"/></td>
-                      <td style={{padding:'2px 0', width:'80px'}}><Cell row={r} field="savings"    type="money" align="right"/></td>
+                      <td style={{padding:'2px 0', minWidth:'190px'}}><FeatureCell row={r} field="name" onCommit={patch}/></td>
+                      <td style={{padding:'2px 0', width:'80px'}}><FeatureCell row={r} field="size" onCommit={patch}/></td>
+                      <td style={{padding:'2px 0', width:'80px'}}><FeatureCell row={r} field="reg_price" type="money" align="right" onCommit={patch}/></td>
+                      <td style={{padding:'2px 0', width:'80px'}}><FeatureCell row={r} field="sale_price" type="money" align="right" onCommit={patch}/></td>
+                      <td style={{padding:'2px 0', width:'80px'}}><FeatureCell row={r} field="savings" type="money" align="right" onCommit={patch}/></td>
 
                       {mode==='plan' && (
                         <React.Fragment>
-                          <td style={{padding:'5px', textAlign:'center'}}><Tick row={r} field="on_social"/></td>
-                          <td style={{padding:'5px', textAlign:'center'}}><Tick row={r} field="on_digital"/></td>
-                          <td style={{padding:'5px', textAlign:'center'}}><Tick row={r} field="on_ads"/></td>
-                          <td style={{padding:'5px', textAlign:'center'}}><Tick row={r} field="on_radio"/></td>
                           <td style={{padding:'2px 5px', width:'130px'}}>
                             <Select value={r.campaign_id || ''} className="text-xs"
                                     onChange={e=>patch(r.id,{campaign_id:e.target.value || null})}
@@ -1990,15 +1991,15 @@ function FeaturesPage({ isAdmin, myStores }) {
                                 .map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
                             </Select>
                           </td>
-                          <td style={{padding:'2px 0', minWidth:'160px'}}><Cell row={r} field="notes"/></td>
+                          <td style={{padding:'2px 0', minWidth:'160px'}}><FeatureCell row={r} field="notes" onCommit={patch}/></td>
                         </React.Fragment>
                       )}
 
                       {mode==='sales' && (
                         <React.Fragment>
-                          <td style={{padding:'2px 0', width:'90px'}}><Cell row={r} field="qty_sold" type="int"   align="right"/></td>
-                          <td style={{padding:'2px 0', width:'110px'}}><Cell row={r} field="revenue"  type="money" align="right"/></td>
-                          <td style={{padding:'2px 0', minWidth:'160px'}}><Cell row={r} field="notes"/></td>
+                          <td style={{padding:'2px 0', width:'90px'}}><FeatureCell row={r} field="qty_sold" type="int" align="right" onCommit={patch}/></td>
+                          <td style={{padding:'2px 0', width:'110px'}}><FeatureCell row={r} field="revenue" type="money" align="right" onCommit={patch}/></td>
+                          <td style={{padding:'2px 0', minWidth:'160px'}}><FeatureCell row={r} field="notes" onCommit={patch}/></td>
                         </React.Fragment>
                       )}
 
@@ -3490,12 +3491,23 @@ function LoginScreen() {
 // ─────────────────────────────────────────────
 // AI WRITER PANEL
 // ─────────────────────────────────────────────
-function AIWriter({ storeName, apiKey, mode='caption', onResult }) {
+function AIWriter({ storeName, apiKey, mode='caption', onResult, seedTopic='' }) {
   const toast = useToast();
-  const [topic,   setTopic]   = useState('');
+  const [topic,   setTopic]   = useState(seedTopic || '');
   const [tone,    setTone]    = useState('Friendly');
   const [extra,   setExtra]   = useState('');
   const [loading, setLoading] = useState(false);
+
+  // A feature pulled in from the monthly sheet seeds the topic. Only overwrite
+  // while the box is untouched, so a seed never wipes something typed by hand.
+  const seededRef = useRef(seedTopic || '');
+  useEffect(function(){
+    if (!seedTopic) return;
+    if (topic.trim() === '' || topic === seededRef.current) {
+      setTopic(seedTopic);
+      seededRef.current = seedTopic;
+    }
+  }, [seedTopic]);
 
   const generate = async () => {
     if (!topic.trim()) { toast.error('Enter a topic or promotion description'); return; }
@@ -3978,6 +3990,8 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
   const [images, setImages] = useState([]);   // [{ url, file }] in post order
   const multiRef = useRef();
   const [showCreatives, setShowCreatives] = useState(false);
+  const [showFeaturePick, setShowFeaturePick] = useState(false);
+  const [featureSeed, setFeatureSeed] = useState('');
   const [postToFB,    setPostToFB]   = useState(true);
   const [postToIG,    setPostToIG]   = useState(false);
   const [uploading,   setUploading]  = useState(false);
@@ -4031,6 +4045,16 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
   const clearImage = () => {
     setImages([]); setImgFile(null); setImgPrev(null); setGenImgUrl(null);
     if (onClearPending) onClearPending();
+  };
+
+  const applyFeatureToPost = (f, prod) => {
+    setFeatureSeed(featureBrief(f));
+    setShowAI(true);
+    if (prod) {
+      const src = prodSrc(prod);
+      setImages(prev => prev.some(x=>x.url===src) ? prev : prev.concat([{ url:src, file:null }]));
+    }
+    toast.success(prod ? 'Feature loaded — photo added' : 'Feature loaded into the AI writer');
   };
 
   const handleGenerated = (url) => {
@@ -4173,13 +4197,27 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
       <div className="mb-3">
         <div className="flex items-center justify-between mb-1">
           <Label className="mb-0">Caption</Label>
-          <button onClick={()=>setShowAI(v=>!v)} className="text-xs font-semibold text-violet-600 dark:text-violet-400 hover:underline">{showAI?'Hide AI Writer ↑':<React.Fragment><Icon name="spark"/> AI Writer</React.Fragment>}</button>
+          <div className="flex items-center gap-3">
+            <button onClick={()=>setShowFeaturePick(true)} className="text-xs font-semibold hover:underline"
+                    style={{color:'var(--cy)'}}>
+              <Icon name="tag"/> Pull from features
+            </button>
+            <button onClick={()=>setShowAI(v=>!v)} className="text-xs font-semibold hover:underline"
+                    style={{color:'var(--vio)'}}>
+              {showAI?'Hide AI Writer ↑':<React.Fragment><Icon name="spark"/> AI Writer</React.Fragment>}
+            </button>
+          </div>
         </div>
+        {showFeaturePick && (
+          <FeaturePicker storeId={selected[0] || (myStores[0]||{}).id}
+                         onPick={applyFeatureToPost}
+                         onClose={()=>setShowFeaturePick(false)}/>
+        )}
         <Textarea value={caption} onChange={e=>setCaption(e.target.value)} rows={4} placeholder="What's happening at the store?"/>
         <p className="text-xs text-gray-400 mt-1 text-right">{caption.length} chars</p>
         <p className="text-xs text-gray-400 dark:text-gray-500 mt-1 italic">↳ <span className="text-gray-500 dark:text-gray-400">Auto-appended:</span> Prices exclude tax &amp; deposit - while supplies last</p>
       </div>
-      {showAI && <div className="mb-4"><AIWriter storeName={activeStore} mode="caption" onResult={t=>setCaption(t)}/></div>}
+      {showAI && <div className="mb-4"><AIWriter storeName={activeStore} mode="caption" seedTopic={featureSeed} onResult={t=>setCaption(t)}/></div>}
 
       {/* Image section */}
       <div className="mb-4">

@@ -4,8 +4,10 @@
 -- Mirrors the existing spreadsheet columns so the switch is a like-for-like
 -- replacement rather than a new process:
 --
---   Name | Size | Reg Price | Sale Price | Savings | SOCIAL DIGITAL ADS RADIO
---   | Qty Sold | Revenue | Notes
+--   Name | Size | Reg Price | Sale Price | Savings | Qty Sold | Revenue | Notes
+--
+-- The SOCIAL / DIGITAL / ADS / RADIO tick columns from the sheet are
+-- deliberately not carried over.
 --
 -- Savings defaults to the price difference rounded to the nearest $0.25,
 -- which is what the current sheet actually does, but stays editable.
@@ -66,12 +68,6 @@ CREATE TABLE IF NOT EXISTS public.features (
   product_id   UUID REFERENCES public.brand_images(id) ON DELETE SET NULL,
   campaign_id  UUID REFERENCES public.campaigns(id) ON DELETE SET NULL,
 
-  -- promo channels (the SOCIAL / DIGITAL / ADS / RADIO ticks)
-  on_social    BOOLEAN NOT NULL DEFAULT false,
-  on_digital   BOOLEAN NOT NULL DEFAULT false,
-  on_ads       BOOLEAN NOT NULL DEFAULT false,
-  on_radio     BOOLEAN NOT NULL DEFAULT false,
-
   -- filled in after month end
   qty_sold     INT,
   revenue      NUMERIC(12,2),
@@ -80,6 +76,13 @@ CREATE TABLE IF NOT EXISTS public.features (
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at   TIMESTAMPTZ
 );
+
+-- Drop the channel ticks if an earlier version of this migration created them.
+ALTER TABLE public.features
+  DROP COLUMN IF EXISTS on_social,
+  DROP COLUMN IF EXISTS on_digital,
+  DROP COLUMN IF EXISTS on_ads,
+  DROP COLUMN IF EXISTS on_radio;
 
 CREATE INDEX IF NOT EXISTS features_period_idx   ON public.features (period_id, position);
 CREATE INDEX IF NOT EXISTS features_campaign_idx ON public.features (campaign_id);

@@ -112,40 +112,89 @@ async function getUserInfo(authHeader: string | null, sb: ReturnType<typeof crea
 
 // ─── Publishing helpers ───────────────────────────────────────────────────────
 
+// Facebook caps a single post's attachments; Instagram carousels are 2–10.
+// 10 keeps both happy and matches what the composer allows.
+const MAX_IMAGES = 10;
+
+function normalizeImages(imageUrls?: string[] | null, imageUrl?: string | null): string[] {
+  const list = (imageUrls && imageUrls.length ? imageUrls : (imageUrl ? [imageUrl] : []))
+    .filter(u => typeof u === 'string' && u.trim());
+  return list.slice(0, MAX_IMAGES);
+}
+
 async function publishToFacebook(
   pageId: string,
   pageToken: string,
   caption: string,
-  imageUrl: string | null,
+  images: string[],
 ): Promise<string> {
   const fullCaption = caption + POST_SUFFIX;
-  if (imageUrl) {
-    const r = await gPost(`/${pageId}/photos`, { url: imageUrl, caption: fullCaption }, pageToken);
-    return r.post_id ?? r.id;
-  } else {
+
+  if (images.length === 0) {
     const r = await gPost(`/${pageId}/feed`, { message: fullCaption }, pageToken);
     return r.id;
   }
+
+  if (images.length === 1) {
+    const r = await gPost(`/${pageId}/photos`, { url: images[0], caption: fullCaption }, pageToken);
+    return r.post_id ?? r.id;
+  }
+
+  // Multi-photo: upload each unpublished to get a media_fbid, then attach them
+  // all to one feed post. Uploading published would create separate posts.
+  const mediaIds: string[] = [];
+  for (const url of images) {
+    const up = await gPost(`/${pageId}/photos`, { url, published: false }, pageToken);
+    if (!up.id) throw new Error('Facebook rejected one of the images');
+    mediaIds.push(up.id);
+  }
+
+  const body: Record<string, unknown> = { message: fullCaption };
+  mediaIds.forEach((id, i) => { body[`attached_media[${i}]`] = { media_fbid: id }; });
+
+  const r = await gPost(`/${pageId}/feed`, body, pageToken);
+  return r.id;
 }
 
 async function publishToInstagram(
   igAccountId: string,
   pageToken: string,
   caption: string,
-  imageUrl: string | null,
+  images: string[],
 ): Promise<string> {
   const fullCaption = caption + POST_SUFFIX;
-  if (!imageUrl) throw new Error('Instagram requires an image URL');
-  // Step 1: create media container
-  const container = await gPost(`/${igAccountId}/media`, {
-    image_url: imageUrl,
+  if (!images.length) throw new Error('Instagram requires at least one image');
+
+  if (images.length === 1) {
+    const container = await gPost(`/${igAccountId}/media`, {
+      image_url: images[0],
+      caption: fullCaption,
+    }, pageToken);
+    if (!container.id) throw new Error('IG media container creation failed');
+    const pub = await gPost(`/${igAccountId}/media_publish`, { creation_id: container.id }, pageToken);
+    return pub.id;
+  }
+
+  // Carousel: each child is created with is_carousel_item and carries no
+  // caption of its own — the caption belongs to the parent container.
+  const children: string[] = [];
+  for (const url of images) {
+    const child = await gPost(`/${igAccountId}/media`, {
+      image_url: url,
+      is_carousel_item: true,
+    }, pageToken);
+    if (!child.id) throw new Error('IG carousel item creation failed');
+    children.push(child.id);
+  }
+
+  const parent = await gPost(`/${igAccountId}/media`, {
+    media_type: 'CAROUSEL',
+    children: children.join(','),
     caption: fullCaption,
   }, pageToken);
-  if (!container.id) throw new Error('IG media container creation failed');
-  // Step 2: publish
-  const pub = await gPost(`/${igAccountId}/media_publish`, {
-    creation_id: container.id,
-  }, pageToken);
+  if (!parent.id) throw new Error('IG carousel container creation failed');
+
+  const pub = await gPost(`/${igAccountId}/media_publish`, { creation_id: parent.id }, pageToken);
   return pub.id;
 }
 
@@ -165,12 +214,14 @@ Deno.serve(async (req) => {
 
     // ── publish ──────────────────────────────────────────────────────────────
     if (action === 'publish') {
-      const { storeIds, caption, imageUrl, publishTo } = params as {
+      const { storeIds, caption, imageUrl, imageUrls, publishTo } = params as {
         storeIds: string[];
         caption: string;
         imageUrl: string | null;
+        imageUrls?: string[] | null;
         publishTo: string[]; // ['facebook'], ['instagram'], ['facebook','instagram']
       };
+      const images = normalizeImages(imageUrls, imageUrl);
 
       if (!storeIds?.length) throw new Error('storeIds required');
       if (!caption?.trim()) throw new Error('caption required');
@@ -215,7 +266,7 @@ Deno.serve(async (req) => {
 
         if (postTo.includes('facebook')) {
           try {
-            fbPostId = await publishToFacebook(acct.fb_page_id, pageToken, caption, imageUrl ?? null);
+            fbPostId = await publishToFacebook(acct.fb_page_id, pageToken, caption, images);
           } catch (e) {
             fbError = (e as Error).message;
           }
@@ -239,7 +290,7 @@ Deno.serve(async (req) => {
                 'Link one in Meta Business Suite → Settings → Instagram accounts.'
               );
             }
-            igPostId = await publishToInstagram(igId, pageToken, caption, imageUrl ?? null);
+            igPostId = await publishToInstagram(igId, pageToken, caption, images);
           } catch (e) {
             igError = (e as Error).message;
           }
@@ -262,13 +313,15 @@ Deno.serve(async (req) => {
 
     // ── schedule ─────────────────────────────────────────────────────────────
     if (action === 'schedule') {
-      const { storeIds, caption, imageUrl, publishTo, scheduledAt } = params as {
+      const { storeIds, caption, imageUrl, imageUrls, publishTo, scheduledAt } = params as {
         storeIds: string[];
         caption: string;
         imageUrl: string | null;
+        imageUrls?: string[] | null;
         publishTo: string[];
         scheduledAt: string; // ISO timestamp
       };
+      const images = normalizeImages(imageUrls, imageUrl);
 
       if (!storeIds?.length) throw new Error('storeIds required');
       if (!caption?.trim()) throw new Error('caption required');
@@ -286,7 +339,8 @@ Deno.serve(async (req) => {
       const rows = storeIds.map(storeId => ({
         store_id: storeId,
         caption,
-        image_url: imageUrl ?? null,
+        image_url: images[0] ?? null,   // first image keeps older readers working
+        image_urls: images,
         publish_to: publishTo ?? ['facebook'],
         scheduled_at: scheduledAt,
         status: 'pending',
@@ -317,9 +371,9 @@ Deno.serve(async (req) => {
     // ── updateScheduled ──────────────────────────────────────────────────────
     // Only pending posts can be edited. Anything already published is history.
     if (action === 'updateScheduled') {
-      const { id, caption, imageUrl, publishTo, scheduledAt } = params as {
+      const { id, caption, imageUrl, imageUrls, publishTo, scheduledAt } = params as {
         id: string; caption?: string; imageUrl?: string | null;
-        publishTo?: string[]; scheduledAt?: string;
+        imageUrls?: string[] | null; publishTo?: string[]; scheduledAt?: string;
       };
       if (!id) throw new Error('id required');
 
@@ -343,7 +397,14 @@ Deno.serve(async (req) => {
         if (!caption.trim()) throw new Error('caption required');
         patch.caption = caption;
       }
-      if (imageUrl !== undefined) patch.image_url = imageUrl;
+      if (imageUrls !== undefined) {
+        const imgs = normalizeImages(imageUrls, null);
+        patch.image_urls = imgs;
+        patch.image_url  = imgs[0] ?? null;
+      } else if (imageUrl !== undefined) {
+        patch.image_url  = imageUrl;
+        patch.image_urls = imageUrl ? [imageUrl] : [];
+      }
       if (publishTo !== undefined) {
         if (!publishTo.length) throw new Error('Choose at least one channel');
         patch.publish_to = publishTo;

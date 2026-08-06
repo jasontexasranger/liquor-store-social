@@ -3353,30 +3353,66 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
   const [showImgGen,  setShowImgGen] = useState(false);
   const [lightbox,    setLightbox]   = useState(null);
   const [results,     setResults]    = useState([]);
+  const [images, setImages] = useState([]);   // [{ url, file }] in post order
+  const multiRef = useRef();
   const [showCreatives, setShowCreatives] = useState(false);
   const [postToFB,    setPostToFB]   = useState(true);
   const [postToIG,    setPostToIG]   = useState(false);
   const [uploading,   setUploading]  = useState(false);
 
   useEffect(()=>{
-    if (pendingImage) { setImgFile(null); setImgPrev(pendingImage); setGenImgUrl(pendingImage); setShowImgGen(false); }
+    if (pendingImage) {
+      setImages(prev => prev.some(x=>x.url===pendingImage) ? prev : prev.concat([{ url:pendingImage, file:null }]));
+      setImgFile(null); setImgPrev(pendingImage); setGenImgUrl(pendingImage); setShowImgGen(false);
+    }
   },[pendingImage]);
 
   const toggleStore = id => setSelected(p => p.includes(id)?p.filter(x=>x!==id):[...p,id]);
 
-  const handleFile = file => {
-    if (!file) return;
-    setImgFile(file); setGenImgUrl(null);
-    const r=new FileReader(); r.onload=()=>setImgPrev(r.result); r.readAsDataURL(file);
+  const MAX_POST_IMAGES = 10;
+
+  const addImages = files => {
+    const list = Array.from(files || []).filter(Boolean);
+    if (!list.length) return;
+    const room = MAX_POST_IMAGES - images.length;
+    if (room <= 0) { toast.error('Up to ' + MAX_POST_IMAGES + ' images per post'); return; }
+    list.slice(0, room).forEach(function(file) {
+      const r = new FileReader();
+      r.onload = () => setImages(prev => prev.concat([{ url: r.result, file }]));
+      r.readAsDataURL(file);
+    });
+    if (list.length > room) toast.error('Only added ' + room + ' — limit is ' + MAX_POST_IMAGES);
     if (onClearPending) onClearPending();
   };
 
+  const addUrl = url => {
+    if (!url) return;
+    if (images.length >= MAX_POST_IMAGES) { toast.error('Up to ' + MAX_POST_IMAGES + ' images per post'); return; }
+    setImages(prev => prev.concat([{ url, file: null }]));
+  };
+
+  const removeImage = i => setImages(prev => prev.filter((_, k) => k !== i));
+
+  const moveImage = (i, dir) => setImages(function(prev) {
+    const j = i + dir;
+    if (j < 0 || j >= prev.length) return prev;
+    const next = prev.slice();
+    const t = next[i]; next[i] = next[j]; next[j] = t;
+    return next;
+  });
+
+  const handleFile = file => {
+    if (!file) return;
+    addImages([file]);
+  };
+
   const clearImage = () => {
-    setImgFile(null); setImgPrev(null); setGenImgUrl(null);
+    setImages([]); setImgFile(null); setImgPrev(null); setGenImgUrl(null);
     if (onClearPending) onClearPending();
   };
 
   const handleGenerated = (url) => {
+    addUrl(url);
     setGenImgUrl(url); setImgPrev(url); setImgFile(null);
     // Deliberately left open: closing unmounts the builder and throws away
     // every field, so fixing a typo meant retyping the whole ad.
@@ -3387,8 +3423,8 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
     if (!caption.trim())     { toast.error('Write a caption first'); return; }
     if (selected.length===0) { toast.error('Select at least one store'); return; }
     if (!postToFB && !postToIG) { toast.error('Choose Facebook, Instagram, or both'); return; }
-    if (postToIG && !imgFile && !genImgUrl && !pendingImage) {
-      toast.error('Instagram requires an image'); return;
+    if (postToIG && images.length === 0) {
+      toast.error('Instagram requires at least one image'); return;
     }
     if (schedule) {
       const ts = new Date(schedule).getTime();
@@ -3398,21 +3434,25 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
     setLoading(true); setResults([]);
 
     // Upload image to Storage first if we have one (gives a stable public URL for Meta)
-    var imageUrl = null;
-    var activeImgUrl = genImgUrl || (pendingImage&&!imgFile?pendingImage:null);
-    if (imgFile || activeImgUrl) {
+    var imageUrls = [];
+    if (images.length) {
       try {
         setUploading(true);
-        imageUrl = await uploadImageToStorage(imgFile || activeImgUrl);
+        for (const item of images) {
+          // Library and generated images are already hosted; the helper passes
+          // http(s) URLs straight through.
+          imageUrls.push(await uploadImageToStorage(item.file || item.url));
+        }
       } catch(uploadErr) {
         toast.error('Image upload failed: ' + uploadErr.message);
         setLoading(false); setUploading(false); return;
       } finally { setUploading(false); }
     }
+    var imageUrl = imageUrls[0] || null;
 
     const publishTo = [];
     if (postToFB) publishTo.push('facebook');
-    if (postToIG && imageUrl) publishTo.push('instagram');
+    if (postToIG && imageUrls.length) publishTo.push('instagram');
     if (publishTo.length === 0) {
       toast.error('Instagram needs an image — nothing to publish');
       setLoading(false); return;
@@ -3425,6 +3465,7 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
           storeIds: selected,
           caption: caption,
           imageUrl: imageUrl,
+          imageUrls: imageUrls,
           publishTo: publishTo,
           scheduledAt: new Date(schedule).toISOString(),
         });
@@ -3436,6 +3477,7 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
           storeIds: selected,
           caption: caption,
           imageUrl: imageUrl,
+          imageUrls: imageUrls,
           publishTo: publishTo,
         });
         var res = (result.results || []).map(function(r) {
@@ -3457,7 +3499,7 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
           if (r.igError) toast.error(r.store + ' Instagram: ' + r.igError);
         });
       }
-      setCaption(''); setImgFile(null); setImgPrev(null); setGenImgUrl(null); setSchedule('');
+      setCaption(''); setImages([]); setImgFile(null); setImgPrev(null); setGenImgUrl(null); setSchedule('');
       if (onClearPending) onClearPending();
     } catch(e) {
       toast.error('Failed: ' + e.message);
@@ -3527,29 +3569,70 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
           </div>
         </div>
 
-        {/* Generated image preview */}
-        {(genImgUrl||(pendingImage&&!imgFile)) && (
+        {images.length > 0 && (
           <div className="mb-3">
-            <div className="relative inline-block group">
-              <img src={genImgUrl||pendingImage} alt="" onClick={()=>setLightbox(genImgUrl||pendingImage)}
-                className="h-36 rounded-xl object-cover border border-indigo-300 dark:border-indigo-600 shadow-sm cursor-zoom-in hover:opacity-90 transition-opacity"/>
-              <button onClick={clearImage} className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full w-5 h-5 text-xs flex items-center justify-center hover:bg-red-600"><Icon name="close" size={12}/></button>
-              <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                <span className="bg-black/50 text-white text-xs px-2 py-1 rounded-lg">Click to enlarge</span>
-              </div>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="lbl">{images.length} image{images.length===1?'':'s'}</span>
+              {images.length > 1 && <span className="lbl" style={{color:'var(--txt3)'}}>· first is the cover</span>}
+              <span className="flex-1"/>
+              <button onClick={clearImage} className="text-xs hover:underline" style={{color:'var(--red)'}}>
+                Remove all
+              </button>
             </div>
-            <p className="text-xs text-amber-600 dark:text-amber-400 mt-1"><Icon name="warn" className="text-amber-400"/> Post soon — image may expire.</p>
+            <div className="grid grid-cols-4 sm:grid-cols-5 gap-2">
+              {images.map(function(img, i) {
+                return (
+                  <div key={i} className="relative group" style={{border:'1px solid var(--line)'}}>
+                    <img src={img.url} alt="" onClick={()=>setLightbox(img.url)}
+                         className="w-full object-cover cursor-zoom-in"
+                         style={{aspectRatio:'1'}}/>
+                    <span className="mono absolute top-1 left-1 px-1"
+                          style={{fontSize:'9px', background:'rgba(2,5,11,.8)', color:'var(--cy)'}}>{i+1}</span>
+                    <button onClick={()=>removeImage(i)} aria-label="Remove image"
+                      className="absolute top-1 right-1 w-5 h-5 items-center justify-center hidden group-hover:flex"
+                      style={{background:'rgba(2,5,11,.85)', color:'var(--red)', border:'1px solid var(--red)'}}>
+                      <Icon name="close" size={11}/>
+                    </button>
+                    <div className="absolute bottom-1 left-1 right-1 gap-1 hidden group-hover:flex">
+                      <button onClick={()=>moveImage(i,-1)} disabled={i===0} aria-label="Move earlier"
+                        className="flex-1 flex items-center justify-center py-0.5 disabled:opacity-30"
+                        style={{background:'rgba(2,5,11,.85)', color:'var(--cy)', border:'1px solid var(--line2)'}}>
+                        <Icon name="back" size={11}/>
+                      </button>
+                      <button onClick={()=>moveImage(i,1)} disabled={i===images.length-1} aria-label="Move later"
+                        className="flex-1 flex items-center justify-center py-0.5 disabled:opacity-30"
+                        style={{background:'rgba(2,5,11,.85)', color:'var(--cy)', border:'1px solid var(--line2)'}}>
+                        <Icon name="fwd" size={11}/>
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+              {images.length < 10 && (
+                <button onClick={()=>multiRef.current?.click()}
+                  className="flex flex-col items-center justify-center gap-1"
+                  style={{border:'1px dashed var(--line2)', aspectRatio:'1', color:'var(--cy-dim)'}}>
+                  <Icon name="up" size={18}/>
+                  <span className="lbl" style={{fontSize:'8px'}}>Add</span>
+                </button>
+              )}
+            </div>
+            {postToIG && images.length > 10 && (
+              <p className="lbl mt-2" style={{color:'var(--amb)'}}>Instagram carousels cap at 10</p>
+            )}
           </div>
         )}
 
-        {/* File upload (shown when no generated image) */}
-        {!genImgUrl && !(pendingImage&&!imgFile) && (
+        <input ref={multiRef} type="file" accept="image/*" multiple className="hidden"
+               onChange={function(e){ addImages(e.target.files); e.target.value=''; }}/>
+
+        {images.length === 0 && (
           <ImagePicker file={imgFile} preview={imgPrev} onFile={handleFile} onClear={clearImage} label="Upload Image"/>
         )}
 
         {showCreatives && (
           <CreativePicker allowed={POST_ASPECTS} storeIds={selected}
-            onPick={c=>{ setGenImgUrl(c.public_url); setImgPrev(c.public_url); setImgFile(null); }}
+            onPick={c=>{ addUrl(c.public_url); }}
             onClose={()=>setShowCreatives(false)}/>
         )}
 

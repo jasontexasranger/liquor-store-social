@@ -50,21 +50,62 @@ async function getPageToken(pageId: string): Promise<string> {
   return data.access_token;
 }
 
-async function publishFB(pageId: string, token: string, caption: string, imageUrl: string | null): Promise<string> {
+const MAX_IMAGES = 10;
+
+// Rows written before multi-image support only have image_url.
+function imagesOf(post: Record<string, unknown>): string[] {
+  const arr = Array.isArray(post.image_urls) ? post.image_urls as string[] : [];
+  const list = arr.length ? arr : (post.image_url ? [post.image_url as string] : []);
+  return list.filter(u => typeof u === 'string' && u.trim()).slice(0, MAX_IMAGES);
+}
+
+async function publishFB(pageId: string, token: string, caption: string, images: string[]): Promise<string> {
   const full = caption + POST_SUFFIX;
-  if (imageUrl) {
-    const r = await gPost(`/${pageId}/photos`, { url: imageUrl, caption: full }, token);
+
+  if (!images.length) {
+    const r = await gPost(`/${pageId}/feed`, { message: full }, token);
+    return r.id;
+  }
+  if (images.length === 1) {
+    const r = await gPost(`/${pageId}/photos`, { url: images[0], caption: full }, token);
     return r.post_id ?? r.id;
   }
-  const r = await gPost(`/${pageId}/feed`, { message: full }, token);
+
+  // Upload each unpublished, then attach them to a single feed post.
+  const mediaIds: string[] = [];
+  for (const url of images) {
+    const up = await gPost(`/${pageId}/photos`, { url, published: false }, token);
+    if (!up.id) throw new Error('Facebook rejected one of the images');
+    mediaIds.push(up.id);
+  }
+  const body: Record<string, unknown> = { message: full };
+  mediaIds.forEach((id, i) => { body[`attached_media[${i}]`] = { media_fbid: id }; });
+  const r = await gPost(`/${pageId}/feed`, body, token);
   return r.id;
 }
 
-async function publishIG(igId: string, token: string, caption: string, imageUrl: string): Promise<string> {
+async function publishIG(igId: string, token: string, caption: string, images: string[]): Promise<string> {
   const full = caption + POST_SUFFIX;
-  const container = await gPost(`/${igId}/media`, { image_url: imageUrl, caption: full }, token);
-  if (!container.id) throw new Error('IG container creation failed');
-  const pub = await gPost(`/${igId}/media_publish`, { creation_id: container.id }, token);
+  if (!images.length) throw new Error('Instagram requires an image');
+
+  if (images.length === 1) {
+    const container = await gPost(`/${igId}/media`, { image_url: images[0], caption: full }, token);
+    if (!container.id) throw new Error('IG container creation failed');
+    const pub = await gPost(`/${igId}/media_publish`, { creation_id: container.id }, token);
+    return pub.id;
+  }
+
+  const children: string[] = [];
+  for (const url of images) {
+    const child = await gPost(`/${igId}/media`, { image_url: url, is_carousel_item: true }, token);
+    if (!child.id) throw new Error('IG carousel item creation failed');
+    children.push(child.id);
+  }
+  const parent = await gPost(`/${igId}/media`, {
+    media_type: 'CAROUSEL', children: children.join(','), caption: full,
+  }, token);
+  if (!parent.id) throw new Error('IG carousel container creation failed');
+  const pub = await gPost(`/${igId}/media_publish`, { creation_id: parent.id }, token);
   return pub.id;
 }
 
@@ -132,6 +173,7 @@ Deno.serve(async (req) => {
     // Each channel publishes independently — a failure on one must never stop
     // the other from being attempted, nor mask its success.
     const publishTo: string[] = post.publish_to ?? ['facebook'];
+    const images = imagesOf(post);
     const errors: string[] = [];
     let pageToken: string | null = null;
 
@@ -144,7 +186,7 @@ Deno.serve(async (req) => {
     if (pageToken) {
       if (publishTo.includes('facebook')) {
         try {
-          fbPostId = await publishFB(acct.fb_page_id, pageToken, post.caption, post.image_url ?? null);
+          fbPostId = await publishFB(acct.fb_page_id, pageToken, post.caption, images);
         } catch (e) {
           errors.push('Facebook: ' + (e instanceof Error ? e.message : String(e)));
         }
@@ -152,7 +194,7 @@ Deno.serve(async (req) => {
 
       if (publishTo.includes('instagram')) {
         try {
-          if (!post.image_url) throw new Error('Instagram requires an image');
+          if (!images.length) throw new Error('Instagram requires an image');
           let igId = acct.ig_account_id;
           if (!igId) {
             // Not cached yet — look it up from the linked Facebook Page.
@@ -169,7 +211,7 @@ Deno.serve(async (req) => {
             }
           }
           if (!igId) throw new Error('No Instagram Business account linked to this Page');
-          igPostId = await publishIG(igId, pageToken, post.caption, post.image_url);
+          igPostId = await publishIG(igId, pageToken, post.caption, images);
         } catch (e) {
           errors.push('Instagram: ' + (e instanceof Error ? e.message : String(e)));
         }

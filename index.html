@@ -6184,7 +6184,6 @@ function BrandPage({ settings }) {
   const tabs = [
     {id:'profile',   icon:'palette', label:'Brand Profile'},
     {id:'templates', icon:'image', label:'Ad Templates'},
-    {id:'library',   icon:'package', label:'Product Library'},
   ];
   return (
     <div>
@@ -6194,11 +6193,10 @@ function BrandPage({ settings }) {
             <button key={t.id} onClick={()=>setTab(t.id)} className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}><Icon name={t.icon} size={14} className="mr-2"/>{t.label}</button>
           ))}
         </div>
-        {(tab==='profile'||tab==='templates') && <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs mb-1">{STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</Select>}
+        {<Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs mb-1">{STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</Select>}
       </div>
       {tab==='profile'   && <BrandProfileEditor storeId={storeId}/>}
       {tab==='templates' && <TemplateManager storeId={storeId}/>}
-      {tab==='library'   && <ProductLibrary/>}
     </div>
   );
 }
@@ -6280,6 +6278,7 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
     { id:'shelf', icon:'tag', label:'Shelf Talkers' },
     { id:'posts', icon:'note', label:'Posts' },
     { id:'creatives', icon:'image', label:'Creatives' },
+    ...(isAdmin ? [{ id:'products', icon:'package', label:'Products' }] : []),
     ...(isAdmin ? [
       { id:'ads',      icon:'mega', label:'Ads' },
       { id:'brand',    icon:'palette', label:'Brand' },
@@ -6361,6 +6360,7 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
         {page==='shelf'                  && <ShelfTalkerPage isAdmin={isAdmin} userStoreIds={isAdmin ? [] : userStoreIds} userId={user ? user.id : null}/>}
         {page==='creatives'              && <CreativeLibrary isAdmin={isAdmin}
                                              myStores={isAdmin ? STORES : STORES.filter(st=>userStoreIds.includes(st.id))}/>}
+        {page==='products' && isAdmin    && <ProductLibrary/>}
         {page==='ads'      && isAdmin    && <AdsPage         settings={settings}/>}
         {page==='brand'    && isAdmin    && <BrandPage        settings={settings}/>}
         {page==='settings' && isAdmin    && <SettingsPage     settings={settings} onSave={saveSettings} currentUserId={user ? user.id : null}/>}

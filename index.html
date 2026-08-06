@@ -863,7 +863,17 @@ function useAdTemplateFields(templateId) {
     setLoading(true);
     const { data } = await sb.from('ad_template_fields')
       .select('*').eq('template_id', templateId).order('field_order');
-    setFields(data || []);
+    // Rows saved before a column existed come back with nulls. Merging the
+    // defaults means an old field renders — and displays in the editor — the
+    // same as a freshly created one.
+    const merged = (data || []).map(f => {
+      const out = { ...AD_FIELD_DEFAULTS, ...f };
+      for (const k of Object.keys(AD_FIELD_DEFAULTS)) {
+        if (out[k] === null || out[k] === undefined) out[k] = AD_FIELD_DEFAULTS[k];
+      }
+      return out;
+    });
+    setFields(merged);
     setLoading(false);
   }, [templateId]);
 
@@ -1248,6 +1258,45 @@ function AdTemplateLayout({ tpl, onClose, onSaved }) {
   const [mockup, setMockup] = useState(null);
   const [rendering, setRendering] = useState(false);
   const [overflows, setOverflows] = useState([]);
+  const [art, setArt] = useState(tpl.data);
+  const [swapping, setSwapping] = useState(false);
+  const artRef = useRef();
+
+  // Artwork can be replaced in place. Field geometry is stored in percentages,
+  // so a revised graphic at any size keeps the existing layout — only the
+  // pixels underneath change.
+  const replaceArtwork = async (file) => {
+    if (!file) return;
+    setSwapping(true);
+    try {
+      const dataUrl = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.onerror = () => rej(new Error('Could not read that file'));
+        r.readAsDataURL(file);
+      });
+      const dims = await new Promise(res => {
+        const i = new Image();
+        i.onload  = () => res({ w:i.naturalWidth, h:i.naturalHeight });
+        i.onerror = () => res(null);
+        i.src = dataUrl;
+      });
+      const sb = getSB();
+      const patchRow = { data: dataUrl };
+      if (dims) { patchRow.canvas_w = dims.w; patchRow.canvas_h = dims.h; }
+      const { error } = await sb.from('brand_templates').update(patchRow).eq('id', tpl.id);
+      if (error) throw error;
+      setArt(dataUrl);
+      tpl.data = dataUrl;
+      if (dims) { tpl.canvas_w = dims.w; tpl.canvas_h = dims.h; }
+      setMockup(null);
+      toast.success(dims
+        ? `Artwork replaced (${dims.w}×${dims.h}) — field layout kept`
+        : 'Artwork replaced — field layout kept');
+      if (onSaved) onSaved();
+    } catch(e) { toast.error(e.message); }
+    finally { setSwapping(false); }
+  };
 
   // Sample copy chosen to stress the layout: a long name that must wrap and
   // shrink, and a save value wider than "$0.00".
@@ -1262,7 +1311,7 @@ function AdTemplateLayout({ tpl, onClose, onSaved }) {
     if (!draft.length) { toast.error('Add some fields first'); return; }
     setRendering(true);
     try {
-      const rendered = await renderFieldTemplate(tpl, draft, SAMPLE, null);
+      const rendered = await renderFieldTemplate({ ...tpl, data: art }, draft, SAMPLE, null);
       setMockup(typeof rendered === 'string' ? rendered : rendered.url);
       const over = typeof rendered === 'string' ? [] : rendered.overflows;
       setOverflows(over);
@@ -1296,12 +1345,17 @@ function AdTemplateLayout({ tpl, onClose, onSaved }) {
         <span className="ttl">Field layout — {tpl.name}</span>
         <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
         {dirty && <Badge color="yellow">Unsaved</Badge>}
+        <Button size="sm" variant="outline" onClick={()=>artRef.current?.click()} loading={swapping}>
+          <Icon name="image"/> Replace artwork
+        </Button>
+        <input ref={artRef} type="file" accept="image/*" className="hidden"
+               onChange={e=>{ replaceArtwork(e.target.files?.[0]); e.target.value=''; }}/>
         <Button size="sm" onClick={persist} loading={busy}><Icon name="save"/> Save layout</Button>
         <Button size="sm" variant="ghost" onClick={onClose}><Icon name="close"/></Button>
       </div>
       {loading
         ? <p className="lbl text-center py-8">Loading…</p>
-        : <AdFieldEditor templateDataUrl={tpl.data} fields={draft} onChange={change}/>}
+        : <AdFieldEditor templateDataUrl={art} fields={draft} onChange={change}/>}
 
       <div className="mt-5 pt-4" style={{borderTop:'1px solid var(--line)'}}>
         <div className="flex items-center gap-3 mb-3 flex-wrap">
@@ -2339,7 +2393,7 @@ const AD_FONTS = [
   { id:'Chakra Petch',     label:'Chakra Petch',     stack:"'Chakra Petch',sans-serif",     weights:[400,500,600,700] },
   { id:'Arial',            label:'Arial (system)',   stack:'Arial,Helvetica,sans-serif',    weights:[400,700] },
 ];
-const fontStack = id => (AD_FONTS.find(f=>f.id===id) || AD_FONTS[AD_FONTS.length-1]).stack;
+const fontStack = id => (AD_FONTS.find(f=>f.id===id) || AD_FONTS[0]).stack;
 
 // Canvas silently substitutes a fallback if the face isn't ready yet.
 async function ensureFontsReady() {

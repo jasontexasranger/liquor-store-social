@@ -2449,18 +2449,27 @@ function GroupedBars({ months, series, height=210 }) {
 }
 
 // Horizontal bars for rankings.
-function RankBars({ rows, max, colorOf, valueFmt }) {
+function RankBars({ rows, max, colorOf, valueFmt, onSelect }) {
   const top = max || Math.max(1, ...rows.map(r=>r.value));
   return (
     <div className="space-y-2">
       {rows.map(function(r,i){
         const pct = Math.max(1, (r.value/top)*100);
+        const clickable = !!onSelect;
         return (
-          <div key={i}>
+          <div key={i}
+               onClick={clickable ? function(){ onSelect(r); } : undefined}
+               role={clickable ? 'button' : undefined}
+               tabIndex={clickable ? 0 : undefined}
+               onKeyDown={clickable ? function(e){ if(e.key==='Enter'||e.key===' ') onSelect(r); } : undefined}
+               style={clickable ? { cursor:'pointer' } : undefined}
+               onMouseEnter={clickable ? function(e){ e.currentTarget.style.background='rgba(56,224,240,.05)'; } : undefined}
+               onMouseLeave={clickable ? function(e){ e.currentTarget.style.background='transparent'; } : undefined}>
             <div className="flex items-baseline gap-2 mb-1">
               <span className="text-xs truncate flex-1" style={{color:'var(--txt)'}}>{r.label}</span>
               {r.note && <span className="lbl" style={{color:'var(--txt3)'}}>{r.note}</span>}
               <span className="mono text-xs" style={{color:'var(--cy)'}}>{(valueFmt||fmtMoney)(r.value)}</span>
+              {clickable && <Icon name="chevD" size={11} style={{color:'var(--txt3)', transform:'rotate(-90deg)'}}/>}
             </div>
             <div style={{height:'3px', background:'rgba(56,224,240,.1)'}}>
               <div style={{height:'100%', width:pct+'%',
@@ -2474,9 +2483,120 @@ function RankBars({ rows, max, colorOf, valueFmt }) {
   );
 }
 
+// Shows exactly which rows add up to a headline number, so a total on the
+// dashboard can always be traced back to the feature rows behind it.
+function FeatureDrill({ title, subtitle, rows, onClose }) {
+  const sorted = [...rows].sort(function(a,b){
+    return String(a.period).localeCompare(String(b.period)) ||
+           String(a.store_id).localeCompare(String(b.store_id));
+  });
+  const totalRev = sorted.reduce((a,r)=>a+Number(r.revenue||0), 0);
+  const totalQty = sorted.reduce((a,r)=>a+Number(r.qty_sold||0), 0);
+  const missing  = sorted.filter(r => r.revenue == null).length;
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-6"
+         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
+      <div className="hud hud-brk w-full max-w-3xl max-h-[86vh] overflow-auto p-6"
+           onClick={e=>e.stopPropagation()}>
+        <div className="flex items-start gap-3 mb-1">
+          <div className="flex-1 min-w-0">
+            <p className="ttl truncate">{title}</p>
+            {subtitle && <p className="lbl mt-1">{subtitle}</p>}
+          </div>
+          <button onClick={onClose} style={{color:'var(--txt2)'}} aria-label="Close">
+            <Icon name="close"/>
+          </button>
+        </div>
+
+        <div className="flex gap-5 my-4 flex-wrap">
+          <div>
+            <p className="lbl">Revenue</p>
+            <p className="mono" style={{fontSize:'20px', color:'var(--cy)'}}>{fmtMoney(totalRev)}</p>
+          </div>
+          <div>
+            <p className="lbl">Units</p>
+            <p className="mono" style={{fontSize:'20px'}}>{totalQty.toLocaleString()}</p>
+          </div>
+          <div>
+            <p className="lbl">Average price</p>
+            <p className="mono" style={{fontSize:'20px'}}>{totalQty ? fmtMoney(totalRev/totalQty) : '—'}</p>
+          </div>
+          <div>
+            <p className="lbl">Appearances</p>
+            <p className="mono" style={{fontSize:'20px'}}>{sorted.length}</p>
+          </div>
+        </div>
+
+        {missing > 0 && (
+          <p className="text-xs mb-3" style={{color:'var(--amb)'}}>
+            <Icon name="warn" size={12} className="mr-1.5"/>
+            {missing} of {sorted.length} {missing===1?'row has':'rows have'} no sales recorded — the revenue above excludes {missing===1?'it':'them'}
+          </p>
+        )}
+
+        <div className="overflow-x-auto">
+          <table style={{width:'100%', minWidth:'620px', borderCollapse:'collapse'}}>
+            <thead>
+              <tr style={{borderBottom:'1px solid var(--line2)'}}>
+                {['Month','Store','Product','Size','Sale','Units','Revenue'].map(function(h,i){
+                  return <th key={h} className="lbl"
+                             style={{textAlign: i>=4?'right':'left', padding:'0 6px 8px'}}>{h}</th>;
+                })}
+              </tr>
+            </thead>
+            <tbody>
+              {sorted.map(function(r,i){
+                const st = STORES.find(x=>x.id===r.store_id);
+                return (
+                  <tr key={i} style={{borderBottom:'1px solid rgba(56,224,240,.07)'}}>
+                    <td className="mono" style={{padding:'7px 6px', fontSize:'11px', color:'var(--txt2)'}}>
+                      {monthLabel(r.period).replace(' 20',' ')}
+                    </td>
+                    <td style={{padding:'7px 6px', fontSize:'12px'}}>
+                      <span className="inline-flex items-center gap-1.5">
+                        <span style={{width:'7px',height:'7px',background:storeColor(r.store_id),display:'inline-block'}}/>
+                        {st ? st.name.split(' ')[0] : r.store_id}
+                      </span>
+                    </td>
+                    <td style={{padding:'7px 6px', fontSize:'12px', color:'var(--txt)'}}>{r.name}</td>
+                    <td className="mono" style={{padding:'7px 6px', fontSize:'11px', color:'var(--txt3)'}}>{r.size||''}</td>
+                    <td className="mono" style={{padding:'7px 6px', fontSize:'11px', textAlign:'right'}}>
+                      {r.sale_price != null ? fmtMoney(r.sale_price) : ''}
+                    </td>
+                    <td className="mono" style={{padding:'7px 6px', fontSize:'11px', textAlign:'right'}}>
+                      {r.qty_sold != null ? Number(r.qty_sold).toLocaleString() : '—'}
+                    </td>
+                    <td className="mono" style={{padding:'7px 6px', fontSize:'11px', textAlign:'right',
+                                                 color: r.revenue != null ? 'var(--cy)' : 'var(--txt3)'}}>
+                      {r.revenue != null ? fmtMoney(r.revenue) : 'not recorded'}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr style={{borderTop:'1px solid var(--line2)'}}>
+                <td colSpan={5} className="lbl" style={{padding:'9px 6px'}}>Total</td>
+                <td className="mono" style={{padding:'9px 6px', textAlign:'right', color:'var(--cy)'}}>
+                  {totalQty.toLocaleString()}
+                </td>
+                <td className="mono" style={{padding:'9px 6px', textAlign:'right', color:'var(--cy)'}}>
+                  {fmtMoney(totalRev)}
+                </td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function FeaturesDashboard() {
   const { periods, loading } = useAllFeatures();
   const [year, setYear] = useState(String(new Date().getFullYear()));
+  const [drill, setDrill] = useState(null);
 
   const inYear = periods.filter(p => String(p.period).startsWith(year));
   const years = [...new Set(periods.map(p => String(p.period).slice(0,4)))].sort().reverse();
@@ -2547,6 +2667,8 @@ function FeaturesDashboard() {
 
   return (
     <div className="space-y-4">
+      {drill && <FeatureDrill title={drill.title} subtitle={drill.subtitle}
+                              rows={drill.rows} onClose={()=>setDrill(null)}/>}
       <div className="flex items-center gap-3 flex-wrap">
         <span className="ttl">Performance</span>
         <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
@@ -2586,7 +2708,11 @@ function FeaturesDashboard() {
             <span className="ttl">By store</span>
             <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
           </div>
-          <RankBars rows={byStore} colorOf={r=>storeColor(r.store)}/>
+          <RankBars rows={byStore} colorOf={r=>storeColor(r.store)}
+            onSelect={function(r){
+              const mine = rows.filter(x=>x.store_id===r.store);
+              setDrill({ title:r.label, subtitle:mine.length+' features in '+year, rows:mine });
+            }}/>
         </Card>
 
         <Card>
@@ -2595,7 +2721,11 @@ function FeaturesDashboard() {
             <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
           </div>
           {byProduct.length
-            ? <RankBars rows={byProduct}/>
+            ? <RankBars rows={byProduct}
+                onSelect={function(r){
+                  const mine = rows.filter(x=>(x.name||'').trim().toUpperCase()===r.label);
+                  setDrill({ title:r.label, subtitle:'Every time this ran in '+year, rows:mine });
+                }}/>
             : <p className="lbl py-6 text-center">No sales figures recorded yet</p>}
         </Card>
       </div>

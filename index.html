@@ -828,6 +828,360 @@ function CreativeLibrary({ isAdmin, myStores }) {
 }
 
 // ─────────────────────────────────────────────
+// TEMPLATE-DRIVEN PRICE ADS
+// ─────────────────────────────────────────────
+// Renders a blank template image and fills only the boxes an admin positioned.
+// Nothing is invented — badges and panels that are baked into the artwork stay
+// baked, which is what the hardcoded renderer got wrong.
+const AD_FIELD_KEYS = [
+  { key:'product_name',  label:'Product name',  type:'text',          hint:'e.g. CORONA EXTRA' },
+  { key:'pack_size',     label:'Pack / size',   type:'text',          hint:'e.g. 12 PACK · 355ml' },
+  { key:'price',         label:'Price',         type:'text',          hint:'e.g. 18.99' },
+  { key:'save',          label:'Save amount',   type:'text',          hint:'e.g. $3.00' },
+  { key:'product_image', label:'Product photo', type:'product_image', hint:'Bottle / pack shot' },
+  { key:'custom',        label:'Custom text',   type:'text',          hint:'Anything else' },
+];
+
+const AD_FIELD_DEFAULTS = {
+  field_key:'custom', field_type:'text', label:'New field',
+  align:'left', valign:'top', color:'#1b365d', bold:true, uppercase:true,
+  wrap:true, max_lines:2, min_font_size:8, max_font_size:200,
+  line_spacing:1.15, prefix:'', suffix:'',
+  fit_mode:'contain', remove_bg:true,
+};
+
+function useAdTemplateFields(templateId) {
+  const [fields, setFields] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  const load = useCallback(async () => {
+    if (!templateId) { setFields([]); return; }
+    const sb=getSB(); if(!sb) return;
+    setLoading(true);
+    const { data } = await sb.from('ad_template_fields')
+      .select('*').eq('template_id', templateId).order('field_order');
+    setFields(data || []);
+    setLoading(false);
+  }, [templateId]);
+
+  useEffect(()=>{ load(); }, [load]);
+
+  const save = async (list) => {
+    const sb=getSB(); if(!sb) throw new Error('Not connected');
+    await sb.from('ad_template_fields').delete().eq('template_id', templateId);
+    if (list.length) {
+      const rows = list.map((f,i) => {
+        const { id:_a, created_at:_b, template_id:_c, ...rest } = f;
+        return { ...rest, template_id: templateId, field_order: i };
+      });
+      const { error } = await sb.from('ad_template_fields').insert(rows);
+      if (error) throw error;
+    }
+    await load();
+  };
+
+  return { fields, loading, save, reload: load };
+}
+
+function loadImg(src) {
+  return new Promise((res, rej) => {
+    const i = new Image();
+    i.crossOrigin = 'anonymous';
+    i.onload = () => res(i);
+    i.onerror = () => rej(new Error('Could not load image'));
+    i.src = src;
+  });
+}
+
+// Draw an image inside a box without distorting it.
+function drawImageFitted(ctx, img, box, mode) {
+  const ir = img.width / img.height;
+  const br = box.w / box.h;
+  let dw, dh;
+  if (mode === 'cover' ? ir > br : ir < br) { dh = box.h; dw = dh * ir; }
+  else                                      { dw = box.w; dh = dw / ir; }
+  const dx = box.x + (box.w - dw) / 2;
+  const dy = box.y + (box.h - dh) / 2;
+  ctx.save();
+  if (mode === 'cover') { ctx.beginPath(); ctx.rect(box.x, box.y, box.w, box.h); ctx.clip(); }
+  ctx.drawImage(img, dx, dy, dw, dh);
+  ctx.restore();
+}
+
+async function renderFieldTemplate(tpl, fields, values, productDataUrl, onStep) {
+  const W = tpl.canvas_w || 1080;
+  const H = tpl.canvas_h || 1080;
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+
+  if (tpl.data) {
+    const bg = await loadImg(tpl.data);
+    ctx.drawImage(bg, 0, 0, W, H);
+  }
+
+  const imageFields = fields.filter(f => f.field_type === 'product_image');
+  let productImg = null;
+  if (productDataUrl && imageFields.length) {
+    let src = productDataUrl;
+    if (imageFields.some(f => f.remove_bg)) {
+      if (onStep) onStep('removing');
+      try { src = await removeProductBackground(productDataUrl); } catch(e) { /* keep original */ }
+    }
+    try { productImg = await loadImg(src); } catch(e) { /* skip */ }
+  }
+
+  if (onStep) onStep('compositing');
+
+  const sorted = [...fields].sort((a,b)=>(a.field_order||0)-(b.field_order||0));
+  for (const f of sorted) {
+    const box = {
+      x: Number(f.x_pct)/100*W, y: Number(f.y_pct)/100*H,
+      w: Number(f.w_pct)/100*W, h: Number(f.h_pct)/100*H,
+    };
+
+    if (f.field_type === 'product_image') {
+      if (productImg) drawImageFitted(ctx, productImg, box, f.fit_mode || 'contain');
+      continue;
+    }
+
+    let text = values[f.field_key];
+    if (text == null || text === '') continue;
+    text = String(text);
+    if (f.uppercase) text = text.toUpperCase();
+    text = (f.prefix || '') + text;
+
+    drawTextField(ctx, text, box, {
+      align: f.align || 'left',
+      valign: f.valign || 'top',
+      color: f.color || '#000000',
+      bold: !!f.bold,
+      lineSpacing: Number(f.line_spacing) || 1.15,
+      wrap: f.wrap !== false,
+      maxLines: f.max_lines || null,
+      minFontSize: f.min_font_size || 8,
+      maxFontSize: f.max_font_size || 200,
+      suffix: f.suffix || '',
+    });
+  }
+
+  return canvas.toDataURL('image/png');
+}
+
+// ─────────────────────────────────────────────
+// AD TEMPLATE FIELD EDITOR
+// ─────────────────────────────────────────────
+function AdFieldEditor({ templateDataUrl, fields, onChange }) {
+  const boxRef = useRef();
+  const [sel, setSel] = useState(null);
+  const [drag, setDrag] = useState(null);
+  const [draw, setDraw] = useState(null);
+
+  const rel = (e) => {
+    const r = boxRef.current.getBoundingClientRect();
+    return { x:(e.clientX-r.left)/r.width*100, y:(e.clientY-r.top)/r.height*100 };
+  };
+  const patch = (id, f) => onChange(fields.map(x=>x.id===id?{...x,...f}:x));
+  const del   = (id) => { onChange(fields.filter(x=>x.id!==id)); setSel(null); };
+
+  const onDown = (e) => {
+    if (e.target !== boxRef.current && !e.target.dataset.canvas) return;
+    const { x, y } = rel(e); setDraw({ x, y }); setSel(null);
+  };
+  const onMove = (e) => {
+    if (drag) {
+      const { x, y } = rel(e);
+      const dx = x-drag.sx, dy = y-drag.sy, o = drag.orig;
+      if (drag.mode==='move') patch(drag.id,{ x_pct:Math.max(0,Math.min(100-o.w_pct,o.x_pct+dx)), y_pct:Math.max(0,Math.min(100-o.h_pct,o.y_pct+dy)) });
+      else patch(drag.id,{ w_pct:Math.max(3,Math.min(100-o.x_pct,o.w_pct+dx)), h_pct:Math.max(2,Math.min(100-o.y_pct,o.h_pct+dy)) });
+    }
+  };
+  const onUp = (e) => {
+    if (draw) {
+      const { x, y } = rel(e);
+      const w = Math.abs(x-draw.x), h = Math.abs(y-draw.y);
+      if (w>3 && h>2) {
+        const nf = { id:'new_'+Date.now(), ...AD_FIELD_DEFAULTS,
+          x_pct:Math.min(x,draw.x), y_pct:Math.min(y,draw.y), w_pct:w, h_pct:h,
+          label:'Field '+(fields.length+1) };
+        onChange([...fields, nf]); setSel(nf.id);
+      }
+      setDraw(null);
+    }
+    setDrag(null);
+  };
+
+  const cur = fields.find(f=>f.id===sel);
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+      <div className="lg:col-span-2">
+        <p className="lbl mb-2">Drag on the template to add a field · click one to edit it</p>
+        <div ref={boxRef} data-canvas="1" onMouseDown={onDown} onMouseMove={onMove}
+             onMouseUp={onUp} onMouseLeave={onUp}
+             className="relative select-none"
+             style={{ border:'1px solid var(--line)', cursor:'crosshair', lineHeight:0 }}>
+          <img src={templateDataUrl} alt="" className="w-full block pointer-events-none"/>
+          {fields.map(f=>{
+            const on = f.id===sel;
+            const img = f.field_type==='product_image';
+            const c = img ? 'var(--amb)' : 'var(--cy)';
+            return (
+              <div key={f.id}
+                onMouseDown={e=>{e.stopPropagation();setSel(f.id);const r=rel(e);setDrag({id:f.id,mode:'move',sx:r.x,sy:r.y,orig:{...f}});}}
+                className="absolute"
+                style={{ left:f.x_pct+'%', top:f.y_pct+'%', width:f.w_pct+'%', height:f.h_pct+'%',
+                         border:'1px '+(img?'dashed':'solid')+' '+c,
+                         background: on ? 'rgba(56,224,240,.14)' : 'rgba(56,224,240,.05)',
+                         cursor:'move', boxShadow: on ? '0 0 12px rgba(56,224,240,.35)' : 'none' }}>
+                <span className="mono absolute -top-4 left-0 whitespace-nowrap"
+                      style={{ fontSize:'9px', color:c }}>{f.label}</span>
+                <div onMouseDown={e=>{e.stopPropagation();setSel(f.id);const r=rel(e);setDrag({id:f.id,mode:'size',sx:r.x,sy:r.y,orig:{...f}});}}
+                     className="absolute" style={{ right:-4, bottom:-4, width:9, height:9, background:c, cursor:'nwse-resize' }}/>
+              </div>
+            );
+          })}
+          {draw && <div className="absolute pointer-events-none"
+            style={{ left:Math.min(draw.x,draw.x)+'%', top:Math.min(draw.y,draw.y)+'%',
+                     border:'1px dashed var(--cy)', background:'rgba(56,224,240,.1)' }}/>}
+        </div>
+      </div>
+
+      <div>
+        {!cur ? (
+          <div className="hud p-4">
+            <p className="lbl">No field selected</p>
+            <p className="text-xs mt-2" style={{color:'var(--txt2)'}}>
+              Drag a box on the template to create one. Amber dashed boxes are product photos, cyan are text.
+            </p>
+          </div>
+        ) : (
+          <div className="hud p-4 space-y-3">
+            <div className="flex items-center gap-2">
+              <span className="ttl flex-1">Field</span>
+              <Button size="sm" variant="danger" onClick={()=>del(cur.id)}><Icon name="trash" size={12}/></Button>
+            </div>
+
+            <div>
+              <Label>Content</Label>
+              <Select value={cur.field_key} onChange={e=>{
+                const k = AD_FIELD_KEYS.find(x=>x.key===e.target.value);
+                patch(cur.id,{ field_key:k.key, field_type:k.type, label:k.label });
+              }}>
+                {AD_FIELD_KEYS.map(k=><option key={k.key} value={k.key}>{k.label}</option>)}
+              </Select>
+              <p className="lbl mt-1">{(AD_FIELD_KEYS.find(k=>k.key===cur.field_key)||{}).hint}</p>
+            </div>
+
+            {cur.field_type === 'product_image' ? (
+              <React.Fragment>
+                <div>
+                  <Label>Fit</Label>
+                  <Select value={cur.fit_mode||'contain'} onChange={e=>patch(cur.id,{fit_mode:e.target.value})}>
+                    <option value="contain">Contain — never crop</option>
+                    <option value="cover">Cover — fill and crop</option>
+                  </Select>
+                </div>
+                <label className="flex items-center gap-2 text-xs cursor-pointer" style={{color:'var(--txt2)'}}>
+                  <input type="checkbox" checked={cur.remove_bg!==false}
+                         onChange={e=>patch(cur.id,{remove_bg:e.target.checked})}/>
+                  Remove background before placing
+                </label>
+              </React.Fragment>
+            ) : (
+              <React.Fragment>
+                <div className="grid grid-cols-2 gap-2">
+                  <div><Label>Align</Label>
+                    <Select value={cur.align||'left'} onChange={e=>patch(cur.id,{align:e.target.value})}>
+                      <option value="left">Left</option><option value="center">Center</option><option value="right">Right</option>
+                    </Select></div>
+                  <div><Label>Vertical</Label>
+                    <Select value={cur.valign||'top'} onChange={e=>patch(cur.id,{valign:e.target.value})}>
+                      <option value="top">Top</option><option value="middle">Middle</option><option value="bottom">Bottom</option>
+                    </Select></div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div><Label>Colour</Label>
+                    <input type="color" value={cur.color||'#000000'} onChange={e=>patch(cur.id,{color:e.target.value})}
+                           style={{width:'100%',height:'34px',background:'transparent',border:'1px solid var(--line)'}}/></div>
+                  <div><Label>Max lines</Label>
+                    <Input type="number" min="1" max="6" value={cur.max_lines||2}
+                           onChange={e=>patch(cur.id,{max_lines:+e.target.value})}/></div>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div><Label>Prefix</Label>
+                    <Input value={cur.prefix||''} onChange={e=>patch(cur.id,{prefix:e.target.value})} placeholder="$"/></div>
+                  <div><Label>Suffix</Label>
+                    <Input value={cur.suffix||''} onChange={e=>patch(cur.id,{suffix:e.target.value})} placeholder="ea"/></div>
+                </div>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-2 text-xs cursor-pointer" style={{color:'var(--txt2)'}}>
+                    <input type="checkbox" checked={!!cur.bold} onChange={e=>patch(cur.id,{bold:e.target.checked})}/> Bold
+                  </label>
+                  <label className="flex items-center gap-2 text-xs cursor-pointer" style={{color:'var(--txt2)'}}>
+                    <input type="checkbox" checked={!!cur.uppercase} onChange={e=>patch(cur.id,{uppercase:e.target.checked})}/> Uppercase
+                  </label>
+                </div>
+              </React.Fragment>
+            )}
+
+            <div>
+              <Label>Label (editor only)</Label>
+              <Input value={cur.label||''} onChange={e=>patch(cur.id,{label:e.target.value})}/>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AdTemplateLayout({ tpl, onClose, onSaved }) {
+  const toast = useToast();
+  const { fields, loading, save } = useAdTemplateFields(tpl.id);
+  const [draft, setDraft] = useState([]);
+  const [busy, setBusy] = useState(false);
+  const [dirty, setDirty] = useState(false);
+
+  useEffect(()=>{ setDraft(fields); setDirty(false); }, [fields]);
+
+  const change = (list) => { setDraft(list); setDirty(true); };
+
+  const persist = async () => {
+    setBusy(true);
+    try {
+      await save(draft);
+      const sb = getSB();
+      await sb.from('brand_templates')
+        .update({ kind: draft.length ? 'price_ad' : 'plain' })
+        .eq('id', tpl.id);
+      toast.success('Layout saved');
+      setDirty(false);
+      if (onSaved) onSaved();
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Card>
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <span className="ttl">Field layout — {tpl.name}</span>
+        <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+        {dirty && <Badge color="yellow">Unsaved</Badge>}
+        <Button size="sm" onClick={persist} loading={busy}><Icon name="save"/> Save layout</Button>
+        <Button size="sm" variant="ghost" onClick={onClose}><Icon name="close"/></Button>
+      </div>
+      {loading
+        ? <p className="lbl text-center py-8">Loading…</p>
+        : <AdFieldEditor templateDataUrl={tpl.data} fields={draft} onChange={change}/>}
+    </Card>
+  );
+}
+
+// ─────────────────────────────────────────────
 // TOAST CONTEXT
 // ─────────────────────────────────────────────
 const ToastCtx = createContext(null);
@@ -2145,6 +2499,32 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
     if (!prodPrev) { toast.error('Upload a product photo first'); return; }
     const store = STORES.find(s=>s.id===storeId);
     try {
+      // Field-driven template: the artwork already contains its own panels and
+      // badges, so only the positioned boxes get filled.
+      if (selectedTpl && selectedTpl.kind === 'price_ad') {
+        const sb = getSB();
+        const { data: tplFields } = await sb.from('ad_template_fields')
+          .select('*').eq('template_id', selectedTpl.id).order('field_order');
+        if (!tplFields || tplFields.length === 0) {
+          toast.error('That template has no fields yet — set them up under Ad Templates');
+          return;
+        }
+        const finalUrl = await renderFieldTemplate(
+          selectedTpl, tplFields,
+          { product_name: productName.trim(), pack_size: productSize.trim(),
+            price: priceText.trim(), save: saveText.trim() },
+          prodPrev,
+          step => setGenStep(step)
+        );
+        onGenerated(finalUrl);
+        toast.success('Ad created');
+        setGenStep('idle');
+        if (sb) sb.from('generation_history').insert({
+          store_id:storeId, store_name:store?.name, image_url:finalUrl,
+          brief:`Template: ${selectedTpl.name}`, size_label:selectedTpl.size_label });
+        return;
+      }
+
       setGenStep('removing');
       let cleanProd = prodPrev;
       try { cleanProd = await removeProductBackground(prodPrev); } catch(e) {}
@@ -4804,12 +5184,13 @@ function AdsPage({ settings }) {
 // ─────────────────────────────────────────────
 function TemplateManager({ storeId }) {
   const toast = useToast();
-  const { templates, add, remove } = useBrandTemplates(storeId);
+  const { templates, add, remove, load:reloadTemplates } = useBrandTemplates(storeId);
   const [name,      setName]     = useState('');
   const [sizeLabel, setSizeLabel]= useState('1:1 Square');
   const [preview,   setPreview]  = useState(null);
   const [saving,    setSaving]   = useState(false);
   const [filterSz,  setFilterSz] = useState('all');
+  const [layoutTpl, setLayoutTpl] = useState(null);
   const fileRef = useRef();
 
   const handleFile = file => {
@@ -4874,6 +5255,10 @@ function TemplateManager({ storeId }) {
         </div>
       </Card>
 
+      {layoutTpl && (
+        <AdTemplateLayout tpl={layoutTpl} onClose={()=>setLayoutTpl(null)} onSaved={reloadTemplates}/>
+      )}
+
       {/* Template gallery */}
       {templates.length > 0 && (
         <Card>
@@ -4895,11 +5280,19 @@ function TemplateManager({ storeId }) {
                     <div key={t.id} className="relative group rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 shadow-sm">
                       <img src={t.data} alt={t.name} className="w-full aspect-video object-cover"/>
                       <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-all flex items-end">
-                        <div className="w-full p-2 translate-y-full group-hover:translate-y-0 transition-transform">
-                          <button onClick={()=>remove(t.id)} className="w-full text-xs bg-red-500 hover:bg-red-600 text-white rounded-lg py-1 font-semibold"><Icon name="trash"/> Delete</button>
+                        <div className="w-full p-2 flex gap-1.5 translate-y-full group-hover:translate-y-0 transition-transform">
+                          <button onClick={()=>setLayoutTpl(t)} className="flex-1 text-xs py-1 font-semibold"
+                            style={{background:'var(--cy-glow)', color:'var(--cy)', border:'1px solid var(--cy)'}}>
+                            <Icon name="grid" size={12}/> Fields
+                          </button>
+                          <button onClick={()=>remove(t.id)} className="text-xs px-2 py-1 font-semibold"
+                            style={{background:'rgba(255,77,94,.15)', color:'var(--red)', border:'1px solid var(--red)'}}>
+                            <Icon name="trash" size={12}/>
+                          </button>
                         </div>
                       </div>
-                      <div className="absolute top-1.5 left-1.5 bg-black/60 text-white text-xs rounded px-2 py-0.5 font-medium">{t.name}</div>
+                      <div className="absolute top-1.5 left-1.5 text-xs px-2 py-0.5" style={{background:'rgba(2,5,11,.75)', color:'var(--txt)'}}>{t.name}</div>
+                      {t.kind==='price_ad' && <div className="absolute top-1.5 right-1.5"><Badge color="blue">Fields</Badge></div>}
                     </div>
                   ))}
                 </div>

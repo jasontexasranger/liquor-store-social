@@ -944,6 +944,7 @@ async function renderFieldTemplate(tpl, fields, values, productDataUrl, onStep) 
 
   if (onStep) onStep('compositing');
 
+  const overflows = [];
   const sorted = [...fields].sort((a,b)=>(a.field_order||0)-(b.field_order||0));
   for (const f of sorted) {
     const box = {
@@ -962,7 +963,7 @@ async function renderFieldTemplate(tpl, fields, values, productDataUrl, onStep) 
     if (f.uppercase) text = text.toUpperCase();
     text = (f.prefix || '') + text;
 
-    drawTextField(ctx, text, box, {
+    const res = drawTextField(ctx, text, box, {
       align: f.align || 'left',
       valign: f.valign || 'top',
       color: f.color || '#000000',
@@ -976,9 +977,13 @@ async function renderFieldTemplate(tpl, fields, values, productDataUrl, onStep) 
       fontFamily: fontStack(f.font_family),
       fontWeight: f.font_weight || null,
     });
+    if (res && res.overflow) overflows.push(f.label || f.field_key);
   }
 
-  return canvas.toDataURL('image/png');
+  const url = canvas.toDataURL('image/png');
+  // Attach non-fatally so callers that just want the image still work.
+  try { url.overflows = overflows; } catch(e) {}
+  return overflows.length ? { url, overflows } : url;
 }
 
 // ─────────────────────────────────────────────
@@ -1201,6 +1206,7 @@ function AdTemplateLayout({ tpl, onClose, onSaved }) {
   const [dirty, setDirty] = useState(false);
   const [mockup, setMockup] = useState(null);
   const [rendering, setRendering] = useState(false);
+  const [overflows, setOverflows] = useState([]);
 
   // Sample copy chosen to stress the layout: a long name that must wrap and
   // shrink, and a save value wider than "$0.00".
@@ -1215,8 +1221,11 @@ function AdTemplateLayout({ tpl, onClose, onSaved }) {
     if (!draft.length) { toast.error('Add some fields first'); return; }
     setRendering(true);
     try {
-      const url = await renderFieldTemplate(tpl, draft, SAMPLE, null);
-      setMockup(url);
+      const rendered = await renderFieldTemplate(tpl, draft, SAMPLE, null);
+      setMockup(typeof rendered === 'string' ? rendered : rendered.url);
+      const over = typeof rendered === 'string' ? [] : rendered.overflows;
+      setOverflows(over);
+      if (over.length) toast.error('Does not fit: ' + over.join(', '));
     } catch(e) { toast.error(e.message); }
     finally { setRendering(false); }
   };
@@ -1262,6 +1271,15 @@ function AdTemplateLayout({ tpl, onClose, onSaved }) {
           </Button>
           {mockup && <Button size="sm" variant="ghost" onClick={()=>setMockup(null)}>Clear</Button>}
         </div>
+        {overflows.length > 0 && (
+          <div className="mb-3 p-2.5" style={{border:'1px solid var(--amb)', background:'rgba(240,168,48,.1)'}}>
+            <p className="text-xs" style={{color:'var(--amb)'}}>
+              <Icon name="warn" size={13} className="mr-1.5"/>
+              Too small even at minimum size: {overflows.join(', ')}
+            </p>
+            <p className="lbl mt-1">Make the box taller or wider, or raise its max lines</p>
+          </div>
+        )}
         {mockup
           ? <img src={mockup} alt="Template mockup" className="w-full max-w-md mx-auto block"
                  style={{border:'1px solid var(--line)'}}/>
@@ -2292,6 +2310,7 @@ function fitText(text, boxW, boxH, settings={}) {
     maxFontSize=48, minFontSize=8, bold=false,
     lineSpacing=1.2, wrap=true, maxLines=null, align='left',
     fontFamily='Arial,Helvetica,sans-serif', fontWeight=null,
+    padding=0,
   } = settings;
   const weightOf = () => fontWeight != null ? String(fontWeight) : (bold ? 'bold' : 'normal');
 
@@ -2299,42 +2318,78 @@ function fitText(text, boxW, boxH, settings={}) {
   canvas.width=2000; canvas.height=2000;
   const ctx = canvas.getContext('2d');
 
-  const measure = (fontSize) => {
-    ctx.font = `${weightOf()} ${fontSize}px ${fontFamily}`;
-    if (!wrap) {
-      const w = ctx.measureText(text).width;
-      return { lines:[text], fits: w<=boxW && fontSize<=boxH };
-    }
-    const words = text.split(/\s+/);
-    const lines = [];
-    let cur='';
-    let maxLineW = 0;
-    for (const w of words) {
-      const test = cur ? cur+' '+w : w;
-      if (ctx.measureText(test).width > boxW && cur) {
-        maxLineW = Math.max(maxLineW, ctx.measureText(cur).width);
-        lines.push(cur); cur=w;
-      } else cur=test;
-    }
-    if (cur) { maxLineW = Math.max(maxLineW, ctx.measureText(cur).width); lines.push(cur); }
-    const limit = maxLines || 99;
-    const totalH = lines.length * fontSize * lineSpacing;
-    // Also check that every line (including single long words) fits within boxW
-    return { lines, fits: lines.length<=limit && totalH<=boxH && maxLineW<=boxW };
+  // Usable area, minus optional breathing room.
+  const availW = Math.max(1, boxW - padding*2);
+  const availH = Math.max(1, boxH - padding*2);
+
+  // Real ink extents, not the em square. fontSize consistently understates
+  // height for display faces (tall caps) and ignores accents and descenders,
+  // which is what caused text to be clipped by the box.
+  const inkOf = (str) => {
+    const m = ctx.measureText(str);
+    const asc  = (m.actualBoundingBoxAscent  != null && isFinite(m.actualBoundingBoxAscent))
+      ? m.actualBoundingBoxAscent  : parseFloat(ctx.font) * 0.8;
+    const desc = (m.actualBoundingBoxDescent != null && isFinite(m.actualBoundingBoxDescent))
+      ? m.actualBoundingBoxDescent : parseFloat(ctx.font) * 0.2;
+    // Glyphs can overhang the advance width on either side (italics, swashes).
+    const left  = (m.actualBoundingBoxLeft  != null && isFinite(m.actualBoundingBoxLeft))  ? m.actualBoundingBoxLeft  : 0;
+    const right = (m.actualBoundingBoxRight != null && isFinite(m.actualBoundingBoxRight)) ? m.actualBoundingBoxRight : m.width;
+    return { asc, desc, w: Math.max(m.width, right + Math.max(0, left)) };
   };
 
-  let lo=minFontSize, hi=maxFontSize, best=null;
+  const measure = (fontSize) => {
+    ctx.font = `${weightOf()} ${fontSize}px ${fontFamily}`;
+
+    let lines;
+    if (!wrap) {
+      lines = [text];
+    } else {
+      lines = [];
+      let cur = '';
+      for (const w of text.split(/\s+/)) {
+        const test = cur ? cur+' '+w : w;
+        if (inkOf(test).w > availW && cur) { lines.push(cur); cur = w; }
+        else cur = test;
+      }
+      if (cur) lines.push(cur);
+    }
+
+    const inks = lines.map(inkOf);
+    const maxW = inks.reduce((a,k)=>Math.max(a,k.w), 0);
+    const advance = fontSize * lineSpacing;
+    // Ink height: ascent of the first line, descent of the last, plus the
+    // baseline-to-baseline advance in between.
+    const totalH = inks.length
+      ? (inks.length-1)*advance + inks[0].asc + inks[inks.length-1].desc
+      : 0;
+
+    const limit = maxLines || 99;
+    return {
+      lines, inks, advance, totalH,
+      fits: lines.length<=limit && totalH<=availH && maxW<=availW,
+    };
+  };
+
+  // Binary search gets close fast, but fits() is not strictly monotonic —
+  // changing font size changes where lines wrap, so a larger size can need
+  // fewer lines and suddenly fit. Search, then verify downwards so the value
+  // returned is guaranteed to fit and can never be clipped.
+  let lo=minFontSize, hi=maxFontSize, candidate=minFontSize;
   while (lo<=hi) {
     const mid=Math.floor((lo+hi)/2);
-    const r=measure(mid);
-    if (r.fits) { best={ fontSize:mid, lines:r.lines, overflow:false }; lo=mid+1; }
+    if (measure(mid).fits) { candidate=mid; lo=mid+1; }
     else hi=mid-1;
   }
-  if (!best) {
-    const r=measure(minFontSize);
-    best={ fontSize:minFontSize, lines:r.lines, overflow:true };
+
+  for (let fs=Math.max(candidate, minFontSize); fs>=minFontSize; fs--) {
+    const r=measure(fs);
+    if (r.fits) return { fontSize:fs, ...r, overflow:false };
   }
-  return best;
+
+  // Nothing fits even at the minimum — the box is genuinely too small. Render
+  // at the floor and flag it so the caller can tell the user which field.
+  const r=measure(minFontSize);
+  return { fontSize:minFontSize, ...r, overflow:true };
 }
 
 // Draw a single text field onto a canvas context.
@@ -2342,59 +2397,70 @@ function fitText(text, boxW, boxH, settings={}) {
 function drawTextField(ctx, text, box, settings={}, fit=null) {
   const { align='left', valign='top', color='#000000', bold=false,
           lineSpacing=1.2, minFontSize=8, maxFontSize=48, wrap=true, maxLines=null,
-          suffix='', fontFamily='Arial,Helvetica,sans-serif', fontWeight=null } = settings;
+          suffix='', fontFamily='Arial,Helvetica,sans-serif', fontWeight=null,
+          padding=0 } = settings;
   const wt = fontWeight != null ? String(fontWeight) : (bold ? 'bold' : 'normal');
-  const r = fit || fitText(text, box.w, box.h, { align, bold, lineSpacing, wrap, maxLines, maxFontSize, minFontSize, fontFamily, fontWeight });
-  const { fontSize, lines } = r;
+  const r = fit || fitText(text, box.w, box.h, {
+    align, bold, lineSpacing, wrap, maxLines, maxFontSize, minFontSize,
+    fontFamily, fontWeight, padding,
+  });
+  const { fontSize, lines, inks, advance, totalH } = r;
+  if (!lines || !lines.length) return r;
 
   ctx.save();
-  // Hard-clip to box bounds — text never bleeds outside its field
   ctx.beginPath();
   ctx.rect(box.x, box.y, box.w, box.h);
   ctx.clip();
 
   ctx.fillStyle = color;
-  ctx.textBaseline = 'top';
+  // Baseline positioning: 'top' guesses the em top, which clips accents on
+  // display faces. Anchoring to the measured ascent is exact.
+  ctx.textBaseline = 'alphabetic';
+  ctx.font = `${wt} ${fontSize}px ${fontFamily}`;
 
-  const lineH = fontSize * lineSpacing;
-  const totalH = lines.length * lineH;
+  const innerX = box.x + padding;
+  const innerW = box.w - padding*2;
+  const innerY = box.y + padding;
+  const innerH = box.h - padding*2;
 
-  let startY = box.y;
-  if (valign==='middle') startY = box.y + (box.h - totalH) / 2;
-  else if (valign==='bottom') startY = box.y + box.h - totalH;
+  let top = innerY;
+  if (valign === 'middle')      top = innerY + (innerH - totalH) / 2;
+  else if (valign === 'bottom') top = innerY + innerH - totalH;
 
-  for (let i=0; i<lines.length; i++) {
-    ctx.font = `${wt} ${fontSize}px ${fontFamily}`;
-    let x = box.x;
-    if (align==='center') {
-      ctx.textAlign='center'; x=box.x+box.w/2;
-    } else if (align==='right') {
-      ctx.textAlign='right'; x=box.x+box.w;
-    } else {
-      ctx.textAlign='left';
-    }
-    ctx.fillText(lines[i], x, startY + i*lineH);
+  const firstAsc = inks && inks[0] ? inks[0].asc : fontSize * 0.8;
+  let baseline = top + firstAsc;
+
+  for (let k = 0; k < lines.length; k++) {
+    let x = innerX;
+    if (align === 'center')     { ctx.textAlign = 'center'; x = innerX + innerW/2; }
+    else if (align === 'right') { ctx.textAlign = 'right';  x = innerX + innerW; }
+    else                        { ctx.textAlign = 'left'; }
+    ctx.fillText(lines[k], x, baseline);
+    baseline += advance;
   }
 
-  // Draw suffix at 20% of font size after the last line
-  if (suffix && lines.length > 0) {
-    const suffixSize = Math.max(6, Math.round(fontSize * 0.2));
-    const lastLine = lines[lines.length - 1];
-    const lastLineY = startY + (lines.length - 1) * lineH;
+  // Suffix rides at the top-right of the last line, e.g. the "ea" on a price.
+  if (suffix) {
+    const lastIdx  = lines.length - 1;
+    const lastLine = lines[lastIdx];
+    const lastBase = top + firstAsc + lastIdx * advance;
+    const suffixSize = Math.max(6, Math.round(fontSize * 0.3));
 
-    // Measure last line width at full font size
     ctx.font = `${wt} ${fontSize}px ${fontFamily}`;
-    const lastLineW = ctx.measureText(lastLine).width;
+    const lastW = ctx.measureText(lastLine).width;
 
-    // Find the right edge of the last line based on alignment
-    let suffixX;
-    if (align === 'center') suffixX = box.x + box.w / 2 + lastLineW / 2;
-    else if (align === 'right') suffixX = box.x + box.w;
-    else suffixX = box.x + lastLineW;
+    let sx;
+    if (align === 'center')     sx = innerX + innerW/2 + lastW/2;
+    else if (align === 'right') sx = innerX + innerW;
+    else                        sx = innerX + lastW;
 
     ctx.font = `${wt} ${suffixSize}px ${fontFamily}`;
     ctx.textAlign = 'left';
-    ctx.fillText(suffix, suffixX, lastLineY);
+    const sm = ctx.measureText(suffix);
+    // Keep the suffix inside the box rather than letting it run off the edge.
+    sx = Math.min(sx, innerX + innerW - sm.width);
+    const suffixAsc = inks && inks[lastIdx] ? inks[lastIdx].asc : fontSize * 0.8;
+    ctx.fillText(suffix, sx, lastBase - suffixAsc + suffixSize);
   }
 
   ctx.restore();
@@ -2751,15 +2817,18 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
           toast.error('That template has no fields yet — set them up under Ad Templates');
           return;
         }
-        const finalUrl = await renderFieldTemplate(
+        const rendered = await renderFieldTemplate(
           selectedTpl, tplFields,
           { product_name: productName.trim(), pack_size: productSize.trim(),
             price: priceText.trim(), save: saveText.trim() },
           prodPrev,
           step => setGenStep(step)
         );
+        const finalUrl = typeof rendered === 'string' ? rendered : rendered.url;
+        const over = typeof rendered === 'string' ? [] : rendered.overflows;
         onGenerated(finalUrl);
-        toast.success('Ad created');
+        if (over.length) toast.error('Too small to fit: ' + over.join(', ') + ' — enlarge the box in the template');
+        else toast.success('Ad created');
         setGenStep('idle');
         if (sb) sb.from('generation_history').insert({
           store_id:storeId, store_name:store?.name, image_url:finalUrl,

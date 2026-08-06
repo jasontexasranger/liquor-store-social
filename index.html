@@ -7,6 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Anton&family=Archivo+Black&family=Bebas+Neue&family=Oswald:wght@400;500;600;700&family=Barlow+Condensed:wght@600;700;800&family=Montserrat:wght@600;700;800;900&family=Inter:wght@600;700;800;900&display=swap" rel="stylesheet">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>tailwind.config = { darkMode: 'class' };</script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
@@ -845,6 +846,7 @@ const AD_FIELD_KEYS = [
 const AD_FIELD_DEFAULTS = {
   field_key:'custom', field_type:'text', label:'New field',
   align:'left', valign:'top', color:'#1b365d', bold:true, uppercase:true,
+  font_family:'Anton', font_weight:400,
   wrap:true, max_lines:2, min_font_size:8, max_font_size:200,
   line_spacing:1.15, prefix:'', suffix:'',
   fit_mode:'contain', remove_bg:true,
@@ -911,6 +913,8 @@ function drawImageFitted(ctx, img, box, mode) {
 async function renderFieldTemplate(tpl, fields, values, productDataUrl, onStep) {
   const W = tpl.canvas_w || 1080;
   const H = tpl.canvas_h || 1080;
+  await ensureFontsReady();
+
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
   const ctx = canvas.getContext('2d');
@@ -969,6 +973,8 @@ async function renderFieldTemplate(tpl, fields, values, productDataUrl, onStep) 
       minFontSize: f.min_font_size || 8,
       maxFontSize: f.max_font_size || 200,
       suffix: f.suffix || '',
+      fontFamily: fontStack(f.font_family),
+      fontWeight: f.font_weight || null,
     });
   }
 
@@ -1043,6 +1049,20 @@ function AdFieldEditor({ templateDataUrl, fields, onChange }) {
                          cursor:'move', boxShadow: on ? '0 0 12px rgba(56,224,240,.35)' : 'none' }}>
                 <span className="mono absolute -top-4 left-0 whitespace-nowrap"
                       style={{ fontSize:'9px', color:c }}>{f.label}</span>
+                {!img && (
+                  <span className="absolute inset-0 flex items-center overflow-hidden pointer-events-none px-0.5"
+                        style={{
+                          fontFamily: fontStack(f.font_family),
+                          fontWeight: f.font_weight || 400,
+                          color: f.color || '#000',
+                          fontSize: 'clamp(8px, 2.2vw, 22px)',
+                          textTransform: f.uppercase ? 'uppercase' : 'none',
+                          justifyContent: f.align==='center' ? 'center' : f.align==='right' ? 'flex-end' : 'flex-start',
+                          opacity:.85, whiteSpace:'nowrap',
+                        }}>
+                    {(AD_FIELD_KEYS.find(k=>k.key===f.field_key)||{}).hint || f.label}
+                  </span>
+                )}
                 <div onMouseDown={e=>{e.stopPropagation();setSel(f.id);const r=rel(e);setDrag({id:f.id,mode:'size',sx:r.x,sy:r.y,orig:{...f}});}}
                      className="absolute" style={{ right:-4, bottom:-4, width:9, height:9, background:c, cursor:'nwse-resize' }}/>
               </div>
@@ -1097,6 +1117,36 @@ function AdFieldEditor({ templateDataUrl, fields, onChange }) {
               </React.Fragment>
             ) : (
               <React.Fragment>
+                <div>
+                  <Label>Font</Label>
+                  <Select value={cur.font_family||'Anton'} onChange={e=>{
+                    const f = AD_FONTS.find(x=>x.id===e.target.value);
+                    patch(cur.id,{ font_family:f.id, font_weight:f.weights[f.weights.length-1] });
+                  }}>
+                    {AD_FONTS.map(f=><option key={f.id} value={f.id}>{f.label}</option>)}
+                  </Select>
+                  <div className="mt-2 px-3 py-2 overflow-hidden"
+                       style={{ border:'1px solid var(--line)', background:'#efe7d6' }}>
+                    <span style={{
+                      fontFamily: fontStack(cur.font_family),
+                      fontWeight: cur.font_weight || 400,
+                      color: cur.color || '#000',
+                      fontSize: '26px', lineHeight: 1.1, whiteSpace: 'nowrap',
+                      textTransform: cur.uppercase ? 'uppercase' : 'none',
+                    }}>{(AD_FIELD_KEYS.find(k=>k.key===cur.field_key)||{}).hint || 'Sample'}</span>
+                  </div>
+                </div>
+
+                {(AD_FONTS.find(f=>f.id===(cur.font_family||'Anton'))||{weights:[400]}).weights.length > 1 && (
+                  <div>
+                    <Label>Weight</Label>
+                    <Select value={cur.font_weight||400} onChange={e=>patch(cur.id,{font_weight:+e.target.value})}>
+                      {(AD_FONTS.find(f=>f.id===(cur.font_family||'Anton'))||{weights:[400]}).weights
+                        .map(w=><option key={w} value={w}>{w}</option>)}
+                    </Select>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 gap-2">
                   <div><Label>Align</Label>
                     <Select value={cur.align||'left'} onChange={e=>patch(cur.id,{align:e.target.value})}>
@@ -1149,6 +1199,27 @@ function AdTemplateLayout({ tpl, onClose, onSaved }) {
   const [draft, setDraft] = useState([]);
   const [busy, setBusy] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [mockup, setMockup] = useState(null);
+  const [rendering, setRendering] = useState(false);
+
+  // Sample copy chosen to stress the layout: a long name that must wrap and
+  // shrink, and a save value wider than "$0.00".
+  const SAMPLE = {
+    product_name:'Okanagan Crush Pad Narrative Rosé',
+    pack_size:'6 × 355ml',
+    price:'18.99',
+    save:'$12.50',
+  };
+
+  const makeMockup = async () => {
+    if (!draft.length) { toast.error('Add some fields first'); return; }
+    setRendering(true);
+    try {
+      const url = await renderFieldTemplate(tpl, draft, SAMPLE, null);
+      setMockup(url);
+    } catch(e) { toast.error(e.message); }
+    finally { setRendering(false); }
+  };
 
   useEffect(()=>{ setDraft(fields); setDirty(false); }, [fields]);
 
@@ -1181,6 +1252,23 @@ function AdTemplateLayout({ tpl, onClose, onSaved }) {
       {loading
         ? <p className="lbl text-center py-8">Loading…</p>
         : <AdFieldEditor templateDataUrl={tpl.data} fields={draft} onChange={change}/>}
+
+      <div className="mt-5 pt-4" style={{borderTop:'1px solid var(--line)'}}>
+        <div className="flex items-center gap-3 mb-3 flex-wrap">
+          <span className="ttl">Mockup</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          <Button size="sm" variant="outline" onClick={makeMockup} loading={rendering}>
+            <Icon name="eye"/> Render with sample data
+          </Button>
+          {mockup && <Button size="sm" variant="ghost" onClick={()=>setMockup(null)}>Clear</Button>}
+        </div>
+        {mockup
+          ? <img src={mockup} alt="Template mockup" className="w-full max-w-md mx-auto block"
+                 style={{border:'1px solid var(--line)'}}/>
+          : <p className="lbl text-center py-6">
+              Renders the real canvas output with placeholder copy — exact fonts, sizes and wrapping
+            </p>}
+      </div>
     </Card>
   );
 }
@@ -2179,18 +2267,40 @@ async function pdfPageToDataUrl(pdfDataUrl, maxPx=2000) {
 
 // Binary-search text fitting — returns { fontSize, lines, overflow }
 // Operates on an off-screen canvas for measurement; scale-independent.
+// Display faces available to ad template fields. Loaded in <head>, so the
+// canvas can use them — a font the document hasn't loaded silently falls back.
+const AD_FONTS = [
+  { id:'Anton',            label:'Anton',            stack:"'Anton',sans-serif",            weights:[400] },
+  { id:'Archivo Black',    label:'Archivo Black',    stack:"'Archivo Black',sans-serif",    weights:[400] },
+  { id:'Bebas Neue',       label:'Bebas Neue',       stack:"'Bebas Neue',sans-serif",       weights:[400] },
+  { id:'Oswald',           label:'Oswald',           stack:"'Oswald',sans-serif",           weights:[400,500,600,700] },
+  { id:'Barlow Condensed', label:'Barlow Condensed', stack:"'Barlow Condensed',sans-serif", weights:[600,700,800] },
+  { id:'Montserrat',       label:'Montserrat',       stack:"'Montserrat',sans-serif",       weights:[600,700,800,900] },
+  { id:'Inter',            label:'Inter',            stack:"'Inter',sans-serif",            weights:[600,700,800,900] },
+  { id:'Chakra Petch',     label:'Chakra Petch',     stack:"'Chakra Petch',sans-serif",     weights:[400,500,600,700] },
+  { id:'Arial',            label:'Arial (system)',   stack:'Arial,Helvetica,sans-serif',    weights:[400,700] },
+];
+const fontStack = id => (AD_FONTS.find(f=>f.id===id) || AD_FONTS[AD_FONTS.length-1]).stack;
+
+// Canvas silently substitutes a fallback if the face isn't ready yet.
+async function ensureFontsReady() {
+  try { if (document.fonts && document.fonts.ready) await document.fonts.ready; } catch(e) {}
+}
+
 function fitText(text, boxW, boxH, settings={}) {
   const {
     maxFontSize=48, minFontSize=8, bold=false,
     lineSpacing=1.2, wrap=true, maxLines=null, align='left',
+    fontFamily='Arial,Helvetica,sans-serif', fontWeight=null,
   } = settings;
+  const weightOf = () => fontWeight != null ? String(fontWeight) : (bold ? 'bold' : 'normal');
 
   const canvas = document.createElement('canvas');
   canvas.width=2000; canvas.height=2000;
   const ctx = canvas.getContext('2d');
 
   const measure = (fontSize) => {
-    ctx.font = `${bold?'bold ':''} ${fontSize}px Arial,sans-serif`;
+    ctx.font = `${weightOf()} ${fontSize}px ${fontFamily}`;
     if (!wrap) {
       const w = ctx.measureText(text).width;
       return { lines:[text], fits: w<=boxW && fontSize<=boxH };
@@ -2232,8 +2342,9 @@ function fitText(text, boxW, boxH, settings={}) {
 function drawTextField(ctx, text, box, settings={}, fit=null) {
   const { align='left', valign='top', color='#000000', bold=false,
           lineSpacing=1.2, minFontSize=8, maxFontSize=48, wrap=true, maxLines=null,
-          suffix='' } = settings;
-  const r = fit || fitText(text, box.w, box.h, { align, bold, lineSpacing, wrap, maxLines, maxFontSize, minFontSize });
+          suffix='', fontFamily='Arial,Helvetica,sans-serif', fontWeight=null } = settings;
+  const wt = fontWeight != null ? String(fontWeight) : (bold ? 'bold' : 'normal');
+  const r = fit || fitText(text, box.w, box.h, { align, bold, lineSpacing, wrap, maxLines, maxFontSize, minFontSize, fontFamily, fontWeight });
   const { fontSize, lines } = r;
 
   ctx.save();
@@ -2253,7 +2364,7 @@ function drawTextField(ctx, text, box, settings={}, fit=null) {
   else if (valign==='bottom') startY = box.y + box.h - totalH;
 
   for (let i=0; i<lines.length; i++) {
-    ctx.font = `${bold?'bold ':''} ${fontSize}px Arial,sans-serif`;
+    ctx.font = `${wt} ${fontSize}px ${fontFamily}`;
     let x = box.x;
     if (align==='center') {
       ctx.textAlign='center'; x=box.x+box.w/2;
@@ -2272,7 +2383,7 @@ function drawTextField(ctx, text, box, settings={}, fit=null) {
     const lastLineY = startY + (lines.length - 1) * lineH;
 
     // Measure last line width at full font size
-    ctx.font = `${bold?'bold ':''} ${fontSize}px Arial,sans-serif`;
+    ctx.font = `${wt} ${fontSize}px ${fontFamily}`;
     const lastLineW = ctx.measureText(lastLine).width;
 
     // Find the right edge of the last line based on alignment
@@ -2281,7 +2392,7 @@ function drawTextField(ctx, text, box, settings={}, fit=null) {
     else if (align === 'right') suffixX = box.x + box.w;
     else suffixX = box.x + lastLineW;
 
-    ctx.font = `${bold?'bold ':''} ${suffixSize}px Arial,sans-serif`;
+    ctx.font = `${wt} ${suffixSize}px ${fontFamily}`;
     ctx.textAlign = 'left';
     ctx.fillText(suffix, suffixX, lastLineY);
   }

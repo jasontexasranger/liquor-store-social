@@ -2100,6 +2100,42 @@ function FeatureCell({ row, field, type='text', align='left', onCommit }) {
 // Canvas taints on a cross-origin image, and a tainted canvas can't be
 // exported. Storage URLs do send CORS headers, but pulling the bytes down
 // first removes the question entirely.
+// Decoded by hand rather than with fetch(dataUrl). The site's Content Security
+// Policy allows data: as an image source but not as a connection target, so
+// fetching a data URL is blocked outright — which is what "Failed to fetch"
+// meant on every image in the first batch run.
+function dataUrlToBlob(dataUrl) {
+  const comma = dataUrl.indexOf(',');
+  const header = dataUrl.slice(0, comma);
+  const mime = (header.match(/^data:([^;]+)/) || [,'image/png'])[1];
+  const body = dataUrl.slice(comma + 1);
+
+  if (!/;base64/i.test(header)) {
+    return new Blob([decodeURIComponent(body)], { type: mime });
+  }
+  const bin = atob(body);
+  // Chunked so a multi-megabyte PNG doesn't blow the argument limit.
+  const parts = [];
+  for (let i = 0; i < bin.length; i += 8192) {
+    const slice = bin.slice(i, i + 8192);
+    const buf = new Uint8Array(slice.length);
+    for (let j = 0; j < slice.length; j++) buf[j] = slice.charCodeAt(j);
+    parts.push(buf);
+  }
+  return new Blob(parts, { type: mime });
+}
+
+// Bytes for a product photo, wherever it came from. Library products are
+// either a base64 column or a Storage URL, and only the second can be fetched.
+function srcToBlob(src) {
+  if (!src) return Promise.reject(new Error('No image'));
+  if (src.startsWith('data:')) {
+    try { return Promise.resolve(dataUrlToBlob(src)); }
+    catch (e) { return Promise.reject(e); }
+  }
+  return fetch(src).then(r => r.blob());
+}
+
 function toDataUrl(src) {
   if (!src || src.startsWith('data:')) return Promise.resolve(src);
   return fetch(src)
@@ -2189,7 +2225,7 @@ function FeatureCreativeBatch({ storeId, storeName, period, rows, products, camp
 
           const url  = typeof rendered === 'string' ? rendered : rendered.url;
           const over = typeof rendered === 'string' ? [] : rendered.overflows;
-          const blob = await (await fetch(url)).blob();
+          const blob = dataUrlToBlob(url);
           const aspect = nearestAspect(tpl.canvas_w, tpl.canvas_h);
 
           await addRendered(blob, {
@@ -4980,7 +5016,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated, seedFeature }) {
     if (prod) {
       const src = prodSrc(prod);
       setProdPrev(src);
-      fetch(src).then(r=>r.blob())
+      srcToBlob(src)
         .then(b=>setProdFile(new File([b], (prod.product_name||'product')+'.jpg', {type:'image/jpeg'})))
         .catch(()=>{});
     }
@@ -5021,7 +5057,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated, seedFeature }) {
     if (prod) {
       const src = prodSrc(prod);
       setProdPrev(src);
-      fetch(src).then(r=>r.blob())
+      srcToBlob(src)
         .then(b=>setProdFile(new File([b], (prod.product_name||'product')+'.jpg', {type:'image/jpeg'})))
         .catch(()=>{});
     }
@@ -5033,7 +5069,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated, seedFeature }) {
     // its photo shouldn't silently rewrite copy they already wrote.
     if (!nameTouched) setProductName(img.product_name || '');
     if (!sizeTouched) setProductSize(img.size || '');
-    fetch(prodSrc(img)||img.data).then(r=>r.blob()).then(blob=>setProdFile(new File([blob],img.product_name||'product',{type:'image/jpeg'}))).catch(()=>{});
+    srcToBlob(prodSrc(img)||img.data).then(blob=>setProdFile(new File([blob],img.product_name||'product',{type:'image/jpeg'}))).catch(()=>{});
     setShowLib(false);
   };
 
@@ -6438,7 +6474,7 @@ function ImageGenerator({ settings, onUseInPost }) {
   const pickFromGallery = prod => {
     setProdPrev(prodSrc(prod));
     // Vision needs a File; rebuild one from the stored data URL.
-    fetch(prodSrc(prod)).then(r=>r.blob())
+    srcToBlob(prodSrc(prod))
       .then(blob=>setProdFile(new File([blob], (prod.product_name||'product')+'.jpg', {type:'image/jpeg'})))
       .catch(()=>{});
     if (!brief.trim()) {
@@ -6495,7 +6531,7 @@ function ImageGenerator({ settings, onUseInPost }) {
 
   const selectFromLib = (img) => {
     setProdPrev(prodSrc(img) || img.data);
-    fetch(prodSrc(img)||img.data).then(r=>r.blob()).then(blob=>{
+    srcToBlob(prodSrc(img)||img.data).then(blob=>{
       const f=new File([blob], img.product_name||'product', {type:'image/jpeg'});
       setProdFile(f);
     }).catch(()=>{});
@@ -6585,7 +6621,7 @@ function ImageGenerator({ settings, onUseInPost }) {
               onImage={function(out){
                 setProdPrev(out.dataUrl);
                 if (out.file) setProdFile(out.file);
-                else fetch(out.dataUrl).then(r=>r.blob())
+                else srcToBlob(out.dataUrl)
                        .then(b=>setProdFile(new File([b],'pasted.jpg',{type:b.type||'image/jpeg'})))
                        .catch(()=>{});
               }}>

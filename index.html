@@ -2386,6 +2386,22 @@ function FeatureCreativeBatch({ storeId, storeName, period, rows, products, camp
 
 const DOW_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
+// The prompts say no hashtags, but a model that has read the whole internet
+// drifts back to them, and a stray #SummerSale would go out unnoticed on an
+// approved post. Belt and braces.
+//
+// A hashtag starts with a letter or underscore: "#1 selling gin" and "aisle #3"
+// are ordinary English and survive untouched.
+function stripHashtags(text) {
+  return String(text || '')
+    .replace(/(^|[\s(])#[A-Za-z_]\w*/g, '$1')
+    .replace(/\(\s*\)/g, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 const hourLabel = h => {
   const ampm = h < 12 ? 'am' : 'pm';
   const base = h % 12 === 0 ? 12 : h % 12;
@@ -2545,7 +2561,7 @@ function PostPlanBuilder({ storeId, storeName, period, rows, products, onClose, 
           'Write a short Facebook and Instagram post for ' + storeName + ', a liquor store in British Columbia.\n\n' +
           (group.category ? 'This post features our ' + group.category + ' specials:\n' : 'This post features:\n') +
           lines + '\n\n' +
-          'Rules: 2 to 3 sentences, warm and straightforward, no hashtag spam (2 to 4 at most), ' +
+          'Rules: 2 to 3 sentences, warm and straightforward, no hashtags at all, ' +
           'no emoji, do not invent prices or claims, do not mention delivery. ' +
           'Do not add a disclaimer about tax or deposit — one is appended automatically. ' +
           'Return only the post text.';
@@ -2553,7 +2569,7 @@ function PostPlanBuilder({ storeId, storeName, period, rows, products, onClose, 
         let caption = '';
         try {
           const r = await callEdge('meta-social', 'aiWrite', { prompt, maxTokens: 400 });
-          caption = (r.text || '').trim();
+          caption = stripHashtags(r.text || '');
         } catch(e) {
           failed.push(group.map(g=>g.name).join(', ') + ': copy failed — ' + e.message);
           continue;
@@ -5362,11 +5378,11 @@ function AIWriter({ storeName, apiKey, mode='caption', onResult, seedTopic='' })
     try {
       let prompt;
       if (mode==='caption') {
-        prompt = `Write a ${tone.toLowerCase()} Facebook post caption for "${storeName}", an independent retail liquor store in BC, Canada.\n\nPost topic/promotion: ${topic}${extra?`\n\nAdditional instructions: ${extra}`:''}\n\nRules:\n- Under 280 characters\n- Engaging and authentic\n- No hashtags unless requested\n- Output ONLY the caption text with no quotes, labels, or explanation`;
+        prompt = `Write a ${tone.toLowerCase()} Facebook post caption for "${storeName}", an independent retail liquor store in BC, Canada.\n\nPost topic/promotion: ${topic}${extra?`\n\nAdditional instructions: ${extra}`:''}\n\nRules:\n- Under 280 characters\n- Engaging and authentic\n- No hashtags, ever\n- Output ONLY the caption text with no quotes, labels, or explanation`;
       } else {
         prompt = `Write Facebook ad copy for "${storeName}", an independent retail liquor store in BC, Canada.\n\nPromotion: ${topic}\nTone: ${tone}${extra?`\nNotes: ${extra}`:''}\n\nOutput EXACTLY two lines:\nHEADLINE: [max 25 characters]\nBODY: [max 90 characters]\n\nNo other text.`;
       }
-      const result = await callAI(prompt, apiKey, 400);
+      const result = stripHashtags(await callAI(prompt, apiKey, 400));
       onResult(result, mode);
       toast.success('AI copy generated!');
     } catch (e) {
@@ -8218,6 +8234,13 @@ function PostReviewModal({ post, index, count, onStep, onClose, onChanged }) {
 
   const storeName = (STORES.find(s => s.id === post.store_id) || {}).name || post.store_id;
 
+  // The same view serves the approval queue and a click on the calendar, so it
+  // has to cope with a post that's already gone out. Published history is read
+  // only — there is nothing left to approve or amend.
+  const editable  = post.status === 'needs_approval' || post.status === 'pending';
+  const awaiting  = post.status === 'needs_approval';
+  const step      = onStep || function(){ onClose(); };
+
   const dirty =
     caption !== (post.caption || '') ||
     JSON.stringify(images) !== JSON.stringify(imagesOfPost(post)) ||
@@ -8272,7 +8295,7 @@ function PostReviewModal({ post, index, count, onStep, onClose, onChanged }) {
       if (error) throw error;
       toast.success('Approved — it will post at the scheduled time');
       await onChanged();
-      onStep(1);
+      step(1);
     } catch(e) { toast.error(e.message); }
     finally { setBusy(null); }
   };
@@ -8288,7 +8311,7 @@ function PostReviewModal({ post, index, count, onStep, onClose, onChanged }) {
       if (error) throw error;
       toast.success('Rejected');
       await onChanged();
-      onStep(1);
+      step(1);
     } catch(e) { toast.error(e.message); }
     finally { setBusy(null); }
   };
@@ -8303,16 +8326,33 @@ function PostReviewModal({ post, index, count, onStep, onClose, onChanged }) {
         <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-1">
           <span className="ttl">Review post</span>
           <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
-          <span className="mono text-xs" style={{color:'var(--txt2)'}}>{index+1} of {count}</span>
-          <Button size="sm" variant="ghost" onClick={function(){ onStep(-1); }} disabled={index===0}>
-            <Icon name="back" size={12}/>
-          </Button>
-          <Button size="sm" variant="ghost" onClick={function(){ onStep(1); }} disabled={index>=count-1}>
-            <Icon name="fwd" size={12}/>
-          </Button>
+          {count > 1 && (
+            <React.Fragment>
+              <span className="mono text-xs" style={{color:'var(--txt2)'}}>{index+1} of {count}</span>
+              <Button size="sm" variant="ghost" onClick={function(){ step(-1); }} disabled={index===0}>
+                <Icon name="back" size={12}/>
+              </Button>
+              <Button size="sm" variant="ghost" onClick={function(){ step(1); }} disabled={index>=count-1}>
+                <Icon name="fwd" size={12}/>
+              </Button>
+            </React.Fragment>
+          )}
           <button onClick={onClose} style={{color:'var(--txt2)'}}><Icon name="close"/></button>
         </div>
-        <p className="lbl mb-4">{storeName}</p>
+        <div className="flex items-center gap-2 mb-4">
+          <span className="lbl">{storeName}</span>
+          <span style={{width:'9px', height:'9px', background:statusMeta(post.status).color, display:'inline-block'}}/>
+          <span className="lbl">{statusMeta(post.status).label}</span>
+        </div>
+
+        {!editable && (
+          <div className="p-3 mb-4" style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.4)'}}>
+            <p className="text-xs" style={{color:'var(--txt2)'}}>
+              This post is history and can't be changed.
+              {post.error_msg ? ' ' + post.error_msg : ''}
+            </p>
+          </div>
+        )}
 
         <Label>Images</Label>
         <div className="flex gap-2 flex-wrap mb-2">
@@ -8322,12 +8362,12 @@ function PostReviewModal({ post, index, count, onStep, onClose, onChanged }) {
                 <img src={u} alt="" onClick={function(){ setLightbox(u); }}
                      className="object-cover cursor-zoom-in"
                      style={{width:'132px', height:'132px', border:'1px solid var(--line2)'}}/>
-                <button onClick={function(){ setImages(images.filter((_,ix)=>ix!==i)); }}
+                {editable && <button onClick={function(){ setImages(images.filter((_,ix)=>ix!==i)); }}
                         className="absolute top-1 right-1 p-1 opacity-0 group-hover:opacity-100"
                         style={{background:'rgba(2,5,11,.85)', color:'var(--red)', border:'1px solid var(--red)'}}
                         aria-label="Remove image">
                   <Icon name="close" size={11}/>
-                </button>
+                </button>}
                 {i === 0 && images.length > 1 && (
                   <span className="lbl absolute bottom-1 left-1 px-1"
                         style={{background:'rgba(2,5,11,.85)', color:'var(--cy)'}}>First</span>
@@ -8342,17 +8382,19 @@ function PostReviewModal({ post, index, count, onStep, onClose, onChanged }) {
             </div>
           )}
         </div>
-        <div className="flex gap-2 flex-wrap mb-4">
-          <Button size="sm" variant="secondary" loading={busy==='upload'}
-                  onClick={function(){ fileRef.current?.click(); }}>
-            <Icon name="up"/> Upload
-          </Button>
-          <Button size="sm" variant="outline" onClick={function(){ setShowLib(true); }}>
-            <Icon name="image"/> From library
-          </Button>
-          <input ref={fileRef} type="file" accept="image/*" className="hidden"
-                 onChange={function(e){ upload(e.target.files?.[0]); e.target.value=''; }}/>
-        </div>
+        {editable && (
+          <div className="flex gap-2 flex-wrap mb-4">
+            <Button size="sm" variant="secondary" loading={busy==='upload'}
+                    onClick={function(){ fileRef.current?.click(); }}>
+              <Icon name="up"/> Upload
+            </Button>
+            <Button size="sm" variant="outline" onClick={function(){ setShowLib(true); }}>
+              <Icon name="image"/> From library
+            </Button>
+            <input ref={fileRef} type="file" accept="image/*" className="hidden"
+                   onChange={function(e){ upload(e.target.files?.[0]); e.target.value=''; }}/>
+          </div>
+        )}
         {showLib && (
           <CreativePicker allowed={POST_ASPECTS} storeIds={[post.store_id]}
             onPick={function(c){ setImages(function(prev){ return prev.concat(c.public_url); }); }}
@@ -8360,7 +8402,8 @@ function PostReviewModal({ post, index, count, onStep, onClose, onChanged }) {
         )}
 
         <Label>Caption</Label>
-        <Textarea rows={7} value={caption} onChange={function(e){ setCaption(e.target.value); }}/>
+        <Textarea rows={7} value={caption} readOnly={!editable}
+                  onChange={function(e){ setCaption(e.target.value); }}/>
         <p className="lbl mt-1 mb-4">
           "Prices exclude tax &amp; deposit - while supplies last" is added automatically when it posts.
         </p>
@@ -8368,7 +8411,8 @@ function PostReviewModal({ post, index, count, onStep, onClose, onChanged }) {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
           <div>
             <Label>Send at</Label>
-            <Input type="datetime-local" value={when} onChange={function(e){ setWhen(e.target.value); }}/>
+            <Input type="datetime-local" value={when} disabled={!editable}
+                   onChange={function(e){ setWhen(e.target.value); }}/>
           </div>
           <div>
             <Label>Channels</Label>
@@ -8376,7 +8420,9 @@ function PostReviewModal({ post, index, count, onStep, onClose, onChanged }) {
               {[['facebook','fb','Facebook'],['instagram','ig','Instagram']].map(function(c) {
                 const on = channels.includes(c[0]);
                 return (
-                  <button key={c[0]} onClick={function(){
+                  <button key={c[0]} disabled={!editable}
+                          onClick={function(){
+                            if (!editable) return;
                             setChannels(on ? channels.filter(x=>x!==c[0]) : channels.concat(c[0]));
                           }}
                     className="flex-1 flex items-center justify-center gap-1.5 p-2 text-xs border"
@@ -8400,19 +8446,225 @@ function PostReviewModal({ post, index, count, onStep, onClose, onChanged }) {
 
         <div className="flex gap-2 items-center pt-3" style={{borderTop:'1px solid var(--line)'}}>
           <span className="lbl mr-auto">
-            {dirty ? 'Unsaved edits — approving saves them too' : 'Approving lets this publish on its own'}
+            {!editable ? 'Read only'
+             : awaiting ? (dirty ? 'Unsaved edits — approving saves them too'
+                                 : 'Approving lets this publish on its own')
+             : 'Already approved. Editing it sends it back for approval.'}
           </span>
-          <Button size="sm" variant="ghost" onClick={reject} loading={busy==='reject'}>Reject</Button>
-          {dirty && (
-            <Button size="sm" variant="outline" onClick={save} loading={busy==='save'}>Save only</Button>
+          {awaiting && (
+            <Button size="sm" variant="ghost" onClick={reject} loading={busy==='reject'}>Reject</Button>
           )}
-          <Button size="sm" onClick={approve} loading={busy==='approve'} disabled={igNoImage}>
-            <Icon name="check"/> Approve
-          </Button>
+          {editable && dirty && (
+            <Button size="sm" variant="outline" onClick={save} loading={busy==='save'}>Save</Button>
+          )}
+          {awaiting && (
+            <Button size="sm" onClick={approve} loading={busy==='approve'} disabled={igNoImage}>
+              <Icon name="check"/> Approve
+            </Button>
+          )}
+          {!editable && <Button size="sm" onClick={onClose}>Close</Button>}
         </div>
       </div>
     </div>
     </Portal>
+  );
+}
+
+// ─────────────────────────────────────────────
+// POST CALENDAR
+// ─────────────────────────────────────────────
+// What's going out, and when. A list answers "what's next"; a calendar answers
+// "is next week empty" and "are all four stores posting on the same afternoon",
+// which is the question a plan across several stores actually raises.
+
+const POST_STATUS = {
+  needs_approval: { label:'Needs approval', color:'var(--cy)'  },
+  pending:        { label:'Approved',       color:'var(--amb)' },
+  publishing:     { label:'Publishing',     color:'var(--amb)' },
+  published:      { label:'Published',      color:'var(--grn)' },
+  failed:         { label:'Failed',         color:'var(--red)' },
+  missed:         { label:'Missed',         color:'var(--red)' },
+};
+const statusMeta = s => POST_STATUS[s] || { label:s || 'Unknown', color:'var(--txt3)' };
+
+const sameDay = (a, b) =>
+  a.getFullYear()===b.getFullYear() && a.getMonth()===b.getMonth() && a.getDate()===b.getDate();
+
+const startOfWeek = d => {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  x.setDate(x.getDate() - x.getDay());
+  return x;
+};
+
+// The visible grid: whole weeks, so a month starting on a Wednesday still shows
+// the Sunday before it rather than three blank cells.
+function calendarDays(anchor, mode) {
+  const days = [];
+  if (mode === 'week') {
+    const s = startOfWeek(anchor);
+    for (let i = 0; i < 7; i++) days.push(new Date(s.getFullYear(), s.getMonth(), s.getDate()+i));
+    return days;
+  }
+  const first = new Date(anchor.getFullYear(), anchor.getMonth(), 1);
+  const last  = new Date(anchor.getFullYear(), anchor.getMonth()+1, 0);
+  const s = startOfWeek(first);
+  const e = new Date(last.getFullYear(), last.getMonth(), last.getDate() + (6 - last.getDay()));
+  for (let d = new Date(s); d <= e; d.setDate(d.getDate()+1)) {
+    days.push(new Date(d.getFullYear(), d.getMonth(), d.getDate()));
+  }
+  return days;
+}
+
+function PostCalendar({ posts, onOpen }) {
+  const [mode,   setMode]   = useState('month');
+  const [anchor, setAnchor] = useState(new Date());
+  const [store,  setStore]  = useState('all');
+  const [status, setStatus] = useState('all');
+
+  const shift = n => setAnchor(function(prev) {
+    return mode === 'week'
+      ? new Date(prev.getFullYear(), prev.getMonth(), prev.getDate() + n*7)
+      : new Date(prev.getFullYear(), prev.getMonth() + n, 1);
+  });
+
+  const days = calendarDays(anchor, mode);
+  const from = days[0];
+  const to   = new Date(days[days.length-1].getFullYear(), days[days.length-1].getMonth(), days[days.length-1].getDate(), 23, 59, 59);
+
+  const visible = posts.filter(function(p) {
+    if (store !== 'all' && p.store_id !== store) return false;
+    if (status !== 'all' && p.status !== status) return false;
+    const d = new Date(p.scheduled_at);
+    return d >= from && d <= to;
+  });
+
+  const forDay = d => visible
+    .filter(p => sameDay(new Date(p.scheduled_at), d))
+    .sort((a,b) => new Date(a.scheduled_at) - new Date(b.scheduled_at));
+
+  const today = new Date();
+  const title = mode === 'week'
+    ? days[0].toLocaleDateString(undefined,{month:'short',day:'numeric'}) + ' – ' +
+      days[6].toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})
+    : anchor.toLocaleDateString(undefined,{month:'long',year:'numeric'});
+
+  // Out-of-range posts are easy to lose behind a filter, so say so rather than
+  // showing an empty grid with no explanation.
+  const hiddenByRange = posts.filter(function(p) {
+    if (store !== 'all' && p.store_id !== store) return false;
+    if (status !== 'all' && p.status !== status) return false;
+    const d = new Date(p.scheduled_at);
+    return d < from || d > to;
+  }).length;
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 flex-wrap mb-3">
+        <div className="flex" style={{border:'1px solid var(--line)'}}>
+          {[['week','Week'],['month','Month']].map(function(m) {
+            const on = mode===m[0];
+            return (
+              <button key={m[0]} onClick={()=>setMode(m[0])}
+                className="px-3 py-1.5 text-xs uppercase tracking-[.14em]"
+                style={{ background:on?'var(--cy-glow)':'transparent', color:on?'var(--cy)':'var(--txt2)' }}>
+                {m[1]}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="flex items-center gap-1">
+          <Button size="sm" variant="ghost" onClick={()=>shift(-1)} aria-label="Previous">
+            <Icon name="back" size={13}/>
+          </Button>
+          <span className="mono text-xs px-2 whitespace-nowrap" style={{color:'var(--cy)'}}>{title}</span>
+          <Button size="sm" variant="ghost" onClick={()=>shift(1)} aria-label="Next">
+            <Icon name="fwd" size={13}/>
+          </Button>
+          <Button size="sm" variant="ghost" onClick={()=>setAnchor(new Date())}>Today</Button>
+        </div>
+
+        <span className="flex-1"/>
+
+        <Select value={store} onChange={e=>setStore(e.target.value)} className="w-auto text-xs">
+          <option value="all">All stores</option>
+          {STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
+        </Select>
+        <Select value={status} onChange={e=>setStatus(e.target.value)} className="w-auto text-xs">
+          <option value="all">Any status</option>
+          {Object.keys(POST_STATUS).map(k=><option key={k} value={k}>{POST_STATUS[k].label}</option>)}
+        </Select>
+      </div>
+
+      <div className="grid grid-cols-7 gap-px" style={{background:'var(--line)'}}>
+        {DOW_NAMES.map(function(d) {
+          return (
+            <div key={d} className="lbl text-center py-1.5" style={{background:'rgba(4,8,16,.9)'}}>{d}</div>
+          );
+        })}
+
+        {days.map(function(d, i) {
+          const list    = forDay(d);
+          const inMonth = mode === 'week' || d.getMonth() === anchor.getMonth();
+          const isToday = sameDay(d, today);
+          return (
+            <div key={i} className="p-1.5"
+                 style={{ background: inMonth ? 'rgba(4,8,16,.62)' : 'rgba(4,8,16,.3)',
+                          minHeight: mode==='week' ? '190px' : '104px' }}>
+              <div className="flex items-center gap-1 mb-1">
+                <span className="mono text-xs"
+                      style={{ color: isToday ? 'var(--cy)' : inMonth ? 'var(--txt2)' : 'var(--txt3)',
+                               fontWeight: isToday ? 700 : 400 }}>
+                  {d.getDate()}
+                </span>
+                {isToday && <span className="lbl" style={{color:'var(--cy)'}}>today</span>}
+              </div>
+
+              {list.map(function(p) {
+                const meta = statusMeta(p.status);
+                const t = new Date(p.scheduled_at);
+                const imgs = imagesOfPost(p);
+                return (
+                  <button key={p.id} onClick={()=>onOpen(p)}
+                    className="flex items-center gap-1 w-full mb-1 p-1 text-left"
+                    title={p.caption}
+                    style={{ borderLeft:'3px solid '+meta.color, background:'rgba(10,17,30,.9)' }}>
+                    {imgs.length > 0 && (
+                      <img src={imgs[0]} alt="" className="w-5 h-5 object-cover flex-none"/>
+                    )}
+                    <span className="mono flex-none" style={{fontSize:'10px', color:meta.color}}>
+                      {t.getHours()}:{String(t.getMinutes()).padStart(2,'0')}
+                    </span>
+                    <span className="truncate" style={{fontSize:'10px', color:'var(--txt2)'}}>
+                      {(STORES.find(s=>s.id===p.store_id)||{}).name?.split(' ')[0] || p.store_id}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="flex gap-3 flex-wrap mt-3 items-center">
+        {Object.keys(POST_STATUS).map(function(k) {
+          return (
+            <span key={k} className="flex items-center gap-1.5 lbl">
+              <span style={{width:'9px', height:'9px', background:POST_STATUS[k].color, display:'inline-block'}}/>
+              {POST_STATUS[k].label}
+            </span>
+          );
+        })}
+        <span className="flex-1"/>
+        <span className="lbl">{visible.length} in view</span>
+      </div>
+
+      {hiddenByRange > 0 && (
+        <p className="lbl mt-2">
+          {hiddenByRange} more outside {mode === 'week' ? 'this week' : 'this month'}.
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -8422,6 +8674,8 @@ function ScheduledPostsPanel() {
   const [loading,  setLoading]  = useState(false);
   const [canceling,setCanceling]= useState(null);
   const [reviewIx, setReviewIx] = useState(null);
+  const [view,     setView]     = useState('list');
+  const [detail,   setDetail]   = useState(null);
   const [editId,   setEditId]   = useState(null);
   const [draft,    setDraft]    = useState({});
   const [saving,   setSaving]   = useState(false);
@@ -8513,10 +8767,33 @@ function ScheduledPostsPanel() {
   return (
     <Card>
       {lightbox && <Lightbox src={lightbox} onClose={function(){ setLightbox(null); }}/>}
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
         <h2 className="text-base font-bold text-gray-900 dark:text-white"><Icon name="cal"/> Scheduled &amp; Recent Posts</h2>
+        <span className="flex-1"/>
+        <div className="flex" style={{border:'1px solid var(--line)'}}>
+          {[['list','List'],['calendar','Calendar']].map(function(v) {
+            const on = view===v[0];
+            return (
+              <button key={v[0]} onClick={function(){ setView(v[0]); }}
+                className="px-3 py-1.5 text-xs uppercase tracking-[.14em]"
+                style={{ background:on?'var(--cy-glow)':'transparent', color:on?'var(--cy)':'var(--txt2)' }}>
+                {v[1]}
+              </button>
+            );
+          })}
+        </div>
         <Button variant="secondary" size="sm" onClick={load} loading={loading}>Refresh</Button>
       </div>
+
+      {view === 'calendar' && (
+        <PostCalendar posts={posts} onOpen={function(p){ setDetail(p); }}/>
+      )}
+
+      {detail && (
+        <PostReviewModal post={detail} index={0} count={1}
+          onClose={function(){ setDetail(null); }}
+          onChanged={async function(){ await load(); setDetail(null); }}/>
+      )}
 
       {review.length > 0 && (
         <div className="mb-5 p-3" style={{border:'1px solid var(--cy)', background:'var(--cy-glow)'}}>

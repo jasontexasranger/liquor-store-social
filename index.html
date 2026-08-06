@@ -361,6 +361,15 @@ const POST_ASPECTS = ASPECTS.filter(a=>a.surfaces.includes('post')).map(a=>a.id)
 const AD_ASPECTS   = ASPECTS.map(a=>a.id);
 const aspectMeta   = id => ASPECTS.find(a=>a.id===id) || ASPECTS[0];
 
+// Which of our four sizes is a given canvas closest to? Templates carry pixel
+// dimensions, the library files by aspect, so the two have to be reconciled.
+function nearestAspect(w, h) {
+  if (!w || !h) return '1:1';
+  const got = w / h;
+  return ASPECTS.reduce((b,a)=>
+    Math.abs(got-a.ratio)/a.ratio < Math.abs(got-b.ratio)/b.ratio ? a : b, ASPECTS[0]).id;
+}
+
 // Ratio tolerance — a 1080x1082 export shouldn't be called wrong.
 const RATIO_TOLERANCE = 0.04;
 function ratioCheck(w, h, aspectId) {
@@ -438,10 +447,51 @@ function useCreatives() {
       name: meta.name, campaign_id: meta.campaignId || null, store_id: meta.storeId || null,
       aspect: meta.aspect, storage_path: path, public_url: url,
       width: size.w, height: size.h, bytes: file.size, mime: file.type,
+      period: meta.period || null,
       created_by: session.user.id,
     });
     if (error) { await sb.storage.from('creatives').remove([path]); throw error; }
     await reload();
+  };
+
+  // Same thing for an image we rendered ourselves rather than one the user
+  // picked off disk. Kept separate from `upload` because it takes known
+  // dimensions instead of measuring a File, and because a batch run must not
+  // reload the whole library after every single image.
+  const addRendered = async function(blob, meta) {
+    const sb = getSB();
+    const { data:{ session } } = await sb.auth.getSession();
+    if (!session) throw new Error('Not authenticated');
+    const path = session.user.id + '/' + Date.now() + '-' + Math.random().toString(36).slice(2,8) + '.png';
+
+    const up = await sb.storage.from('creatives').upload(path, blob, {
+      contentType: 'image/png', upsert: false,
+    });
+    if (up.error) throw new Error(up.error.message);
+    const url = sb.storage.from('creatives').getPublicUrl(path).data.publicUrl;
+
+    // A rerun replaces last run's image for this feature+template rather than
+    // stacking another copy beside it.
+    if (meta.featureId && meta.templateId) {
+      const { data: old } = await sb.from('creatives')
+        .select('id, storage_path')
+        .eq('feature_id', meta.featureId).eq('template_id', meta.templateId);
+      if (old && old.length) {
+        await sb.storage.from('creatives').remove(old.map(o=>o.storage_path));
+        await sb.from('creatives').delete().in('id', old.map(o=>o.id));
+      }
+    }
+
+    const { error } = await sb.from('creatives').insert({
+      name: meta.name, campaign_id: meta.campaignId || null, store_id: meta.storeId || null,
+      aspect: meta.aspect, storage_path: path, public_url: url,
+      width: meta.width, height: meta.height, bytes: blob.size, mime: 'image/png',
+      period: meta.period || null, feature_id: meta.featureId || null,
+      template_id: meta.templateId || null, source: 'feature_batch',
+      created_by: session.user.id,
+    });
+    if (error) { await sb.storage.from('creatives').remove([path]); throw error; }
+    return url;
   };
 
   const remove = async function(c) {
@@ -451,7 +501,7 @@ function useCreatives() {
     if (error) throw error;
     await reload();
   };
-  return { creatives, loading, reload, upload, remove };
+  return { creatives, loading, reload, upload, addRendered, remove };
 }
 
 // Reusable picker — Posts passes POST_ASPECTS, Ads passes AD_ASPECTS.
@@ -461,15 +511,19 @@ function CreativePicker({ allowed, storeIds, onPick, onClose }) {
   const { campaigns } = useCampaigns();
   const [camp, setCamp] = useState('all');
   const [asp,  setAsp]  = useState('all');
+  const [per,  setPer]  = useState('all');
+
+  const periods = creativePeriods(creatives);
 
   const visible = creatives.filter(function(c) {
     if (!allowed.includes(c.aspect)) return false;
     if (asp !== 'all' && c.aspect !== asp) return false;
     if (camp === 'none' && c.campaign_id) return false;
     if (camp !== 'all' && camp !== 'none' && c.campaign_id !== camp) return false;
+    if (per !== 'all' && String(c.period) !== per) return false;
     if (storeIds && storeIds.length && c.store_id && !storeIds.includes(c.store_id)) return false;
     return true;
-  });
+  }).sort(byPeriodThenDate);
 
   return (
     <Portal>
@@ -493,6 +547,12 @@ function CreativePicker({ allowed, storeIds, onPick, onClose }) {
             <option value="none">No campaign</option>
             {campaigns.filter(c=>!c.archived).map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
           </Select>
+          {periods.length > 0 && (
+            <Select value={per} onChange={e=>setPer(e.target.value)} className="w-auto text-xs">
+              <option value="all">All months</option>
+              {periods.map(p=><option key={p} value={p}>{monthLabel(p)}</option>)}
+            </Select>
+          )}
         </div>
 
         {loading ? <p className="lbl text-center py-10">Loading…</p>
@@ -513,7 +573,9 @@ function CreativePicker({ allowed, storeIds, onPick, onClose }) {
                   </div>
                   <div className="p-2.5">
                     <p className="text-xs truncate" style={{color:'var(--txt)'}}>{c.name}</p>
-                    <p className="lbl mt-1 truncate">{c.aspect}{cp?' · '+cp.name:''}</p>
+                    <p className="lbl mt-1 truncate">
+                      {c.aspect}{c.period?' · '+monthLabel(c.period):''}{cp?' · '+cp.name:''}
+                    </p>
                   </div>
                 </button>
               );
@@ -732,6 +794,23 @@ function CampaignManager({ campaigns, onCreate, onUpdate, counts }) {
   );
 }
 
+// Distinct months present in the library, newest first. Generated price ads
+// carry the month they were made for; hand-uploaded creatives don't.
+function creativePeriods(list) {
+  const seen = {};
+  list.forEach(c => { if (c.period) seen[String(c.period)] = true; });
+  return Object.keys(seen).sort().reverse();
+}
+
+// Month first, then upload time inside a month. Undated uploads sort last so a
+// year of generated ads doesn't get buried under them.
+function byPeriodThenDate(a, b) {
+  const ap = a.period ? String(a.period) : '';
+  const bp = b.period ? String(b.period) : '';
+  if (ap !== bp) return ap && bp ? bp.localeCompare(ap) : (ap ? -1 : 1);
+  return String(b.created_at).localeCompare(String(a.created_at));
+}
+
 function CreativeLibrary({ isAdmin, myStores }) {
   const toast = useToast();
   const { campaigns, create, update } = useCampaigns();
@@ -740,9 +819,12 @@ function CreativeLibrary({ isAdmin, myStores }) {
   const [fStore, setFStore] = useState('all');
   const [fCamp,  setFCamp]  = useState('all');
   const [fAsp,   setFAsp]   = useState('all');
+  const [fPer,   setFPer]   = useState('all');
 
   const counts = {};
   creatives.forEach(c => { if (c.campaign_id) counts[c.campaign_id] = (counts[c.campaign_id]||0)+1; });
+
+  const periods = creativePeriods(creatives);
 
   const visible = creatives.filter(function(c) {
     if (fStore === 'global' && c.store_id) return false;
@@ -750,8 +832,10 @@ function CreativeLibrary({ isAdmin, myStores }) {
     if (fCamp === 'none' && c.campaign_id) return false;
     if (fCamp !== 'all' && fCamp !== 'none' && c.campaign_id !== fCamp) return false;
     if (fAsp !== 'all' && c.aspect !== fAsp) return false;
+    if (fPer === 'none' && c.period) return false;
+    if (fPer !== 'all' && fPer !== 'none' && String(c.period) !== fPer) return false;
     return true;
-  });
+  }).sort(byPeriodThenDate);
 
   const del = async function(c) {
     if (!confirm('Delete "'+c.name+'"? This cannot be undone.')) return;
@@ -785,6 +869,13 @@ function CreativeLibrary({ isAdmin, myStores }) {
             <option value="all">All sizes</option>
             {ASPECTS.map(a=><option key={a.id} value={a.id}>{a.id} · {a.label}</option>)}
           </Select>
+          {periods.length > 0 && (
+            <Select value={fPer} onChange={e=>setFPer(e.target.value)} className="w-auto text-xs">
+              <option value="all">All months</option>
+              <option value="none">No month</option>
+              {periods.map(p=><option key={p} value={p}>{monthLabel(p)}</option>)}
+            </Select>
+          )}
           <span className="mono text-xs self-center ml-auto" style={{color:'var(--txt3)'}}>
             {visible.length} of {creatives.length}
           </span>
@@ -818,6 +909,7 @@ function CreativeLibrary({ isAdmin, myStores }) {
                       <Badge color="blue">{c.aspect}</Badge>
                       {st ? <Badge color="gray">{st.name.split(' ')[0]}</Badge>
                           : <Badge color="green">Global</Badge>}
+                      {c.period && <Badge color="yellow">{monthLabel(c.period)}</Badge>}
                     </div>
                     {cp && <p className="lbl mt-1.5 truncate">{cp.name}</p>}
                   </div>
@@ -1994,12 +2086,268 @@ function FeatureCell({ row, field, type='text', align='left', onCommit }) {
   );
 }
 
+// ─────────────────────────────────────────────
+// BATCH PRICE ADS FROM A MONTH'S FEATURES
+// ─────────────────────────────────────────────
+// Every feature that has a product photo linked gets rendered against every
+// price ad template the store has, and the results land in the creative
+// library tagged with the month they belong to.
+//
+// Rendering happens here in the browser, not on a server, because that's where
+// the fonts, the template artwork and the background remover already live —
+// the same code path the one-off ad builder uses, just in a loop.
+
+// Canvas taints on a cross-origin image, and a tainted canvas can't be
+// exported. Storage URLs do send CORS headers, but pulling the bytes down
+// first removes the question entirely.
+function toDataUrl(src) {
+  if (!src || src.startsWith('data:')) return Promise.resolve(src);
+  return fetch(src)
+    .then(r => r.blob())
+    .then(b => new Promise(function(res, rej) {
+      const fr = new FileReader();
+      fr.onload = () => res(fr.result);
+      fr.onerror = () => rej(new Error('Could not read image'));
+      fr.readAsDataURL(b);
+    }))
+    .catch(() => src);   // fall back and let the canvas try
+}
+
+function FeatureCreativeBatch({ storeId, storeName, period, rows, products, campaigns, onClose, onDone }) {
+  const dragPanel = useDragPanel();
+  const toast = useToast();
+  const { templates } = useBrandTemplates(storeId);
+  const { addRendered, reload: reloadCreatives } = useCreatives();
+
+  const [picked,   setPicked]   = useState(null);   // Set of feature ids, null = all eligible
+  const [campaign, setCampaign] = useState('');
+  const [running,  setRunning]  = useState(false);
+  const [done,     setDone]     = useState(null);
+  const [progress, setProgress] = useState({ n:0, total:0, label:'' });
+
+  const priceAds = templates.filter(t => t.kind === 'price_ad');
+
+  const prodOf = id => products.find(p => p.id === id) || null;
+
+  // A row is only worth rendering if there's a photo to put in the template.
+  const eligible = rows.filter(r => r.product_id && prodOf(r.product_id));
+  const noPhoto  = rows.filter(r => !r.product_id || !prodOf(r.product_id));
+
+  const isOn = id => (picked === null ? true : picked.has(id));
+  const toggle = function(id) {
+    setPicked(function(prev) {
+      const next = new Set(prev === null ? eligible.map(r=>r.id) : prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const chosen = eligible.filter(r => isOn(r.id));
+  const total  = chosen.length * priceAds.length;
+
+  const run = async function() {
+    if (!total) return;
+    setRunning(true);
+    setDone(null);
+    const made = [];
+    const failed = [];
+    let n = 0;
+
+    // Field definitions are per template, so fetch each one once rather than
+    // once per feature.
+    const sb = getSB();
+    const fieldsByTpl = {};
+    for (const t of priceAds) {
+      const { data } = await sb.from('ad_template_fields')
+        .select('*').eq('template_id', t.id).order('field_order');
+      fieldsByTpl[t.id] = withFieldDefaults(data);
+    }
+
+    for (const row of chosen) {
+      const prod = prodOf(row.product_id);
+      let productDataUrl = null;
+      try { productDataUrl = await toDataUrl(prodSrc(prod)); }
+      catch (e) { /* renderFieldTemplate handles a missing photo */ }
+
+      for (const tpl of priceAds) {
+        n += 1;
+        setProgress({ n, total, label: row.name + ' — ' + tpl.name });
+
+        const flds = fieldsByTpl[tpl.id];
+        if (!flds || !flds.length) {
+          failed.push(tpl.name + ': no fields set up yet');
+          continue;
+        }
+
+        try {
+          const rendered = await renderFieldTemplate(tpl, flds, {
+            product_name: row.name || '',
+            pack_size:    row.size || '',
+            price:        row.sale_price != null ? Number(row.sale_price).toFixed(2) : '',
+            save:         row.savings    != null ? '$' + Number(row.savings).toFixed(2) : '',
+          }, productDataUrl);
+
+          const url  = typeof rendered === 'string' ? rendered : rendered.url;
+          const over = typeof rendered === 'string' ? [] : rendered.overflows;
+          const blob = await (await fetch(url)).blob();
+          const aspect = nearestAspect(tpl.canvas_w, tpl.canvas_h);
+
+          await addRendered(blob, {
+            name: monthLabel(period) + ' · ' + (row.name || 'Feature') + ' · ' + aspect,
+            storeId, aspect, period,
+            campaignId: campaign || null,
+            featureId: row.id, templateId: tpl.id,
+            width: tpl.canvas_w, height: tpl.canvas_h,
+          });
+
+          made.push({ name: row.name, tpl: tpl.name, url,
+                      warn: over.length ? 'Text too big to fit: ' + over.join(', ') : null });
+        } catch (e) {
+          failed.push((row.name || 'Feature') + ' / ' + tpl.name + ': ' + e.message);
+        }
+      }
+    }
+
+    await reloadCreatives();
+    setRunning(false);
+    setDone({ made, failed });
+    if (made.length) toast.success(made.length + ' creative' + (made.length===1?'':'s') + ' added to the library');
+    if (!made.length && failed.length) toast.error('Nothing was created');
+    if (onDone) onDone();
+  };
+
+  return (
+    <Portal>
+    <div className="fixed inset-0 z-[210] flex items-center justify-center p-6"
+         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}}
+         onClick={running ? undefined : onClose}>
+      <div className="hud hud-brk w-full max-w-2xl max-h-[88vh] overflow-auto p-6"
+           style={dragPanel.style} onClick={e=>e.stopPropagation()}>
+        <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-4">
+          <span className="ttl">Generate creatives</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          {!running && <button onClick={onClose} style={{color:'var(--txt2)'}}><Icon name="close"/></button>}
+        </div>
+
+        <p className="text-xs mb-4" style={{color:'var(--txt2)'}}>
+          {storeName} · {monthLabel(period)}
+        </p>
+
+        {priceAds.length === 0 ? (
+          <div className="text-center py-10">
+            <Icon name="image" size={34} style={{color:'var(--cy-dim)'}}/>
+            <p className="lbl mt-3">No price ad templates for this store</p>
+            <p className="text-xs mt-2" style={{color:'var(--txt2)'}}>
+              Upload one under Ad Templates and position its fields first.
+            </p>
+          </div>
+        ) : done ? (
+          <div>
+            <p className="text-sm mb-3" style={{color:'var(--txt)'}}>
+              {done.made.length} created{done.failed.length ? ', ' + done.failed.length + ' skipped' : ''}.
+            </p>
+            {done.made.length > 0 && (
+              <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mb-4">
+                {done.made.map(function(m, i) {
+                  return (
+                    <div key={i} className="hud p-0 overflow-hidden">
+                      <img src={m.url} alt="" className="w-full object-cover" style={{aspectRatio:'1'}}/>
+                      <p className="lbl p-1.5 truncate">{m.name}</p>
+                      {m.warn && <p className="text-[10px] px-1.5 pb-1.5" style={{color:'var(--amb)'}}>{m.warn}</p>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {done.failed.length > 0 && (
+              <div className="p-3 mb-4" style={{border:'1px solid var(--red)', background:'rgba(255,77,94,.07)'}}>
+                {done.failed.map((f,i)=><p key={i} className="text-xs" style={{color:'var(--red)'}}>{f}</p>)}
+              </div>
+            )}
+            <div className="flex gap-2 justify-end">
+              <Button size="sm" variant="outline" onClick={()=>setDone(null)}>Run again</Button>
+              <Button size="sm" onClick={onClose}>Done</Button>
+            </div>
+          </div>
+        ) : running ? (
+          <div className="py-8">
+            <p className="lbl mb-2">{progress.n} of {progress.total}</p>
+            <div style={{height:'4px', background:'rgba(56,224,240,.12)'}}>
+              <div style={{height:'100%', width:(progress.total?progress.n/progress.total*100:0)+'%',
+                           background:'var(--cy)', transition:'width .2s'}}/>
+            </div>
+            <p className="text-xs mt-3 truncate" style={{color:'var(--txt2)'}}>{progress.label}</p>
+          </div>
+        ) : (
+          <div>
+            <div className="flex flex-wrap gap-2 items-center mb-4">
+              <span className="lbl">Templates</span>
+              {priceAds.map(function(t) {
+                return (
+                  <Badge key={t.id} color="blue">
+                    {t.name} · {nearestAspect(t.canvas_w, t.canvas_h)}
+                  </Badge>
+                );
+              })}
+            </div>
+
+            <div className="mb-4">
+              <Label>Tag with a campaign (optional)</Label>
+              <Select value={campaign} onChange={e=>setCampaign(e.target.value)} className="text-xs">
+                <option value="">No campaign</option>
+                {campaigns.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+              </Select>
+            </div>
+
+            {eligible.length === 0 ? (
+              <p className="lbl py-6 text-center">
+                No features have a product photo linked yet — assign photos first.
+              </p>
+            ) : (
+              <div className="mb-4" style={{maxHeight:'260px', overflowY:'auto'}}>
+                {eligible.map(function(r) {
+                  const p = prodOf(r.product_id);
+                  return (
+                    <label key={r.id} className="flex items-center gap-2.5 py-1.5 cursor-pointer">
+                      <input type="checkbox" checked={isOn(r.id)} onChange={()=>toggle(r.id)}/>
+                      <img src={prodSrc(p)} alt="" className="w-7 h-7 object-cover flex-none"
+                           style={{border:'1px solid var(--line)'}}/>
+                      <span className="text-xs flex-1 truncate" style={{color:'var(--txt)'}}>{r.name}</span>
+                      <span className="mono text-xs" style={{color:'var(--cy)'}}>{money(r.sale_price)}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+
+            {noPhoto.length > 0 && (
+              <p className="text-xs mb-4" style={{color:'var(--amb)'}}>
+                {noPhoto.length} feature{noPhoto.length===1?'':'s'} skipped — no product photo linked.
+              </p>
+            )}
+
+            <div className="flex gap-2 justify-end items-center">
+              <span className="lbl mr-auto">{total} image{total===1?'':'s'} will be created</span>
+              <Button size="sm" variant="outline" onClick={onClose}>Cancel</Button>
+              <Button size="sm" onClick={run} disabled={!total}>
+                <Icon name="image"/> Generate
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+    </Portal>
+  );
+}
+
 function FeaturesPage({ isAdmin, myStores }) {
   const toast = useToast();
   const [storeId, setStoreId] = useState((myStores[0]||{}).id || '');
   const [period,  setPeriod]  = useState(monthKey(new Date()));
   const [showPaste, setShowPaste] = useState(false);
   const [showCsv, setShowCsv] = useState(false);
+  const [showBatch, setShowBatch] = useState(false);
   const [view, setView] = useState('month');   // month | dashboard
   const [mode, setMode] = useState('plan');   // plan | sales
 
@@ -2102,6 +2450,9 @@ function FeaturesPage({ isAdmin, myStores }) {
           </Button>
           <Button size="sm" variant="outline" onClick={()=>setShowPaste(v=>!v)}>
             <Icon name="down"/> Paste from Excel
+          </Button>
+          <Button size="sm" variant="outline" onClick={()=>setShowBatch(true)} disabled={rows.length===0}>
+            <Icon name="image"/> Generate creatives
           </Button>
           <Button size="sm" onClick={addBlank}><Icon name="tag"/> Add row</Button>
           {periodRow && periodRow.status !== 'closed' && (
@@ -2215,6 +2566,15 @@ function FeaturesPage({ isAdmin, myStores }) {
           </div>
         )}
       </Card>
+
+      {showBatch && (
+        <FeatureCreativeBatch
+          storeId={storeId}
+          storeName={(myStores.find(s=>s.id===storeId)||{}).name || ''}
+          period={period} rows={rows} products={products}
+          campaigns={campaigns.filter(c=>!c.archived && (!c.store_id || c.store_id===storeId))}
+          onClose={()=>setShowBatch(false)} onDone={reload}/>
+      )}
     </div>
   );
 }

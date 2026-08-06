@@ -1758,8 +1758,126 @@ function FeaturePasteBox({ onImport, onClose }) {
 
 // Suggests library products by name. Never blocks — linking is optional and
 // only buys you the product photo downstream.
-function ProductLink({ row, products, onLink }) {
+// Creates a library product without leaving the features grid. Prefilled from
+// the feature row, so the common case is: pick an image, save.
+function QuickProductCreate({ seedName, seedSize, onCreated, onClose }) {
+  const toast = useToast();
+  const { add } = useBrandImageLibrary();
+  const [name, setName]   = useState(seedName || '');
+  const [size, setSize]   = useState(seedSize || '');
+  const [cat,  setCat]    = useState('');
+  const [prev, setPrev]   = useState(null);
+  const [hosted, setHosted] = useState(null);
+  const [busy, setBusy]   = useState(false);
+  const [showBCL, setShowBCL] = useState(false);
+  const fileRef = useRef();
+
+  const pickFile = function(f) {
+    if (!f) return;
+    const r = new FileReader();
+    r.onload = () => { setPrev(r.result); setHosted(null); };
+    r.readAsDataURL(f);
+  };
+
+  const save = async function() {
+    if (!name.trim()) { toast.error('Give the product a name'); return; }
+    if (!prev && !hosted) { toast.error('Add a photo first'); return; }
+    setBusy(true);
+    try {
+      const sb = getSB();
+      const row = {
+        store_id: null,
+        product_name: name.trim(),
+        size: size.trim() || null,
+        category: cat || null,
+        notes: null,
+        // A hosted image already lives in Storage; an uploaded one gets
+        // compressed into the base64 column like the rest of the library.
+        image_url: hosted || null,
+        data: hosted ? null : await compressImage(prev, 800, 0.8),
+      };
+      const { data, error } = await sb.from('brand_images').insert(row).select().single();
+      if (error) throw error;
+      toast.success('Product created and linked');
+      onCreated(data);
+      onClose();
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[210] flex items-center justify-center p-6"
+         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
+      <div className="hud hud-brk w-full max-w-lg max-h-[88vh] overflow-auto p-6"
+           onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center gap-3 mb-4">
+          <span className="ttl flex-1">New product</span>
+          <button onClick={onClose} style={{color:'var(--txt2)'}}><Icon name="close"/></button>
+        </div>
+
+        <ImageDropZone className="p-3 mb-3 flex items-center justify-center"
+          style={{border:'1px dashed var(--line2)', background:'rgba(4,8,16,.4)', minHeight:'132px'}}
+          onImage={function(out){ setPrev(out.dataUrl); setHosted(out.hostedUrl || null); }}>
+          {prev
+            ? <img src={prev} alt="" style={{maxHeight:'150px'}} className="object-contain"/>
+            : <div className="text-center py-4">
+                <Icon name="image" size={24} style={{color:'var(--cy-dim)'}}/>
+                <p className="lbl mt-2">Paste or drop a photo</p>
+              </div>}
+        </ImageDropZone>
+
+        <div className="flex gap-2 flex-wrap mb-4">
+          <Button size="sm" variant="secondary" onClick={()=>fileRef.current?.click()}>
+            <Icon name="cam"/> Upload
+          </Button>
+          <Button size="sm" variant="outline" onClick={()=>setShowBCL(v=>!v)}>
+            <Icon name="search"/> BC Liquor
+          </Button>
+          {prev && <Button size="sm" variant="ghost" onClick={()=>{setPrev(null);setHosted(null);}}>Clear</Button>}
+          <input ref={fileRef} type="file" accept="image/*" className="hidden"
+                 onChange={e=>{ pickFile(e.target.files?.[0]); e.target.value=''; }}/>
+        </div>
+
+        {showBCL && (
+          <div className="mb-4">
+            <BCLiquorSearch onImported={function(r){
+              setHosted(r.image_url); setPrev(r.image_url);
+              if (!name.trim()) setName(r.product.name || '');
+              if (!size.trim() && r.product.package_size) setSize(r.product.package_size);
+              setShowBCL(false);
+            }}/>
+          </div>
+        )}
+
+        <div className="grid grid-cols-2 gap-3 mb-3">
+          <div><Label>Name</Label>
+            <Input value={name} onChange={e=>setName(e.target.value)}/></div>
+          <div><Label>Size</Label>
+            <Input value={size} onChange={e=>setSize(e.target.value)} placeholder="750ML"/></div>
+        </div>
+
+        <div className="mb-5">
+          <Label>Category</Label>
+          <Select value={cat} onChange={e=>setCat(e.target.value)}>
+            <option value="">Uncategorised</option>
+            {LIQUOR_CATEGORIES.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}
+          </Select>
+        </div>
+
+        <div className="flex gap-2">
+          <Button onClick={save} loading={busy} className="flex-1">
+            <Icon name="save"/> Create and link
+          </Button>
+          <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ProductLink({ row, products, onLink, onCreated }) {
   const [open, setOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
   const linked = products.find(p => p.id === row.product_id);
 
   const suggestions = (function(){
@@ -1792,7 +1910,7 @@ function ProductLink({ row, products, onLink }) {
         <Icon name="image" size={12}/>
       </button>
       {open && (
-        <div className="absolute z-30 left-0 mt-1 w-56 p-2" style={{background:'#0a111e', border:'1px solid var(--line2)'}}>
+        <div className="absolute z-30 left-0 mt-1 w-60 p-2" style={{background:'#0a111e', border:'1px solid var(--line2)'}}>
           {suggestions.length === 0
             ? <p className="lbl py-2 text-center">No close matches</p>
             : suggestions.map(function(p){
@@ -1805,8 +1923,20 @@ function ProductLink({ row, products, onLink }) {
                   </button>
                 );
               })}
+          <button onClick={()=>{ setCreating(true); setOpen(false); }}
+                  className="flex items-center gap-2 w-full p-2 mt-1"
+                  style={{color:'var(--cy)', borderTop:'1px solid var(--line)'}}>
+            <Icon name="tag" size={13}/>
+            <span className="text-xs">Create "{(row.name||'').slice(0,18)}"</span>
+          </button>
           <button onClick={()=>setOpen(false)} className="lbl w-full text-center pt-1">Close</button>
         </div>
+      )}
+
+      {creating && (
+        <QuickProductCreate seedName={row.name} seedSize={row.size}
+          onCreated={function(prod){ onLink(row.id, prod.id); if (onCreated) onCreated(); }}
+          onClose={()=>setCreating(false)}/>
       )}
     </div>
   );
@@ -1864,7 +1994,7 @@ function FeaturesPage({ isAdmin, myStores }) {
 
   const { periodRow, rows, loading, reload, addRows, updateRow, deleteRow, setStatus, ensurePeriod } =
     useFeaturePeriod(storeId, period);
-  const { images: products } = useBrandImageLibrary();
+  const { images: products, load: reloadProducts } = useBrandImageLibrary();
   const { campaigns } = useCampaigns();
 
   const stats = featureStats(rows);
@@ -2016,7 +2146,8 @@ function FeaturesPage({ isAdmin, myStores }) {
                     <tr key={r.id + ':' + (r.updated_at || '')} style={{borderBottom:'1px solid rgba(56,224,240,.07)'}}>
                       <td style={{padding:'5px'}}>
                         <ProductLink row={r} products={products}
-                                     onLink={(id,pid)=>patch(id,{product_id:pid})}/>
+                                     onLink={(id,pid)=>patch(id,{product_id:pid})}
+                                     onCreated={reloadProducts}/>
                       </td>
                       <td style={{padding:'2px 0', minWidth:'190px'}}><FeatureCell row={r} field="name" onCommit={patch}/></td>
                       <td style={{padding:'2px 0', width:'80px'}}><FeatureCell row={r} field="size" onCommit={patch}/></td>

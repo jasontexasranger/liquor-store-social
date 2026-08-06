@@ -1182,6 +1182,106 @@ function AdTemplateLayout({ tpl, onClose, onSaved }) {
 }
 
 // ─────────────────────────────────────────────
+// BCLIQUOR PRODUCT LOOKUP
+// ─────────────────────────────────────────────
+// Searches the public BC Liquor Stores catalogue and copies the selected
+// product image into our own Storage. The BCLIQUOR price is shown only to help
+// identify the right package — it never becomes the store's feature price.
+function BCLiquorSearch({ onImported }) {
+  const toast = useToast();
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState(null);
+  const [searching, setSearching] = useState(false);
+  const [importing, setImporting] = useState(null);
+
+  const search = async () => {
+    const term = q.trim();
+    if (term.length < 2)  { toast.error('Enter at least 2 characters'); return; }
+    if (term.length > 80) { toast.error('Search is too long'); return; }
+    setSearching(true);
+    try {
+      const r = await callEdge('bcliquor', 'search', { query: term });
+      setResults(r.products || []);
+      if (!r.products?.length) toast.info ? toast.info('No matches') : null;
+    } catch(e) { toast.error(e.message); }
+    finally { setSearching(false); }
+  };
+
+  const useImage = async (prod) => {
+    setImporting(prod.sku);
+    try {
+      // Server re-verifies the SKU and rebuilds the image URL itself.
+      const r = await callEdge('bcliquor', 'import', { sku: prod.sku });
+      onImported({
+        image_url: r.image_url,
+        image_alt: r.image_alt,
+        product: r.product,
+      });
+      toast.success('Product image copied — save the product to keep it');
+    } catch(e) { toast.error(e.message); }
+    finally { setImporting(null); }
+  };
+
+  const money = v => (v == null ? null : '$' + Number(v).toFixed(2));
+
+  return (
+    <div className="p-4" style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.4)'}}>
+      <div className="flex items-center gap-3 mb-3">
+        <span className="ttl">BC Liquor lookup</span>
+        <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+      </div>
+
+      <div className="flex gap-2 mb-3">
+        <Input value={q} onChange={e=>setQ(e.target.value)}
+               onKeyDown={e=>{ if(e.key==='Enter') search(); }}
+               placeholder="Search the BC Liquor catalogue…" className="flex-1"/>
+        <Button onClick={search} loading={searching}><Icon name="search"/> Search</Button>
+      </div>
+
+      {results && results.length === 0 && (
+        <p className="lbl py-6 text-center">No products matched that search</p>
+      )}
+
+      {results && results.length > 0 && (
+        <React.Fragment>
+          <p className="lbl mb-2">
+            {results.length} result{results.length===1?'':'s'} · price shown only to identify the package
+          </p>
+          <div className="space-y-2 max-h-96 overflow-auto">
+            {results.map(function(p) {
+              return (
+                <div key={p.sku} className="flex items-center gap-3 p-2.5"
+                     style={{border:'1px solid var(--line)', background:'rgba(2,5,11,.5)'}}>
+                  <img src={p.image_url} alt={p.name}
+                       className="object-contain flex-none"
+                       style={{width:'54px', height:'54px', background:'rgba(255,255,255,.04)'}}
+                       onError={e=>{ e.currentTarget.style.visibility='hidden'; }}/>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm truncate" style={{color:'var(--txt)'}}>{p.name}</p>
+                    <p className="lbl mt-1 truncate">
+                      {[p.package_size, p.category, p.country].filter(Boolean).join(' · ')}
+                    </p>
+                    <p className="mono mt-1" style={{fontSize:'10px', color:'var(--txt3)'}}>
+                      SKU {p.sku}
+                      {money(p.current_price) && <span style={{marginLeft:'10px'}}>BCL {money(p.current_price)}</span>}
+                      {p.regular_price != null && p.current_price != null && p.regular_price > p.current_price &&
+                        <span style={{marginLeft:'6px', textDecoration:'line-through', opacity:.6}}>{money(p.regular_price)}</span>}
+                    </p>
+                  </div>
+                  <Button size="sm" onClick={()=>useImage(p)} loading={importing===p.sku}>
+                    <Icon name="down"/> Use image
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        </React.Fragment>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
 // TOAST CONTEXT
 // ─────────────────────────────────────────────
 const ToastCtx = createContext(null);
@@ -1320,6 +1420,9 @@ function compressImage(dataUrl, maxPx=600, quality=0.75) {
 // ─────────────────────────────────────────────
 // BRAND IMAGE LIBRARY HOOK
 // ─────────────────────────────────────────────
+// Imported products store a permanent Storage URL; uploaded ones store base64.
+const prodSrc = p => (p && (p.image_url || p.data)) || '';
+
 function useBrandImageLibrary() {
   const [images, setImages] = useState([]);
 
@@ -1334,8 +1437,11 @@ function useBrandImageLibrary() {
 
   const add = async (product) => {
     const sb=getSB(); if(!sb) throw new Error('Not connected');
-    const compressed = await compressImage(product.data, 800, 0.8);
-    await sb.from('brand_images').insert({ store_id:null, ...product, data:compressed });
+    const row = { store_id:null, ...product };
+    // A BCLIQUOR import already lives in Storage — nothing to compress.
+    row.data = product.data ? await compressImage(product.data, 800, 0.8) : null;
+    const { error } = await sb.from('brand_images').insert(row);
+    if (error) throw error;
     await load();
   };
 
@@ -1343,6 +1449,7 @@ function useBrandImageLibrary() {
     const sb=getSB(); if(!sb) throw new Error('Not connected');
     const patch = { ...fields };
     if (patch.data) patch.data = await compressImage(patch.data, 800, 0.8);
+    if (patch.image_url) patch.data = null;
     const { error } = await sb.from('brand_images').update(patch).eq('id', id);
     if (error) throw error;
     await load();
@@ -2487,10 +2594,10 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
   };
 
   const selectFromLib = img => {
-    setProdPrev(img.data);
+    setProdPrev(prodSrc(img) || img.data);
     setProductName(img.product_name || '');
     setProductSize(img.size || '');
-    fetch(img.data).then(r=>r.blob()).then(blob=>setProdFile(new File([blob],img.product_name||'product',{type:'image/jpeg'}))).catch(()=>{});
+    fetch(prodSrc(img)||img.data).then(r=>r.blob()).then(blob=>setProdFile(new File([blob],img.product_name||'product',{type:'image/jpeg'}))).catch(()=>{});
     setShowLib(false);
   };
 
@@ -3363,6 +3470,10 @@ function ProductLibrary() {
   const [catFilter,   setCatFilter]   = useState('all');
   const [editId,      setEditId]      = useState(null);
   const [search,      setSearch]      = useState('');
+  const [showBCL,     setShowBCL]     = useState(false);
+  const [bclSku,      setBclSku]      = useState(null);
+  const [bclAlt,      setBclAlt]      = useState('');
+  const [importedUrl, setImportedUrl] = useState(null);
   const [showForm,    setShowForm]    = useState(false);
   const [formImg,     setFormImg]     = useState(null);
   const [formPrev,    setFormPrev]    = useState(null);
@@ -3382,7 +3493,22 @@ function ProductLibrary() {
   };
 
   const resetForm = () => {
-    setFormImg(null); setFormPrev(null); setFormName(''); setFormSize('750ml'); setFormCat(''); setFormNotes(''); setShowForm(false); setEditId(null);
+    setFormImg(null); setFormPrev(null); setFormName(''); setFormSize('750ml'); setFormCat(''); setFormNotes(''); setShowForm(false); setEditId(null); setBclSku(null); setBclAlt(''); setImportedUrl(null);
+  };
+
+  const applyImport = ({ image_url, image_alt, product }) => {
+    setImportedUrl(image_url);
+    setFormPrev(image_url);
+    setFormImg(null);
+    setBclSku(product.sku);
+    // Don't overwrite anything already typed.
+    if (!formName.trim())  setFormName(product.name || '');
+    if (!formNotes.trim() && product.package_size) setFormNotes(product.package_size);
+    if (!bclAlt.trim())    setBclAlt(image_alt || '');
+    const matched = BOTTLE_SIZES.find(b => (product.package_size||'').includes(b));
+    if (matched) setFormSize(matched);
+    setShowBCL(false);
+    setShowForm(true);
   };
 
   const startEdit = (prod) => {
@@ -3391,26 +3517,33 @@ function ProductLibrary() {
     setFormSize(prod.size || '750ml');
     setFormCat(prod.category || '');
     setFormNotes(prod.notes || '');
-    setFormPrev(prod.data || null);
+    setFormPrev(prod.image_url || prod.data || null);
     setFormImg(null);
+    setBclSku(prod.bcliquor_sku || null);
+    setBclAlt(prod.image_alt || '');
+    setImportedUrl(prod.image_url || null);
     setShowForm(true);
     window.scrollTo({ top:0, behavior:'smooth' });
   };
 
   const saveProduct = async () => {
-    if (!editId && !formImg) { toast.error('Upload a product image'); return; }
+    if (!editId && !formImg && !importedUrl) { toast.error('Upload a product image or import one'); return; }
     if (!formName.trim())    { toast.error('Enter a product name'); return; }
     if (!formCat)            { toast.error('Select a category'); return; }
     setSaving(true);
     try {
       const fields = { product_name:formName.trim(), size:formSize, category:formCat, notes:formNotes.trim() };
+      // Provenance from a BCLIQUOR import — never blank out an existing value.
+      if (bclSku)          fields.bcliquor_sku = bclSku;
+      if (importedUrl)     fields.image_url    = importedUrl;
+      if (bclAlt.trim())   fields.image_alt    = bclAlt.trim();
       if (editId) {
         // Only send a new image if one was actually chosen this time.
         if (formImg) fields.data = formPrev;
         await update(editId, fields);
         toast.success('Product updated');
       } else {
-        await add({ ...fields, data:formPrev });
+        await add({ ...fields, data: importedUrl ? null : formPrev });
         toast.success('Product added to library');
       }
       resetForm();
@@ -3444,10 +3577,15 @@ function ProductLibrary() {
         <Input value={search} onChange={e=>setSearch(e.target.value)}
                placeholder="Search products…" className="max-w-xs text-sm"/>
         <div className="flex-1"/>
+        <Button onClick={()=>setShowBCL(v=>!v)} variant={showBCL?'secondary':'outline'} size="sm">
+          <Icon name="search"/> {showBCL ? 'Hide BC Liquor' : 'Import from BC Liquor'}
+        </Button>
         <Button onClick={()=>{ setEditId(null); resetForm(); setShowForm(v=>!v); }} variant={showForm?'secondary':'primary'} size="sm">
           {showForm?<React.Fragment><Icon name="close"/> Cancel</React.Fragment>:<React.Fragment><Icon name="tag"/> Add Product</React.Fragment>}
         </Button>
       </div>
+
+      {showBCL && <BCLiquorSearch onImported={applyImport}/>}
 
       {/* Add product form */}
       {showForm && (
@@ -3486,6 +3624,15 @@ function ProductLibrary() {
                 ))}
               </div>
             </div>
+            {bclSku && (
+              <div className="sm:col-span-2 p-2.5" style={{border:'1px solid var(--line)', background:'rgba(56,224,240,.06)'}}>
+                <p className="mono text-xs" style={{color:'var(--cy)'}}>
+                  <Icon name="check" size={12} className="mr-1.5"/>
+                  Image copied from BC Liquor · SKU {bclSku}
+                </p>
+                <p className="lbl mt-1">Save the product to keep this change</p>
+              </div>
+            )}
             <div className="sm:col-span-2">
               <Label>Notes (optional)</Label>
               <Input value={formNotes} onChange={e=>setFormNotes(e.target.value)} placeholder="e.g. Our best-seller, BC exclusive, seasonal"/>
@@ -3527,7 +3674,7 @@ function ProductLibrary() {
             return (
               <div key={p.id} className="bg-white dark:bg-gray-800 rounded-xl border border-gray-100 dark:border-gray-700 overflow-hidden group hover:border-indigo-300 dark:hover:border-indigo-600 transition-all shadow-sm">
                 <div className="relative">
-                  <img src={p.data} alt={p.product_name} className="w-full aspect-square object-cover"/>
+                  <img src={prodSrc(p)} alt={p.product_name} className="w-full aspect-square object-cover"/>
                   <div className="absolute top-1.5 right-1.5 gap-1 hidden group-hover:flex">
                     <button onClick={()=>startEdit(p)} aria-label={'Edit '+p.product_name}
                       className="w-6 h-6 flex items-center justify-center transition-colors"
@@ -3666,9 +3813,9 @@ function ImageGenerator({ settings, onUseInPost }) {
   const [prodFile,   setProdFile]   = useState(null);
   const [prodPrev,   setProdPrev]   = useState(null);
   const pickFromGallery = prod => {
-    setProdPrev(prod.data);
+    setProdPrev(prodSrc(prod));
     // Vision needs a File; rebuild one from the stored data URL.
-    fetch(prod.data).then(r=>r.blob())
+    fetch(prodSrc(prod)).then(r=>r.blob())
       .then(blob=>setProdFile(new File([blob], (prod.product_name||'product')+'.jpg', {type:'image/jpeg'})))
       .catch(()=>{});
     if (!brief.trim()) {
@@ -3724,8 +3871,8 @@ function ImageGenerator({ settings, onUseInPost }) {
   };
 
   const selectFromLib = (img) => {
-    setProdPrev(img.data);
-    fetch(img.data).then(r=>r.blob()).then(blob=>{
+    setProdPrev(prodSrc(img) || img.data);
+    fetch(prodSrc(img)||img.data).then(r=>r.blob()).then(blob=>{
       const f=new File([blob], img.product_name||'product', {type:'image/jpeg'});
       setProdFile(f);
     }).catch(()=>{});
@@ -3847,7 +3994,7 @@ function ImageGenerator({ settings, onUseInPost }) {
                       {list.map(g=>(
                         <button key={g.id} onClick={()=>pickFromGallery(g)} className="group text-left"
                                 title={[g.product_name,g.size].filter(Boolean).join(' · ')}>
-                          <img src={g.data} alt={g.product_name}
+                          <img src={prodSrc(g)} alt={g.product_name}
                                className="w-full aspect-square object-cover transition-all"
                                style={{border:'1px solid var(--line)'}}
                                onMouseEnter={e=>e.currentTarget.style.borderColor='var(--cy)'}
@@ -3871,7 +4018,7 @@ function ImageGenerator({ settings, onUseInPost }) {
                 <div className="grid grid-cols-5 gap-2">
                   {libImages.map(img=>(
                     <div key={img.id} className="relative group">
-                      <img src={img.data} alt={img.name} title={img.name}
+                      <img src={prodSrc(img)||img.data} alt={img.name} title={img.name}
                         onClick={()=>selectFromLib(img)}
                         className="w-full aspect-square object-cover rounded-lg border border-gray-200 dark:border-gray-600 cursor-pointer hover:border-indigo-400 hover:opacity-90 transition-all"/>
                       <button onClick={()=>removeFromLib(img.id)}

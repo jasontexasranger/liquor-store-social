@@ -644,6 +644,12 @@ NOTIFY pgrst, 'reload schema';
 ALTER TABLE public.ad_template_fields
   ADD COLUMN IF NOT EXISTS padding_pct NUMERIC DEFAULT 2;
 
+ALTER TABLE public.ad_template_fields
+  ADD COLUMN IF NOT EXISTS prefix_scale  NUMERIC DEFAULT 55,
+  ADD COLUMN IF NOT EXISTS prefix_valign TEXT    DEFAULT 'middle',
+  ADD COLUMN IF NOT EXISTS suffix_scale  NUMERIC DEFAULT 35,
+  ADD COLUMN IF NOT EXISTS suffix_valign TEXT    DEFAULT 'bottom';
+
 
 -- ============================================================================
 -- Tell PostgREST about the new tables.

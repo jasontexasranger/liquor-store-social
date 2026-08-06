@@ -847,6 +847,7 @@ const AD_FIELD_DEFAULTS = {
   field_key:'custom', field_type:'text', label:'New field',
   align:'left', valign:'top', color:'#1b365d', bold:true, uppercase:true,
   font_family:'Anton', font_weight:400, padding_pct:2,
+  prefix_scale:55, prefix_valign:'middle', suffix_scale:35, suffix_valign:'bottom',
   wrap:true, max_lines:2, min_font_size:8, max_font_size:200,
   line_spacing:1.15, prefix:'', suffix:'',
   fit_mode:'contain', remove_bg:true,
@@ -961,7 +962,6 @@ async function renderFieldTemplate(tpl, fields, values, productDataUrl, onStep) 
     if (text == null || text === '') continue;
     text = String(text);
     if (f.uppercase) text = text.toUpperCase();
-    text = (f.prefix || '') + text;
 
     const res = drawTextField(ctx, text, box, {
       align: f.align || 'left',
@@ -973,7 +973,12 @@ async function renderFieldTemplate(tpl, fields, values, productDataUrl, onStep) 
       maxLines: f.max_lines || null,
       minFontSize: f.min_font_size || 8,
       maxFontSize: f.max_font_size || 200,
+      prefix: f.prefix || '',
+      prefixScale: (f.prefix_scale ?? 55) / 100,
+      prefixValign: f.prefix_valign || 'middle',
       suffix: f.suffix || '',
+      suffixScale: (f.suffix_scale ?? 35) / 100,
+      suffixValign: f.suffix_valign || 'bottom',
       fontFamily: fontStack(f.font_family),
       fontWeight: f.font_weight || null,
       // Breathing room so glyphs never sit flush against the clip edge.
@@ -1186,6 +1191,32 @@ function AdFieldEditor({ templateDataUrl, fields, onChange }) {
                   <div><Label>Suffix</Label>
                     <Input value={cur.suffix||''} onChange={e=>patch(cur.id,{suffix:e.target.value})} placeholder="ea"/></div>
                 </div>
+                {cur.prefix && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div><Label>Prefix size %</Label>
+                      <Input type="number" min="15" max="100" value={cur.prefix_scale ?? 55}
+                             onChange={e=>patch(cur.id,{prefix_scale:+e.target.value})}/></div>
+                    <div><Label>Prefix position</Label>
+                      <Select value={cur.prefix_valign||'middle'} onChange={e=>patch(cur.id,{prefix_valign:e.target.value})}>
+                        <option value="middle">Middle</option>
+                        <option value="top">Top</option>
+                        <option value="baseline">Baseline</option>
+                      </Select></div>
+                  </div>
+                )}
+                {cur.suffix && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div><Label>Suffix size %</Label>
+                      <Input type="number" min="10" max="100" value={cur.suffix_scale ?? 35}
+                             onChange={e=>patch(cur.id,{suffix_scale:+e.target.value})}/></div>
+                    <div><Label>Suffix position</Label>
+                      <Select value={cur.suffix_valign||'bottom'} onChange={e=>patch(cur.id,{suffix_valign:e.target.value})}>
+                        <option value="bottom">Bottom</option>
+                        <option value="middle">Middle</option>
+                        <option value="top">Top</option>
+                      </Select></div>
+                  </div>
+                )}
                 <div className="flex gap-4">
                   <label className="flex items-center gap-2 text-xs cursor-pointer" style={{color:'var(--txt2)'}}>
                     <input type="checkbox" checked={!!cur.bold} onChange={e=>patch(cur.id,{bold:e.target.checked})}/> Bold
@@ -2321,6 +2352,8 @@ function fitText(text, boxW, boxH, settings={}) {
     lineSpacing=1.2, wrap=true, maxLines=null, align='left',
     fontFamily='Arial,Helvetica,sans-serif', fontWeight=null,
     padding=0,
+    prefix='', prefixScale=0.55,
+    suffix='', suffixScale=0.35,
   } = settings;
   const weightOf = () => fontWeight != null ? String(fontWeight) : (bold ? 'bold' : 'normal');
 
@@ -2348,6 +2381,19 @@ function fitText(text, boxW, boxH, settings={}) {
   };
 
   const measure = (fontSize) => {
+    // Affixes are drawn at their own size beside the text, so the space they
+    // occupy has to come out of the width available for wrapping.
+    let affixW = 0;
+    if (prefix) {
+      ctx.font = `${weightOf()} ${Math.max(6, fontSize*prefixScale)}px ${fontFamily}`;
+      affixW += ctx.measureText(prefix).width;
+    }
+    if (suffix) {
+      ctx.font = `${weightOf()} ${Math.max(6, fontSize*suffixScale)}px ${fontFamily}`;
+      affixW += ctx.measureText(suffix).width;
+    }
+    const textW = Math.max(1, availW - affixW);
+
     ctx.font = `${weightOf()} ${fontSize}px ${fontFamily}`;
 
     let lines;
@@ -2358,7 +2404,7 @@ function fitText(text, boxW, boxH, settings={}) {
       let cur = '';
       for (const w of text.split(/\s+/)) {
         const test = cur ? cur+' '+w : w;
-        if (inkOf(test).w > availW && cur) { lines.push(cur); cur = w; }
+        if (inkOf(test).w > textW && cur) { lines.push(cur); cur = w; }
         else cur = test;
       }
       if (cur) lines.push(cur);
@@ -2375,8 +2421,8 @@ function fitText(text, boxW, boxH, settings={}) {
 
     const limit = maxLines || 99;
     return {
-      lines, inks, advance, totalH,
-      fits: lines.length<=limit && totalH<=availH && maxW<=availW,
+      lines, inks, advance, totalH, affixW,
+      fits: lines.length<=limit && totalH<=availH && maxW<=textW,
     };
   };
 
@@ -2407,12 +2453,13 @@ function fitText(text, boxW, boxH, settings={}) {
 function drawTextField(ctx, text, box, settings={}, fit=null) {
   const { align='left', valign='top', color='#000000', bold=false,
           lineSpacing=1.2, minFontSize=8, maxFontSize=48, wrap=true, maxLines=null,
-          suffix='', fontFamily='Arial,Helvetica,sans-serif', fontWeight=null,
-          padding=0 } = settings;
+          fontFamily='Arial,Helvetica,sans-serif', fontWeight=null, padding=0,
+          prefix='', prefixScale=0.55, prefixValign='middle',
+          suffix='', suffixScale=0.35, suffixValign='bottom' } = settings;
   const wt = fontWeight != null ? String(fontWeight) : (bold ? 'bold' : 'normal');
   const r = fit || fitText(text, box.w, box.h, {
     align, bold, lineSpacing, wrap, maxLines, maxFontSize, minFontSize,
-    fontFamily, fontWeight, padding,
+    fontFamily, fontWeight, padding, prefix, prefixScale, suffix, suffixScale,
   });
   const { fontSize, lines, inks, advance, totalH } = r;
   if (!lines || !lines.length) return r;
@@ -2435,48 +2482,80 @@ function drawTextField(ctx, text, box, settings={}, fit=null) {
   const innerY = box.y + padding;
   const innerH = box.h - padding*2;
 
+  const preSize = prefix ? Math.max(6, Math.round(fontSize * prefixScale)) : 0;
+  const sufSize = suffix ? Math.max(6, Math.round(fontSize * suffixScale)) : 0;
+
+  ctx.font = `${wt} ${preSize}px ${fontFamily}`;
+  const preW = prefix ? ctx.measureText(prefix).width : 0;
+  ctx.font = `${wt} ${sufSize}px ${fontFamily}`;
+  const sufW = suffix ? ctx.measureText(suffix).width : 0;
+
+  // The text block sits between the affixes; each gets its own lane.
+  const textX = innerX + preW;
+  const textW = innerW - preW - sufW;
+
   let top = innerY;
   if (valign === 'middle')      top = innerY + (innerH - totalH) / 2;
   else if (valign === 'bottom') top = innerY + innerH - totalH;
-  // If the text is taller than the box (overflow), middle/bottom would push it
-  // above the top edge and the clip would shear the caps. Never start higher
-  // than the box itself.
   top = Math.max(top, innerY);
 
   const firstAsc = inks && inks[0] ? inks[0].asc : fontSize * 0.8;
   let baseline = top + firstAsc;
 
+  ctx.font = `${wt} ${fontSize}px ${fontFamily}`;
+  let lastLineW = 0;
   for (let k = 0; k < lines.length; k++) {
-    let x = innerX;
-    if (align === 'center')     { ctx.textAlign = 'center'; x = innerX + innerW/2; }
-    else if (align === 'right') { ctx.textAlign = 'right';  x = innerX + innerW; }
+    let x = textX;
+    if (align === 'center')     { ctx.textAlign = 'center'; x = textX + textW/2; }
+    else if (align === 'right') { ctx.textAlign = 'right';  x = textX + textW; }
     else                        { ctx.textAlign = 'left'; }
     ctx.fillText(lines[k], x, baseline);
+    if (k === lines.length-1) lastLineW = ctx.measureText(lines[k]).width;
     baseline += advance;
   }
 
-  // Suffix rides at the top-right of the last line, e.g. the "ea" on a price.
+  const lastIdx  = lines.length - 1;
+  const lastBase = top + firstAsc + lastIdx * advance;
+  const lastAsc  = inks && inks[lastIdx] ? inks[lastIdx].asc  : fontSize * 0.8;
+  const lastDesc = inks && inks[lastIdx] ? inks[lastIdx].desc : fontSize * 0.2;
+
+  // Where the drawn text actually starts and ends horizontally.
+  let textLeft, textRight;
+  if (align === 'center')     { textLeft = textX + textW/2 - lastLineW/2; textRight = textLeft + lastLineW; }
+  else if (align === 'right') { textRight = textX + textW; textLeft = textRight - lastLineW; }
+  else                        { textLeft = textX; textRight = textLeft + lastLineW; }
+
+  // Prefix: smaller, in its own lane to the left, vertically centred against
+  // the first line by default (a $ shouldn't sit on the same baseline as a
+  // 200px numeral).
+  if (prefix) {
+    ctx.font = `${wt} ${preSize}px ${fontFamily}`;
+    ctx.textAlign = 'left';
+    const pm = ctx.measureText(prefix);
+    const pAsc  = isFinite(pm.actualBoundingBoxAscent)  ? pm.actualBoundingBoxAscent  : preSize*0.8;
+    const pDesc = isFinite(pm.actualBoundingBoxDescent) ? pm.actualBoundingBoxDescent : preSize*0.2;
+    const firstTop = top;
+    const firstBot = top + firstAsc;
+    let py;
+    if (prefixValign === 'top')          py = firstTop + pAsc;
+    else if (prefixValign === 'baseline')py = firstBot;
+    else                                 py = firstTop + (firstAsc + pAsc - pDesc) / 2; // middle
+    ctx.fillText(prefix, textLeft - preW, py);
+  }
+
+  // Suffix: to the right of the text, sitting on the last line's baseline by
+  // default so it reads as a unit with the price without overlapping it.
   if (suffix) {
-    const lastIdx  = lines.length - 1;
-    const lastLine = lines[lastIdx];
-    const lastBase = top + firstAsc + lastIdx * advance;
-    const suffixSize = Math.max(6, Math.round(fontSize * 0.3));
-
-    ctx.font = `${wt} ${fontSize}px ${fontFamily}`;
-    const lastW = ctx.measureText(lastLine).width;
-
-    let sx;
-    if (align === 'center')     sx = innerX + innerW/2 + lastW/2;
-    else if (align === 'right') sx = innerX + innerW;
-    else                        sx = innerX + lastW;
-
-    ctx.font = `${wt} ${suffixSize}px ${fontFamily}`;
+    ctx.font = `${wt} ${sufSize}px ${fontFamily}`;
     ctx.textAlign = 'left';
     const sm = ctx.measureText(suffix);
-    // Keep the suffix inside the box rather than letting it run off the edge.
-    sx = Math.min(sx, innerX + innerW - sm.width);
-    const suffixAsc = inks && inks[lastIdx] ? inks[lastIdx].asc : fontSize * 0.8;
-    ctx.fillText(suffix, sx, lastBase - suffixAsc + suffixSize);
+    const sAsc = isFinite(sm.actualBoundingBoxAscent) ? sm.actualBoundingBoxAscent : sufSize*0.8;
+    let sy;
+    if (suffixValign === 'top')          sy = lastBase - lastAsc + sAsc;
+    else if (suffixValign === 'middle')  sy = lastBase - lastAsc/2 + sAsc/2;
+    else                                 sy = lastBase; // bottom / baseline
+    const sx = Math.min(textRight + Math.round(sufSize*0.12), innerX + innerW - sm.width);
+    ctx.fillText(suffix, sx, sy);
   }
 
   ctx.restore();
@@ -2782,6 +2861,8 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
   const [priceText,   setPriceText]  = useState('');
   const [productName, setProductName]= useState('');
   const [productSize, setProductSize]= useState('');
+  const [nameTouched, setNameTouched] = useState(false);
+  const [sizeTouched, setSizeTouched] = useState(false);
   const [genStep,     setGenStep]    = useState('idle');
   const [brand,       setBrand]      = useState({ ...BRAND_DEFAULTS });
   const [logo,        setLogo]       = useState(null);
@@ -2812,8 +2893,10 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
 
   const selectFromLib = img => {
     setProdPrev(prodSrc(img) || img.data);
-    setProductName(img.product_name || '');
-    setProductSize(img.size || '');
+    // Only prefill fields the user hasn't typed into — picking a product for
+    // its photo shouldn't silently rewrite copy they already wrote.
+    if (!nameTouched) setProductName(img.product_name || '');
+    if (!sizeTouched) setProductSize(img.size || '');
     fetch(prodSrc(img)||img.data).then(r=>r.blob()).then(blob=>setProdFile(new File([blob],img.product_name||'product',{type:'image/jpeg'}))).catch(()=>{});
     setShowLib(false);
   };
@@ -3043,11 +3126,11 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
         <div className="grid grid-cols-2 gap-2">
           <div>
             <Label>Product Name</Label>
-            <Input value={productName} onChange={e=>setProductName(e.target.value)} placeholder="e.g. Corona Extra"/>
+            <Input value={productName} onChange={e=>{setProductName(e.target.value);setNameTouched(true);}} placeholder="e.g. Corona Extra"/>
           </div>
           <div>
             <Label>Size / Format</Label>
-            <Input value={productSize} onChange={e=>setProductSize(e.target.value)} placeholder="e.g. 12 × 330 ml"/>
+            <Input value={productSize} onChange={e=>{setProductSize(e.target.value);setSizeTouched(true);}} placeholder="e.g. 12 × 330 ml"/>
           </div>
         </div>
 

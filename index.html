@@ -69,6 +69,34 @@
     input::placeholder,textarea::placeholder{color:var(--txt3)}
     select option{background:#0a111e;color:var(--txt)}
     ::selection{background:rgba(56,224,240,.3);color:#fff}
+
+    html{color-scheme:dark}
+    .dark .dark\:bg-gray-900,.dark .dark\:bg-gray-950{background-color:transparent!important}
+    .dark .dark\:bg-gray-800{background-color:var(--panel)!important}
+    .dark .dark\:bg-gray-750,.dark .dark\:bg-gray-700{background-color:rgba(4,8,16,.55)!important}
+    .dark .dark\:hover\:bg-gray-700:hover,.dark .dark\:hover\:bg-gray-600:hover{background-color:rgba(56,224,240,.08)!important}
+    .dark .dark\:border-gray-600,.dark .dark\:border-gray-700,.dark .dark\:border-gray-800{border-color:var(--line)!important}
+    .dark .dark\:text-white,.dark .dark\:text-gray-100,.dark .dark\:text-gray-200{color:var(--txt)!important}
+    .dark .dark\:text-gray-300,.dark .dark\:text-gray-400{color:var(--txt2)!important}
+    .dark .dark\:text-gray-500,.dark .dark\:text-gray-600{color:var(--txt3)!important}
+    .dark .dark\:text-indigo-300,.dark .dark\:text-indigo-400,.dark .dark\:text-violet-300,.dark .dark\:text-violet-400{color:var(--cy)!important}
+    .dark .dark\:text-emerald-300,.dark .dark\:text-emerald-400{color:var(--grn)!important}
+    .dark .dark\:text-amber-300,.dark .dark\:text-amber-400{color:var(--amb)!important}
+    .dark .dark\:text-red-300,.dark .dark\:text-red-400{color:var(--red)!important}
+    .dark [class*="dark:bg-indigo-9"],.dark [class*="dark:bg-indigo-95"]{background-color:var(--cy-glow)!important}
+    .dark [class*="dark:bg-emerald-9"]{background-color:rgba(63,240,138,.1)!important}
+    .dark [class*="dark:bg-amber-9"]{background-color:rgba(240,168,48,.1)!important}
+    .dark [class*="dark:bg-red-9"]{background-color:rgba(255,77,94,.1)!important}
+    .dark .dark\:border-indigo-600,.dark .dark\:border-indigo-700{border-color:var(--line2)!important}
+    .bg-white{background-color:var(--panel)!important}
+    .bg-gray-50,.bg-gray-100{background-color:transparent!important}
+    .border-gray-100,.border-gray-200{border-color:var(--line)!important}
+    .text-gray-900{color:var(--txt)!important}
+    .text-gray-700,.text-gray-600{color:var(--txt2)!important}
+    .text-gray-500,.text-gray-400{color:var(--txt3)!important}
+    .text-indigo-600,.text-violet-600{color:var(--cy)!important}
+    .rounded-xl,.rounded-2xl,.rounded-lg{border-radius:0!important}
+    header.sticky{background:rgba(6,11,20,.9)!important;backdrop-filter:blur(9px);border-color:var(--line)!important}
   </style>
 </head>
 <body>
@@ -5827,7 +5855,7 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
                 <Icon name={n.icon} size={15} className="mr-2"/><span className="hidden sm:inline">{n.label}</span>
               </button>
             ))}
-            <button onClick={()=>onDark(d=>!d)} className="ml-1 p-2 rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors" title="Toggle dark mode"><Icon name={dark?"sun":"moon"}/></button>
+            
             {/* User menu */}
             <div className="relative ml-1">
               <button onClick={()=>setShowUserMenu(function(v){return !v;})} className="p-2 rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"><Icon name="user"/></button>
@@ -5899,8 +5927,9 @@ function App() {
   const [recovery,  setRecovery]  = useState(false);
 
   useEffect(()=>{
-    document.documentElement.classList.toggle('dark',dark);
-    ls.set('smm_dark',dark);
+    // HUD theme is always dark; the `dark` class stays on so Tailwind's
+    // dark: variants resolve to the remapped palette in the stylesheet.
+    document.documentElement.classList.add('dark');
   },[dark]);
 
   useEffect(()=>{

@@ -525,6 +525,13 @@ ALTER TABLE public.brand_images
   ADD COLUMN IF NOT EXISTS image_url    TEXT,
   ADD COLUMN IF NOT EXISTS image_alt    TEXT;
 
+-- An imported product's bytes live in Storage, so `data` (base64) is empty for
+-- those rows. It was NOT NULL from when every product was uploaded manually.
+ALTER TABLE public.brand_images ALTER COLUMN data DROP NOT NULL;
+
+-- Same reasoning for the quick-save library, if it has the same constraint.
+ALTER TABLE public.product_images ALTER COLUMN data DROP NOT NULL;
+
 -- Match on SKU first when syncing; name+size is the fallback.
 CREATE INDEX IF NOT EXISTS brand_images_sku_idx
   ON public.brand_images (bcliquor_sku) WHERE bcliquor_sku IS NOT NULL;

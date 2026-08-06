@@ -2467,9 +2467,14 @@ function RankBars({ rows, max, colorOf, valueFmt, onSelect }) {
                onMouseLeave={clickable ? function(e){ e.currentTarget.style.background='transparent'; } : undefined}>
             <div className="flex items-baseline gap-2 mb-1">
               <span className="text-xs truncate flex-1" style={{color:'var(--txt)'}}>{r.label}</span>
-              {r.note && <span className="lbl" style={{color:'var(--txt3)'}}>{r.note}</span>}
+              {r.note && (
+                <span className="lbl" style={{
+                  color: clickable ? 'var(--cy)' : 'var(--txt3)',
+                  borderBottom: clickable ? '1px dotted var(--cy-dim)' : 'none',
+                }}>{r.note}</span>
+              )}
               <span className="mono text-xs" style={{color:'var(--cy)'}}>{(valueFmt||fmtMoney)(r.value)}</span>
-              {clickable && <Icon name="chevD" size={11} style={{color:'var(--txt3)', transform:'rotate(-90deg)'}}/>}
+              {clickable && <Icon name="search" size={11} style={{color:'var(--cy-dim)'}}/>}
             </div>
             <div style={{height:'3px', background:'rgba(56,224,240,.1)'}}>
               <div style={{height:'100%', width:pct+'%',
@@ -2493,6 +2498,18 @@ function FeatureDrill({ title, subtitle, rows, onClose }) {
   const totalRev = sorted.reduce((a,r)=>a+Number(r.revenue||0), 0);
   const totalQty = sorted.reduce((a,r)=>a+Number(r.qty_sold||0), 0);
   const missing  = sorted.filter(r => r.revenue == null).length;
+
+  // Feature price varies between runs, so show the span rather than one number.
+  const prices = sorted.map(r => Number(r.sale_price)).filter(v => isFinite(v) && v > 0);
+  const priceRange = prices.length
+    ? (Math.min(...prices) === Math.max(...prices)
+        ? money(prices[0])
+        : money(Math.min(...prices)) + ' – ' + money(Math.max(...prices)))
+    : null;
+
+  const discs = sorted.filter(r => r.savings != null && r.reg_price)
+                      .map(r => Number(r.savings)/Number(r.reg_price)*100);
+  const avgDiscount = discs.length ? discs.reduce((a,b)=>a+b,0)/discs.length : null;
 
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-6"
@@ -2526,6 +2543,18 @@ function FeatureDrill({ title, subtitle, rows, onClose }) {
             <p className="lbl">Appearances</p>
             <p className="mono" style={{fontSize:'20px'}}>{sorted.length}</p>
           </div>
+          {priceRange && (
+            <div>
+              <p className="lbl">Feature price</p>
+              <p className="mono" style={{fontSize:'20px'}}>{priceRange}</p>
+            </div>
+          )}
+          {avgDiscount != null && (
+            <div>
+              <p className="lbl">Average discount</p>
+              <p className="mono" style={{fontSize:'20px', color:'var(--amb)'}}>{avgDiscount.toFixed(1)}%</p>
+            </div>
+          )}
         </div>
 
         {missing > 0 && (
@@ -2536,10 +2565,10 @@ function FeatureDrill({ title, subtitle, rows, onClose }) {
         )}
 
         <div className="overflow-x-auto">
-          <table style={{width:'100%', minWidth:'620px', borderCollapse:'collapse'}}>
+          <table style={{width:'100%', minWidth:'780px', borderCollapse:'collapse'}}>
             <thead>
               <tr style={{borderBottom:'1px solid var(--line2)'}}>
-                {['Month','Store','Product','Size','Sale','Units','Revenue'].map(function(h,i){
+                {['Month','Store','Product','Size','Reg','Sale','Save','Units','Revenue'].map(function(h,i){
                   return <th key={h} className="lbl"
                              style={{textAlign: i>=4?'right':'left', padding:'0 6px 8px'}}>{h}</th>;
                 })}
@@ -2561,8 +2590,20 @@ function FeatureDrill({ title, subtitle, rows, onClose }) {
                     </td>
                     <td style={{padding:'7px 6px', fontSize:'12px', color:'var(--txt)'}}>{r.name}</td>
                     <td className="mono" style={{padding:'7px 6px', fontSize:'11px', color:'var(--txt3)'}}>{r.size||''}</td>
+                    <td className="mono" style={{padding:'7px 6px', fontSize:'11px', textAlign:'right',
+                                                 color:'var(--txt3)', textDecoration:'line-through'}}>
+                      {r.reg_price != null ? money(r.reg_price) : ''}
+                    </td>
                     <td className="mono" style={{padding:'7px 6px', fontSize:'11px', textAlign:'right'}}>
-                      {r.sale_price != null ? fmtMoney(r.sale_price) : ''}
+                      {r.sale_price != null ? money(r.sale_price) : ''}
+                    </td>
+                    <td className="mono" style={{padding:'7px 6px', fontSize:'11px', textAlign:'right', color:'var(--amb)'}}>
+                      {r.savings != null ? money(r.savings) : ''}
+                      {r.savings != null && r.reg_price ? (
+                        <span style={{color:'var(--txt3)', marginLeft:'5px'}}>
+                          {Math.round(Number(r.savings)/Number(r.reg_price)*100)}%
+                        </span>
+                      ) : null}
                     </td>
                     <td className="mono" style={{padding:'7px 6px', fontSize:'11px', textAlign:'right'}}>
                       {r.qty_sold != null ? Number(r.qty_sold).toLocaleString() : '—'}
@@ -2577,7 +2618,7 @@ function FeatureDrill({ title, subtitle, rows, onClose }) {
             </tbody>
             <tfoot>
               <tr style={{borderTop:'1px solid var(--line2)'}}>
-                <td colSpan={5} className="lbl" style={{padding:'9px 6px'}}>Total</td>
+                <td colSpan={7} className="lbl" style={{padding:'9px 6px'}}>Total</td>
                 <td className="mono" style={{padding:'9px 6px', textAlign:'right', color:'var(--cy)'}}>
                   {totalQty.toLocaleString()}
                 </td>
@@ -2707,6 +2748,7 @@ function FeaturesDashboard() {
           <div className="flex items-center gap-3 mb-4">
             <span className="ttl">By store</span>
             <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+            <span className="lbl">Click for breakdown</span>
           </div>
           <RankBars rows={byStore} colorOf={r=>storeColor(r.store)}
             onSelect={function(r){
@@ -2719,6 +2761,7 @@ function FeaturesDashboard() {
           <div className="flex items-center gap-3 mb-4">
             <span className="ttl">Top features</span>
             <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+            <span className="lbl">Click for breakdown</span>
           </div>
           {byProduct.length
             ? <RankBars rows={byProduct}

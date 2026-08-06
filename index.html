@@ -2915,6 +2915,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
   const [priceText,   setPriceText]  = useState('');
   const [productName, setProductName]= useState('');
   const [productSize, setProductSize]= useState('');
+  const [lastAd, setLastAd] = useState(null);
   const [nameTouched, setNameTouched] = useState(false);
   const [sizeTouched, setSizeTouched] = useState(false);
   const [genStep,     setGenStep]    = useState('idle');
@@ -2979,6 +2980,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
         );
         const finalUrl = typeof rendered === 'string' ? rendered : rendered.url;
         const over = typeof rendered === 'string' ? [] : rendered.overflows;
+        setLastAd(finalUrl);
         onGenerated(finalUrl);
         if (over.length) toast.error('Too small to fit: ' + over.join(', ') + ' — enlarge the box in the template');
         else toast.success('Ad created');
@@ -3005,8 +3007,9 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
         { productDataUrl: cleanProd, logoDataUrl: logo, brandPrimary: brand.primary_color||'#1e3a5f', brandAccent: brand.secondary_color||'#c4a35a', bgDataUrl, canvasW, canvasH },
         { saveText: saveText.trim(), priceText: priceText.trim(), productName: productName.trim(), productSize: productSize.trim(), storeName: store?.name||'' }
       );
+      setLastAd(finalUrl);
       onGenerated(finalUrl);
-      toast.success('Ad created!');
+      toast.success('Ad created');
       setGenStep('idle');
       const sb=getSB();
       if(sb) sb.from('generation_history').insert({ store_id:storeId, store_name:store?.name, image_url:finalUrl, brief:`Template: ${selectedTpl?.name||template}`, size_label: sizeLabel });
@@ -3060,7 +3063,11 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
   const isBusy    = genStep !== 'idle';
   const stepLabel = { building:'Building prompt…', generating:'Generating…', removing:'Removing background…', compositing:'Building ad…' };
 
-  const clearProduct = () => { setProdFile(null); setProdPrev(null); setSaveText(''); setPriceText(''); setProductName(''); setProductSize(''); };
+  const clearProduct = () => { setProdFile(null); setProdPrev(null); setSaveText(''); setPriceText(''); setProductName(''); setProductSize(''); setLastAd(null); };
+
+  const startOver = () => {
+    clearProduct(); setNameTouched(false); setSizeTouched(false); setLastAd(null);
+  };
 
   return (
     <>
@@ -3201,9 +3208,39 @@ function InlineImageGenerator({ storeId, settings, onGenerated }) {
         </div>
 
         <Button onClick={generate} loading={isBusy} className="w-full" variant="primary">
-          {isBusy?(stepLabel[genStep]||'Working…'):<React.Fragment><Icon name="note"/> Build Price Ad</React.Fragment>}
+          {isBusy?(stepLabel[genStep]||'Working…'):
+            lastAd ? <React.Fragment><Icon name="refresh"/> Rebuild with changes</React.Fragment>
+                   : <React.Fragment><Icon name="note"/> Build Price Ad</React.Fragment>}
         </Button>
-        <p className="text-xs text-center text-gray-400 dark:text-gray-500">No AI image generation — fast, clean, brand-accurate</p>
+
+        {lastAd ? (
+          <div className="mt-1 p-3" style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.45)'}}>
+            <div className="flex items-center gap-3 mb-2.5">
+              <span className="ttl">Latest ad</span>
+              <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+              <button onClick={startOver} className="text-xs hover:underline" style={{color:'var(--txt2)'}}>
+                Start over
+              </button>
+            </div>
+            <img src={lastAd} alt="Generated ad" onClick={()=>setLightbox(lastAd)}
+                 className="w-full max-w-[220px] mx-auto block cursor-zoom-in"
+                 style={{border:'1px solid var(--line)'}}/>
+            <p className="lbl text-center mt-2.5">
+              Fields above stay filled — fix anything and hit rebuild
+            </p>
+            <div className="flex gap-2 mt-3">
+              <a href={lastAd} download="price-ad.png" className="flex-1">
+                <Button variant="secondary" size="sm" className="w-full"><Icon name="down"/> Download</Button>
+              </a>
+              <Button variant="secondary" size="sm" className="flex-1"
+                      onClick={()=>{ onGenerated(lastAd); toast.success('Added to the post'); }}>
+                <Icon name="note"/> Use in post
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <p className="text-xs text-center" style={{color:'var(--txt3)'}}>No AI image generation — fast, clean, brand-accurate</p>
+        )}
       </>)}
 
       {/* ── LIFESTYLE MODE ── */}
@@ -3296,7 +3333,8 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
 
   const handleGenerated = (url) => {
     setGenImgUrl(url); setImgPrev(url); setImgFile(null);
-    setShowImgGen(false);
+    // Deliberately left open: closing unmounts the builder and throws away
+    // every field, so fixing a typo meant retyping the whole ad.
     if (onClearPending) onClearPending();
   };
 

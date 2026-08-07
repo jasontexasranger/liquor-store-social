@@ -1320,6 +1320,34 @@ async function renderRecipeCard(styleTokens, recipe, photoDataUrl) {
   return canvas.toDataURL('image/png');
 }
 
+// Bar measures here are ounces. The model is told so, but it drifts to
+// millilitres — Canada is metric on paper — and a recipe that mixes the two is
+// worse than one that picks the wrong unit consistently.
+//
+// Converted rather than rejected, and rounded to the quarter ounce, because
+// that is the resolution a jigger actually has: 30 ml becomes 1 oz, not 1.01.
+function toOunces(amount) {
+  const t = String(amount || '').trim();
+  if (!t) return t;
+  const m = /^([\d.,\/\s]+)\s*(ml|mls|millilitres?|milliliters?)\b(.*)$/i.exec(t);
+  if (!m) return t;
+
+  const raw = m[1].replace(/,/g, '.').trim();
+  // "1 1/2" and "1/2" both turn up.
+  let n = 0;
+  raw.split(/\s+/).forEach(function(part) {
+    const frac = /^(\d+)\/(\d+)$/.exec(part);
+    if (frac) n += Number(frac[1]) / Number(frac[2]);
+    else if (part) n += Number(part) || 0;
+  });
+  if (!n) return t;
+
+  const oz = Math.round((n / 29.5735) * 4) / 4;
+  if (oz < 0.25) return 'a splash' + (m[3] || '');
+  const label = Number.isInteger(oz) ? String(oz) : String(oz);
+  return label + ' oz' + (m[3] || '');
+}
+
 // The recipe as a post caption: ingredients as a list, method as steps, and
 // the offer if the drink was built around something on feature. A recipe post
 // that doesn't mention the price is a recipe post; one that does is an ad for
@@ -1688,6 +1716,8 @@ function RecipesPage({ isAdmin, myStores }) {
         'Reply with JSON only, no code fence, in exactly this shape:\n' +
         '{"name":"","blurb":"","glass":"","garnish":"",' +
         '"ingredients":[{"amount":"","item":""}],"method":[""]}\n\n' +
+        'Measures in fluid ounces, written like "1.5 oz" — never millilitres, never centilitres. ' +
+        'Countable things stay counts ("2 dashes", "1 lime wedge").\n' +
         'The first ingredient must be exactly "' + label + '" — name the product itself, ' +
         'not a generic spirit, and give it a measure. Every other ingredient should be ' +
         'something an ordinary kitchen already has.\n' +
@@ -1710,7 +1740,7 @@ function RecipesPage({ isAdmin, myStores }) {
         // always, and a recipe post that never names the bottle is pointless.
         ingredients: Array.isArray(parsed.ingredients) && parsed.ingredients.length
                      ? withProductIngredient(
-                         parsed.ingredients.map(i=>({ amount:i.amount||'', item:i.item||'' })),
+                         parsed.ingredients.map(i=>({ amount:toOunces(i.amount||''), item:i.item||'' })),
                          label)
                      : withProductIngredient(prev.ingredients, label),
         method:   Array.isArray(parsed.method) && parsed.method.length ? parsed.method : prev.method,
@@ -1898,7 +1928,11 @@ function RecipesPage({ isAdmin, myStores }) {
                         setDraft({
                           id:r.id, name:r.name,
                           blurb:r.notes||'', glass:r.glass||'', garnish:r.garnish||'',
-                          ingredients:(r.ingredients&&r.ingredients.length)?r.ingredients:[{amount:'',item:''}],
+                          // Recipes written before the switch to ounces get
+                          // converted as they're opened.
+                          ingredients:(r.ingredients&&r.ingredients.length)
+                            ? r.ingredients.map(i=>({ amount:toOunces(i.amount||''), item:i.item||'' }))
+                            : [{amount:'',item:''}],
                           method:(r.method&&r.method.length)?r.method:[''],
                           store_id:r.store_id, product_id:r.product_id, feature_id:r.feature_id,
                           image_url:r.image_url,

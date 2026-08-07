@@ -12656,8 +12656,8 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
   // If the section you were on is no longer permitted — access changed, or a
   // stale link — land somewhere real rather than rendering a blank shell.
   useEffect(function() {
-    if (!tabs.length) return;
-    if (!tabs.some(t => t.id === page)) setPage(tabs[0].id);
+    if (!nav.length) return;
+    if (!nav.some(t => t.id === page)) setPage(nav[0].id);
   }, [allowedSections, isAdmin, page]);
 
   if (!settingsLoaded) return (

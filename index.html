@@ -1070,6 +1070,19 @@ async function renderFieldTemplate(tpl, fields, values, productDataUrl, onStep) 
     let text = values[f.field_key];
     if (text == null || text === '') continue;
     text = String(text);
+
+    // The field draws its own prefix, so a value that already carries it would
+    // print twice — "$$2.75". Typing the dollar sign into a price box is the
+    // natural thing to do, so strip it here rather than expecting every caller
+    // and every person to remember.
+    const pre = String(f.prefix || '').trim();
+    if (pre) {
+      const bare = text.trim();
+      if (bare.length > pre.length && bare.slice(0, pre.length) === pre) {
+        text = bare.slice(pre.length).trim();
+      }
+    }
+
     if (f.uppercase) text = text.toUpperCase();
 
     const res = drawTextField(ctx, text, box, {
@@ -3289,7 +3302,7 @@ function FeatureCreativeBatch({ storeId, storeName, period, rows, products, camp
             product_name: row.name || '',
             pack_size:    row.size || '',
             price:        row.sale_price != null ? Number(row.sale_price).toFixed(2) : '',
-            save:         row.savings    != null ? '$' + Number(row.savings).toFixed(2) : '',
+            save:         row.savings    != null ? Number(row.savings).toFixed(2) : '',
           }, productDataUrl);
 
           const url  = typeof rendered === 'string' ? rendered : rendered.url;
@@ -6712,7 +6725,9 @@ function InlineImageGenerator({ storeId, settings, onGenerated, seedFeature }) {
     setProductSize(f.size || '');
     setNameTouched(true); setSizeTouched(true);
     if (f.sale_price != null) setPriceText(Number(f.sale_price).toFixed(2));
-    if (f.savings != null)    setSaveText('$' + Number(f.savings).toFixed(2));
+    // No dollar sign: the template's save field prints its own prefix, and the
+    // built-in renderer adds "SAVE $" itself.
+    if (f.savings != null)    setSaveText(Number(f.savings).toFixed(2));
 
     if (prod) {
       const src = prodSrc(prod);
@@ -6753,7 +6768,9 @@ function InlineImageGenerator({ storeId, settings, onGenerated, seedFeature }) {
     setProductName(f.name || '');
     setProductSize(f.size || '');
     if (f.sale_price != null) setPriceText(String(f.sale_price.toFixed ? f.sale_price.toFixed(2) : f.sale_price));
-    if (f.savings != null)    setSaveText('$' + Number(f.savings).toFixed(2));
+    // No dollar sign: the template's save field prints its own prefix, and the
+    // built-in renderer adds "SAVE $" itself.
+    if (f.savings != null)    setSaveText(Number(f.savings).toFixed(2));
     setNameTouched(true); setSizeTouched(true);
     if (prod) {
       const src = prodSrc(prod);

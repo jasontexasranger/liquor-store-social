@@ -247,6 +247,7 @@ const LIQUOR_CATEGORIES = [
 const BOTTLE_SIZES = ['355ml','473ml','500ml','750ml','1L','1.14L','1.75L','2L','4-pack','6-pack','12-pack','24-pack','Other'];
 
 const BRAND_DEFAULTS = {
+  website:'',
   personality:'', tone:'', do_say:'', dont_say:'', audience:'',
   primary_color:'#1e3a5f', secondary_color:'#c4a35a', accent_color:'#f8f4ef',
   visual_style:'', mood:'', style_keywords:'', avoid_visually:'',
@@ -7803,7 +7804,7 @@ function CampaignBuilder({ settings }) {
   const [dailyBudget, setDailyBudget] = useState('20');
   const [lat,         setLat]         = useState(String(STORES[0].lat));
   const [lng,         setLng]         = useState(String(STORES[0].lng));
-  const [radius,      setRadius]      = useState('25');
+  const [radius,      setRadius]      = useState('8');
   const [ageMin,      setAgeMin]      = useState('19');
   const [budgetType,  setBudgetType]  = useState('daily');   // 'daily' | 'lifetime'
   const [startAt,     setStartAt]     = useState('');
@@ -7837,6 +7838,20 @@ function CampaignBuilder({ settings }) {
   // The saved location wins; the hardcoded constant is only a fallback for a
   // store nobody has set up yet, and it is flagged as such in the UI.
   const { forStore: locFor, loading: locLoading } = useStoreLocations();
+
+  // The brand's website prefills the destination URL. Only ever fills a blank
+  // box — once you've typed a campaign-specific link, switching store won't
+  // wipe it out from under you.
+  useEffect(function() {
+    const sb = getSB(); if (!sb || !storeId) return;
+    let alive = true;
+    sb.from('brand_profiles').select('website').eq('store_id', storeId).maybeSingle()
+      .then(function(res) {
+        const site = res.data && res.data.website;
+        if (alive && site) setDestUrl(prev => prev.trim() ? prev : site);
+      });
+    return function(){ alive = false; };
+  }, [storeId]);
   const savedLoc = locFor(storeId);
   const locIsSaved = !!(savedLoc && savedLoc.lat != null && savedLoc.lng != null);
 
@@ -7922,7 +7937,7 @@ function CampaignBuilder({ settings }) {
         dailyBudget: parseFloat(dailyBudget) || 20,
         lat: parseFloat(lat) || store.lat,
         lng: parseFloat(lng) || store.lng,
-        radius: parseInt(radius) || 25,
+        radius: parseInt(radius) || 8,
         ageMin: parseInt(ageMin) || 19,
         ageMax: parseInt(ageMax) || 65,
         budgetType: budgetType,
@@ -8079,7 +8094,16 @@ function CampaignBuilder({ settings }) {
           <div><Label>Primary Text</Label><Textarea value={bodyText} onChange={e=>setBodyText(e.target.value)} rows={3} placeholder="Discover amazing local spirits…"/></div>
           <div className="grid grid-cols-2 gap-3">
             <div><Label>Call to Action</Label><Select value={ctaType} onChange={e=>setCtaType(e.target.value)}>{CTA_OPTIONS.map(c=><option key={c} value={c}>{c.replace(/_/g,' ')}</option>)}</Select></div>
-            <div><Label>Destination URL</Label><Input value={destUrl} onChange={e=>setDestUrl(e.target.value)} placeholder="https://yourstore.com" type="url"/></div>
+            <div>
+              <Label>Destination URL</Label>
+              <Input value={destUrl} onChange={e=>setDestUrl(e.target.value)}
+                     placeholder="https://yourstore.com" type="url"/>
+              <p className="lbl mt-1">
+                {destUrl.trim()
+                  ? 'Blank falls back to the store\'s Facebook Page.'
+                  : 'Set a website under Brand to fill this in automatically.'}
+              </p>
+            </div>
           </div>
           {format === 'carousel' && (
             <div>
@@ -8814,6 +8838,13 @@ function BrandProfileEditor({ storeId }) {
             <div><Label><Icon name="ban"/> Language to Avoid</Label><Textarea {...f('dont_say')} rows={4} placeholder={"e.g.\nCheapest\nGet wasted"}/></div>
           </div>
           <div><Label>Target Audience</Label><Input {...f('audience')} placeholder="e.g. Adults 25–55 who enjoy quality craft spirits"/></div>
+          <div>
+            <Label>Website</Label>
+            <Input {...f('website')} type="url" placeholder="https://hideawayliquorstore.com"/>
+            <p className="text-xs text-gray-400 mt-1">
+              Where ads send people. Fills in the destination URL when you build a campaign.
+            </p>
+          </div>
         </div>
       </Card>
       <Card>
@@ -10139,7 +10170,7 @@ function StoreLocationsSection() {
 
   const commit = async function(st) {
     const coords = parseLatLng(get(st.id, 'coords', ''));
-    const radius = Number(get(st.id, 'ad_radius_km', 15));
+    const radius = Number(get(st.id, 'ad_radius_km', 8));
     if (get(st.id, 'coords', '') && !coords) {
       toast.error('Coordinates should look like  50.6745, -120.3273'); return;
     }
@@ -10189,7 +10220,7 @@ function StoreLocationsSection() {
               <div>
                 <Label>Radius (km)</Label>
                 <Input className="text-xs" type="number" min="1" max="80"
-                       value={get(st.id,'ad_radius_km',15)}
+                       value={get(st.id,'ad_radius_km',8)}
                        onChange={e=>set(st.id,'ad_radius_km',e.target.value)}/>
               </div>
               <div className="sm:col-span-2">

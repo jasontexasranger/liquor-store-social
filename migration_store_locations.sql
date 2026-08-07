@@ -14,8 +14,9 @@ ALTER TABLE public.meta_accounts
   ADD COLUMN IF NOT EXISTS lat          NUMERIC(9,6),
   ADD COLUMN IF NOT EXISTS lng          NUMERIC(9,6),
   -- Radius is per store because a city store and a highway store do not draw
-  -- from the same distance.
-  ADD COLUMN IF NOT EXISTS ad_radius_km INT NOT NULL DEFAULT 15;
+  -- from the same distance. 8 km is a town-sized catchment: it keeps Salmon
+  -- Arm's ads out of Sicamous, 25 km away, without cutting the town in half.
+  ADD COLUMN IF NOT EXISTS ad_radius_km INT NOT NULL DEFAULT 8;
 
 COMMENT ON COLUMN public.meta_accounts.lat IS
   'Centre of the ad targeting circle. From Google Maps: right-click the store,

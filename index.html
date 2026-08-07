@@ -1141,6 +1141,12 @@ const RECIPE_STYLE_DEFAULTS = {
   tracking:     18,           // letter spacing, percent of the font size
   // Used when the name sits straight on the photo rather than in a band.
   scrim:        0.5,
+  // Cocktail stamp — the PNG itself lives on the brand profile, only its
+  // placement belongs to the card look.
+  show_stamp:   true,
+  stamp_corner: 'br',      // 'tl' | 'tr' | 'bl' | 'br'
+  stamp_size:   22,        // percent of the card width
+  stamp_alpha:  100,       // percent
   // Only shown before a photo exists, so the card is never a blank rectangle.
   bg_top:       '#141c26',
   bg_bottom:    '#243542',
@@ -1254,7 +1260,7 @@ function cocktailPhotoPrompt(recipe, hint) {
 // Photo first, drink name in a band across it. The photo is generated
 // separately and passed in, because it costs money and fifteen seconds —
 // restyling has to be free.
-async function renderRecipeCard(styleTokens, recipe, photoDataUrl) {
+async function renderRecipeCard(styleTokens, recipe, photoDataUrl, stampDataUrl) {
   const s = withStyleDefaults(styleTokens);
   await ensureFontsReady();
 
@@ -1299,6 +1305,31 @@ async function renderRecipeCard(styleTokens, recipe, photoDataUrl) {
       ctx.fillStyle = g;
       ctx.fillRect(0, H - 430, W, 430);
     }
+  }
+
+  // Drawn before the band so the band always wins where they meet — a stamp
+  // half under a solid colour looks like a mistake, and the corner it sits in
+  // is a choice made once for every card.
+  if (s.show_stamp && stampDataUrl) {
+    try {
+      const st = await loadImg(stampDataUrl);
+      const sw = W * (Math.max(6, Math.min(45, Number(s.stamp_size))) / 100);
+      const sh = sw * (st.height / st.width);
+      const pad = Math.round(W * 0.045);
+      // Keep clear of the band rather than tucking underneath it.
+      const topLimit    = (s.band_pos === 'top')    ? bandH + pad : pad;
+      const bottomLimit = (s.band_pos === 'bottom') ? H - bandH - pad - sh : H - pad - sh;
+      const x = (s.stamp_corner === 'tl' || s.stamp_corner === 'bl') ? pad : W - pad - sw;
+      let   y = (s.stamp_corner === 'tl' || s.stamp_corner === 'tr') ? topLimit : bottomLimit;
+      // A very tall stamp at a large size can be pushed off the card by the
+      // band. Staying on the canvas beats staying clear of the band.
+      y = Math.max(pad, Math.min(y, H - pad - sh));
+
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, Math.min(1, Number(s.stamp_alpha) / 100));
+      ctx.drawImage(st, x, y, sw, sh);
+      ctx.restore();
+    } catch(e) { /* a missing stamp shouldn't cost you the card */ }
   }
 
   const name = s.uppercase ? String(recipe.name || '').toUpperCase() : String(recipe.name || '');
@@ -1491,7 +1522,7 @@ function useRecipeStyle(storeId) {
 // The card style editor. Deliberately a short list: these are the knobs that
 // change the look without letting anyone build something that stops looking
 // like the chain.
-function RecipeStyleEditor({ tokens, isOwn, onSave, onClear, isAdmin, storeName, busy }) {
+function RecipeStyleEditor({ tokens, isOwn, onSave, onClear, isAdmin, storeName, busy, hasStamp }) {
   const [t, setT] = useState(tokens);
   useEffect(function(){ setT(tokens); }, [tokens]);
   const set = function(k, v) {
@@ -1588,6 +1619,56 @@ function RecipeStyleEditor({ tokens, isOwn, onSave, onClear, isAdmin, storeName,
         <span className="text-xs" style={{color:'var(--txt2)'}}>Name in capitals</span>
       </label>
 
+      <div className="mt-3 pt-3" style={{borderTop:'1px solid var(--line)'}}>
+        <label className="flex items-center gap-2 py-1 cursor-pointer mb-2">
+          <input type="checkbox" checked={!!t.show_stamp} onChange={e=>set('show_stamp', e.target.checked)}/>
+          <span className="text-xs" style={{color:'var(--txt2)'}}>Cocktail stamp</span>
+        </label>
+
+        {t.show_stamp && (
+          <div>
+            {!hasStamp && (
+              <p className="text-xs mb-2" style={{color:'var(--amb)'}}>
+                No stamp uploaded for {storeName} yet — add one under Brand.
+              </p>
+            )}
+
+            <Label>Corner</Label>
+            <div className="grid grid-cols-2 gap-1 mb-3" style={{width:'112px'}}>
+              {[['tl','Top left'],['tr','Top right'],['bl','Bottom left'],['br','Bottom right']].map(function(c) {
+                const on = t.stamp_corner === c[0];
+                return (
+                  <button key={c[0]} onClick={()=>set('stamp_corner', c[0])} title={c[1]}
+                    style={{ height:'34px',
+                             border:'1px solid ' + (on ? 'var(--cy)' : 'var(--line)'),
+                             background: on ? 'var(--cy-glow)' : 'rgba(4,8,16,.45)' }}>
+                    <span style={{display:'block', width:'9px', height:'9px', background: on ? 'var(--cy)' : 'var(--txt3)',
+                                  marginLeft: c[0][1]==='l' ? '5px' : 'auto',
+                                  marginRight: c[0][1]==='r' ? '5px' : 'auto',
+                                  marginTop: c[0][0]==='t' ? '4px' : 'auto',
+                                  marginBottom: c[0][0]==='b' ? '4px' : 'auto' }}/>
+                  </button>
+                );
+              })}
+            </div>
+
+            <Label>Size</Label>
+            <div className="flex items-center gap-3 mb-2">
+              <input type="range" min="6" max="45" step="1" value={t.stamp_size}
+                     onChange={e=>set('stamp_size', Number(e.target.value))} className="flex-1"/>
+              <span className="mono text-xs" style={{color:'var(--txt3)'}}>{t.stamp_size}%</span>
+            </div>
+
+            <Label>Strength</Label>
+            <div className="flex items-center gap-3">
+              <input type="range" min="10" max="100" step="5" value={t.stamp_alpha}
+                     onChange={e=>set('stamp_alpha', Number(e.target.value))} className="flex-1"/>
+              <span className="mono text-xs" style={{color:'var(--txt3)'}}>{t.stamp_alpha}%</span>
+            </div>
+          </div>
+        )}
+      </div>
+
       <div className="flex gap-2 flex-wrap mt-4">
         <Button size="sm" onClick={()=>onSave(t, 'store')} loading={busy}>
           Save for {storeName}
@@ -1633,6 +1714,7 @@ function RecipesPage({ isAdmin, myStores }) {
   // copied into the recipe: prices change month to month, and the caption
   // should quote what the feature says now, not what it said when saved.
   const [offer,    setOffer]    = useState(null);
+  const [stamp,    setStamp]    = useState(null);
   const [busy,     setBusy]     = useState(null);
   const [showStyle,setShowStyle]= useState(false);
   const [showPick, setShowPick] = useState(false);
@@ -1640,6 +1722,14 @@ function RecipesPage({ isAdmin, myStores }) {
   const [postAt,   setPostAt]   = useState('');
 
   const storeName = (myStores.find(s=>s.id===storeId)||{}).name || '';
+
+  useEffect(function() {
+    const sb = getSB(); if (!sb || !storeId) { setStamp(null); return; }
+    let alive = true;
+    sb.from('brand_profiles').select('stamp_data').eq('store_id', storeId).maybeSingle()
+      .then(({data}) => { if (alive) setStamp((data && data.stamp_data) || null); });
+    return function(){ alive = false; };
+  }, [storeId]);
 
   const productOf = r => products.find(p => p.id === (r && r.product_id)) || null;
 
@@ -1710,12 +1800,12 @@ function RecipesPage({ isAdmin, myStores }) {
     let cancelled = false;
     (async function() {
       try {
-        const url = await renderRecipeCard(tokens, draft, photo);
+        const url = await renderRecipeCard(tokens, draft, photo, stamp);
         if (!cancelled) setPreview(url);
       } catch(e) { if (!cancelled) setPreview(null); }
     })();
     return function(){ cancelled = true; };
-  }, [draft && draft.name, tokens, photo]);
+  }, [draft && draft.name, tokens, photo, stamp]);
 
   const startNew = function(product, feature) {
     setPhoto(null); setPhotoHint(''); setOffer(feature || null);
@@ -1896,7 +1986,7 @@ function RecipesPage({ isAdmin, myStores }) {
         {showStyle && (
           <div className="p-4 mb-4" style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.4)'}}>
             <RecipeStyleEditor tokens={tokens} isOwn={isOwn} isAdmin={isAdmin}
-              storeName={storeName} busy={busy==='style'}
+              storeName={storeName} busy={busy==='style'} hasStamp={!!stamp}
               onSave={async function(t, scope){
                 setBusy('style');
                 try { await saveTokens(t, scope); toast.success('Look saved'); }
@@ -5138,6 +5228,7 @@ const useToast = () => useContext(ToastCtx);
 function useBrandProfile(storeId) {
   const [profile, setProfile] = useState({ ...BRAND_DEFAULTS });
   const [logo,    setLogo]    = useState(null);
+  const [stamp,   setStamp]   = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -5147,12 +5238,16 @@ function useBrandProfile(storeId) {
     sb.from('brand_profiles').select('*').eq('store_id', storeId).maybeSingle()
       .then(({ data }) => {
         if (data) {
-          const { logo_data, id, updated_at, store_id, ...p } = data;
+          // Images are held apart from the editable profile fields, or saving
+          // the profile would rewrite them as a side effect.
+          const { logo_data, stamp_data, id, updated_at, store_id, ...p } = data;
           setProfile({ ...BRAND_DEFAULTS, ...p });
           setLogo(logo_data || null);
+          setStamp(stamp_data || null);
         } else {
           setProfile({ ...BRAND_DEFAULTS });
           setLogo(null);
+          setStamp(null);
         }
       })
       .finally(() => setLoading(false));
@@ -5185,7 +5280,23 @@ function useBrandProfile(storeId) {
     setLogo(null);
   };
 
-  return { profile, logo, loading, saveProfile, saveLogo, clearLogo };
+  const saveStamp = async (dataUrl) => {
+    const sb = getSB();
+    if (!sb) throw new Error('Supabase not connected');
+    const { error } = await sb.from('brand_profiles')
+      .upsert({ store_id: storeId, stamp_data: dataUrl }, { onConflict: 'store_id' });
+    if (error) throw error;
+    setStamp(dataUrl);
+  };
+
+  const clearStamp = async () => {
+    const sb = getSB();
+    if (!sb) throw new Error('Supabase not connected');
+    await sb.from('brand_profiles').update({ stamp_data: null }).eq('store_id', storeId);
+    setStamp(null);
+  };
+
+  return { profile, logo, stamp, loading, saveProfile, saveLogo, clearLogo, saveStamp, clearStamp };
 }
 
 // ─────────────────────────────────────────────
@@ -8093,10 +8204,11 @@ function ProductLibrary() {
 // ─────────────────────────────────────────────
 function BrandProfileEditor({ storeId }) {
   const toast = useToast();
-  const { profile, logo, loading, saveProfile, saveLogo, clearLogo } = useBrandProfile(storeId);
+  const { profile, logo, stamp, loading, saveProfile, saveLogo, clearLogo, saveStamp, clearStamp } = useBrandProfile(storeId);
   const [form,   setForm]   = useState({ ...BRAND_DEFAULTS });
   const [saving, setSaving] = useState(false);
   const logoRef = useRef();
+  const stampRef = useRef();
 
   useEffect(()=>setForm({...BRAND_DEFAULTS,...profile}),[profile]);
 
@@ -8106,6 +8218,17 @@ function BrandProfileEditor({ storeId }) {
     if (!file) return;
     const r=new FileReader();
     r.onload=async()=>{ try { await saveLogo(r.result); toast.success('Logo saved!'); } catch(e){ toast.error(e.message); } };
+    r.readAsDataURL(file);
+  };
+
+  const handleStamp = file => {
+    if (!file) return;
+    if (file.type !== 'image/png') {
+      toast.error('The stamp needs to be a PNG — it sits over a photo and needs a transparent background');
+      return;
+    }
+    const r=new FileReader();
+    r.onload=async()=>{ try { await saveStamp(r.result); toast.success('Cocktail stamp saved'); } catch(e){ toast.error(e.message); } };
     r.readAsDataURL(file);
   };
 
@@ -8137,6 +8260,38 @@ function BrandProfileEditor({ storeId }) {
           </div>
         </div>
         <input ref={logoRef} type="file" accept="image/*" className="hidden" onChange={e=>handleLogo(e.target.files[0])}/>
+      </Card>
+
+      <Card>
+        <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-3 uppercase tracking-wide">Cocktail Stamp</h3>
+        <div className="flex items-start gap-4">
+          {stamp ? (
+            <div className="relative flex-shrink-0">
+              {/* Checkerboard behind it: a white-on-transparent mark is
+                  invisible on a white tile, and that's the usual case. */}
+              <div className="h-20 w-20 rounded-xl border border-gray-200 dark:border-gray-600 p-1"
+                   style={{backgroundColor:'#8a8a8a',
+                           backgroundImage:'linear-gradient(45deg,#6f6f6f 25%,transparent 25%,transparent 75%,#6f6f6f 75%),linear-gradient(45deg,#6f6f6f 25%,transparent 25%,transparent 75%,#6f6f6f 75%)',
+                           backgroundSize:'14px 14px', backgroundPosition:'0 0,7px 7px'}}>
+                <img src={stamp} alt="Cocktail stamp" className="h-full w-full object-contain"/>
+              </div>
+              <button onClick={async()=>{try{await clearStamp();toast.success('Stamp removed.');}catch(e){toast.error(e.message);}}}
+                className="absolute -top-1.5 -right-1.5 bg-red-500 text-white rounded-full w-5 h-5 text-xs flex items-center justify-center hover:bg-red-600 leading-none">
+                <Icon name="close" size={12}/>
+              </button>
+            </div>
+          ) : (
+            <div className="h-20 w-20 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-600 flex items-center justify-center text-gray-400 text-xs text-center leading-tight flex-shrink-0 p-2">No stamp yet</div>
+          )}
+          <div>
+            <Button variant="secondary" size="sm" onClick={()=>stampRef.current?.click()}>Upload PNG</Button>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+              Overlaid on this store's recipe cards. Transparent PNG only — it sits on a photo.
+              Which corner, how big and how strong are set under Recipes → Card look.
+            </p>
+          </div>
+        </div>
+        <input ref={stampRef} type="file" accept="image/png" className="hidden" onChange={e=>handleStamp(e.target.files[0])}/>
       </Card>
       <Card>
         <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4 uppercase tracking-wide"><Icon name="mic"/> Voice &amp; Tone</h3>

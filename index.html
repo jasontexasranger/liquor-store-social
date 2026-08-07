@@ -8260,6 +8260,54 @@ async function cardCopyFromImage(url) {
   };
 }
 
+// A personal token expires; a system user token doesn't. Either way, finding
+// out on the morning a campaign is due is the wrong time, so whatever life is
+// left is shown wherever ads are managed.
+function TokenStatusBar() {
+  const [info, setInfo] = useState(null);
+  const [err,  setErr]  = useState(null);
+
+  useEffect(function() {
+    let alive = true;
+    callEdge('meta-ads', 'tokenStatus', {})
+      .then(r => { if (alive) setInfo(r); })
+      .catch(e => { if (alive) setErr(e.message); });
+    return function(){ alive = false; };
+  }, []);
+
+  if (err) {
+    return (
+      <div className="p-2.5 mb-3" style={{border:'1px solid var(--red)', background:'rgba(255,77,94,.08)'}}>
+        <p className="text-xs" style={{color:'var(--red)'}}>
+          <Icon name="warn" size={12} className="mr-1"/> Meta token: {err}
+        </p>
+      </div>
+    );
+  }
+  if (!info) return null;
+
+  const days = info.daysLeft;
+  const tone = days == null ? 'var(--txt3)'
+             : days <= 7    ? 'var(--red)'
+             : days <= 21   ? 'var(--amb)'
+             : 'var(--txt3)';
+
+  return (
+    <div className="flex items-center gap-2 mb-3 flex-wrap">
+      <span className="lbl" style={{color:tone}}>
+        <Icon name="key" size={11} className="mr-1"/>
+        {info.source === 'user' ? 'Personal token' : 'System user token'}
+        {days == null ? ' · never expires' : ' · ' + days + ' day' + (days===1?'':'s') + ' left'}
+      </span>
+      {days != null && days <= 21 && (
+        <span className="lbl" style={{color:tone}}>
+          Regenerate it and run: supabase secrets set META_USER_TOKEN=…
+        </span>
+      )}
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────
 // MODULE 2 — CAMPAIGN DASHBOARD
 // ─────────────────────────────────────────────
@@ -8302,6 +8350,7 @@ function CampaignDashboard({ settings }) {
 
   return (
     <Card>
+      <TokenStatusBar/>
       <div className="flex items-center gap-3 mb-4 flex-wrap">
         <h2 className="text-base font-bold text-gray-900 dark:text-white flex-1"><Icon name="chart"/> Campaign Dashboard</h2>
         {/* Each store has its own ad account, so campaigns are fetched per store. */}

@@ -26,6 +26,16 @@ const corsHeaders = {
 // gets folded in — plus the endpoint, since a build makes five calls and
 // otherwise you cannot tell which one failed.
 function graphError(path: string, err: Record<string, unknown>): Error {
+  // 190 is the whole OAuth family: expired, revoked, password changed. With a
+  // personal token that lapses every couple of months this is the error most
+  // likely to turn up one quiet morning, so it says what to do about it.
+  if (err.code === 190) {
+    return new Error(
+      'The Meta token has expired or been revoked. Generate a new long-lived ' +
+      'user token and run: supabase secrets set META_USER_TOKEN=... ' +
+      `(Meta said: ${err.message ?? 'OAuth error'})`
+    );
+  }
   const bits: string[] = [];
   const userMsg = (err.error_user_msg as string) || '';
   const title   = (err.error_user_title as string) || '';
@@ -61,11 +71,28 @@ async function gPost(path: string, body: Record<string, unknown>, token: string)
   return data;
 }
 
-// Get user token via system-user token exchange
+// The token used for everything ads-related.
+//
+// A system user token is the right long-term answer, but it can only touch
+// Pages the business portfolio owns. Two of the four Pages belong to the
+// stores' own portfolios, so a system user cannot post as them however its
+// permissions are set. A personal long-lived user token carries the roles the
+// person holds directly, which covers all four.
+//
+// So META_USER_TOKEN wins when present, and the system user token remains the
+// fallback — meaning the day those ownership requests are accepted, deleting
+// META_USER_TOKEN is the whole migration. Graph does not care which it is
+// given; only the identity behind it differs. The trade is expiry: a user
+// token lasts about 60 days.
 function getSystemToken(): string {
-  const t = Deno.env.get('META_SYSTEM_USER_TOKEN');
-  if (!t) throw new Error('META_SYSTEM_USER_TOKEN not configured');
-  return t;
+  const user = Deno.env.get('META_USER_TOKEN');
+  if (user) return user;
+  const sys = Deno.env.get('META_SYSTEM_USER_TOKEN');
+  if (sys) return sys;
+  throw new Error(
+    'No Meta token configured. Set META_USER_TOKEN (a long-lived personal token) ' +
+    'or META_SYSTEM_USER_TOKEN in the Edge Function secrets.'
+  );
 }
 
 // ─── Auth: admin only ─────────────────────────────────────────────────────────
@@ -403,6 +430,26 @@ Deno.serve(async (req) => {
 
       addStep('🎉 Campaign created — all assets PAUSED', 'done', 'Activate in Meta Ads Manager when ready.');
       return Response.json({ steps, campaignId: camp.id }, { headers: corsHeaders });
+    }
+
+    // ── tokenStatus ──────────────────────────────────────────────────────────
+    // How long is left, and what the token can do. Worth being able to check
+    // before a campaign fails rather than after.
+    if (action === 'tokenStatus') {
+      const token = getSystemToken();
+      const data = await gGet('/debug_token', { input_token: token }, token);
+      const d = (data.data ?? {}) as Record<string, unknown>;
+      const expiresAt = Number(d.expires_at ?? 0);
+      return Response.json({
+        type: d.type ?? 'unknown',
+        appId: d.app_id ?? null,
+        valid: !!d.is_valid,
+        scopes: d.scopes ?? [],
+        // 0 means it never expires, which is what a system user token reports.
+        expiresAt: expiresAt || null,
+        daysLeft: expiresAt ? Math.floor((expiresAt * 1000 - Date.now()) / 86400000) : null,
+        source: Deno.env.get('META_USER_TOKEN') ? 'user' : 'system_user',
+      }, { headers: corsHeaders });
     }
 
     // ── listCampaigns ────────────────────────────────────────────────────────

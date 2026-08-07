@@ -9824,7 +9824,7 @@ function PostReviewModal({ post, index, count, onStep, onClose, onChanged }) {
     try {
       const sb = getSB();
       const { error } = await sb.from('scheduled_posts')
-        .update({ status:'missed', error_msg:'Rejected in review' })
+        .update({ status:'rejected', error_msg:'Rejected in review' })
         .eq('id', post.id).eq('status','needs_approval');
       if (error) throw error;
       toast.success('Rejected');
@@ -10002,7 +10002,13 @@ const POST_STATUS = {
   published:      { label:'Published',      color:'var(--grn)' },
   failed:         { label:'Failed',         color:'var(--red)' },
   missed:         { label:'Missed',         color:'var(--red)' },
+  rejected:       { label:'Rejected',       color:'var(--txt3)' },
 };
+
+// Rejecting is a decision already taken, so it shouldn't clutter the plan.
+// Kept out of the calendar unless you filter for it deliberately — the record
+// still exists, it just isn't in the way.
+const CALENDAR_HIDDEN = ['rejected'];
 const statusMeta = s => POST_STATUS[s] || { label:s || 'Unknown', color:'var(--txt3)' };
 
 const sameDay = (a, b) =>
@@ -10049,9 +10055,13 @@ function PostCalendar({ posts, onOpen }) {
   const from = days[0];
   const to   = new Date(days[days.length-1].getFullYear(), days[days.length-1].getMonth(), days[days.length-1].getDate(), 23, 59, 59);
 
+  const hidden = p =>
+    status === 'all' && CALENDAR_HIDDEN.indexOf(p.status) !== -1;
+
   const visible = posts.filter(function(p) {
     if (store !== 'all' && p.store_id !== store) return false;
     if (status !== 'all' && p.status !== status) return false;
+    if (hidden(p)) return false;
     const d = new Date(p.scheduled_at);
     return d >= from && d <= to;
   });
@@ -10071,8 +10081,17 @@ function PostCalendar({ posts, onOpen }) {
   const hiddenByRange = posts.filter(function(p) {
     if (store !== 'all' && p.store_id !== store) return false;
     if (status !== 'all' && p.status !== status) return false;
+    if (hidden(p)) return false;
     const d = new Date(p.scheduled_at);
     return d < from || d > to;
+  }).length;
+
+  const rejectedHere = posts.filter(function(p) {
+    if (status !== 'all') return false;
+    if (CALENDAR_HIDDEN.indexOf(p.status) === -1) return false;
+    if (store !== 'all' && p.store_id !== store) return false;
+    const d = new Date(p.scheduled_at);
+    return d >= from && d <= to;
   }).length;
 
   return (
@@ -10162,7 +10181,7 @@ function PostCalendar({ posts, onOpen }) {
       </div>
 
       <div className="flex gap-3 flex-wrap mt-3 items-center">
-        {Object.keys(POST_STATUS).map(function(k) {
+        {Object.keys(POST_STATUS).filter(k => CALENDAR_HIDDEN.indexOf(k) === -1).map(function(k) {
           return (
             <span key={k} className="flex items-center gap-1.5 lbl">
               <span style={{width:'9px', height:'9px', background:POST_STATUS[k].color, display:'inline-block'}}/>
@@ -10177,6 +10196,11 @@ function PostCalendar({ posts, onOpen }) {
       {hiddenByRange > 0 && (
         <p className="lbl mt-2">
           {hiddenByRange} more outside {mode === 'week' ? 'this week' : 'this month'}.
+        </p>
+      )}
+      {rejectedHere > 0 && (
+        <p className="lbl mt-1">
+          {rejectedHere} rejected post{rejectedHere===1?'':'s'} hidden — choose Rejected above to see {rejectedHere===1?'it':'them'}.
         </p>
       )}
     </div>
@@ -10310,7 +10334,7 @@ function ScheduledPostsPanel() {
                 .in('id', ids).eq('status','needs_approval');
       } else {
         res = await sb.from('scheduled_posts')
-                .update({ status:'missed', error_msg:'Rejected in review' })
+                .update({ status:'rejected', error_msg:'Rejected in review' })
                 .in('id', ids).eq('status','needs_approval');
       }
       if (res.error) throw res.error;

@@ -708,10 +708,8 @@ function UploadCreativeModal({ campaigns, myStores, onClose, onUpload }) {
           </div>
           <div>
             <Label>Store</Label>
-            <Select value={store} onChange={e=>setStore(e.target.value)}>
-              <option value="">Global — all stores</option>
-              {myStores.map(st=><option key={st.id} value={st.id}>{st.name}</option>)}
-            </Select>
+            <StorePicker value={store} onChange={setStore} stores={myStores}
+              allLabel="Global" allValue=""/>
           </div>
         </div>
 
@@ -856,11 +854,9 @@ function CreativeLibrary({ isAdmin, myStores }) {
         </div>
 
         <div className="flex flex-wrap gap-2 mb-5">
-          <Select value={fStore} onChange={e=>setFStore(e.target.value)} className="w-auto text-xs">
-            <option value="all">All stores</option>
-            <option value="global">Global only</option>
-            {myStores.map(st=><option key={st.id} value={st.id}>{st.name}</option>)}
-          </Select>
+          <StorePicker value={fStore} onChange={setFStore} stores={myStores} compact
+            allLabel="All" extra={[{ value:'global', label:'Global',
+                                     title:'Creatives that belong to no single store' }]}/>
           <Select value={fCamp} onChange={e=>setFCamp(e.target.value)} className="w-auto text-xs">
             <option value="all">All campaigns</option>
             <option value="none">No campaign</option>
@@ -1830,9 +1826,7 @@ function RecipesPage({ isAdmin, myStores }) {
         <div className="flex items-center gap-3 mb-4 flex-wrap">
           <span className="ttl">Recipes</span>
           <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
-          <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs">
-            {myStores.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-          </Select>
+          <StorePicker value={storeId} onChange={setStoreId} stores={myStores} compact/>
           <Button size="sm" variant="outline" onClick={()=>setShowStyle(v=>!v)}>
             <Icon name="spark"/> Card look
           </Button>
@@ -3921,9 +3915,7 @@ function FeaturesPage({ isAdmin, myStores }) {
         <div className="flex items-center gap-3 flex-wrap mb-4">
           <span className="ttl">Monthly features</span>
           <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
-          <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs">
-            {myStores.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-          </Select>
+          <StorePicker value={storeId} onChange={setStoreId} stores={myStores} compact/>
           <div className="flex items-center gap-1">
             <Button size="sm" variant="ghost" onClick={()=>shiftMonth(-1)} aria-label="Previous month">
               <Icon name="back" size={13}/>
@@ -5069,6 +5061,7 @@ function useBrandProfile(storeId) {
     if (!sb) throw new Error('Supabase not connected');
     const { error } = await sb.from('brand_profiles')
       .upsert({ store_id: storeId, logo_data: dataUrl }, { onConflict: 'store_id' });
+    forgetStoreLogos();
     if (error) throw error;
     setLogo(dataUrl);
   };
@@ -5077,6 +5070,7 @@ function useBrandProfile(storeId) {
     const sb = getSB();
     if (!sb) throw new Error('Supabase not connected');
     await sb.from('brand_profiles').update({ logo_data: null }).eq('store_id', storeId);
+    forgetStoreLogos();
     setLogo(null);
   };
 
@@ -5141,6 +5135,144 @@ function compressImage(dataUrl, maxPx=600, quality=0.75) {
 // ─────────────────────────────────────────────
 // Imported products store a permanent Storage URL; uploaded ones store base64.
 const prodSrc = p => (p && (p.image_url || p.data)) || '';
+
+// ─────────────────────────────────────────────
+// STORE PICKER
+// ─────────────────────────────────────────────
+// Four stores, chosen dozens of times a session. A logo is recognised faster
+// than a name is read, and it makes the store you're working on visible at a
+// glance rather than something you have to go and check.
+
+// Fetched once for the whole session and shared. Every screen has a store
+// picker, and four of them mounting at once shouldn't mean four queries.
+let _storeLogoPromise = null;
+function loadStoreLogos() {
+  if (!_storeLogoPromise) {
+    const sb = getSB();
+    if (!sb) return Promise.resolve({});
+    _storeLogoPromise = sb.from('brand_profiles').select('store_id, logo_data')
+      .then(function(res) {
+        const map = {};
+        (res.data || []).forEach(r => { if (r.logo_data) map[r.store_id] = r.logo_data; });
+        return map;
+      })
+      .catch(() => ({}));
+  }
+  return _storeLogoPromise;
+}
+// Called after a logo is uploaded or cleared, so pickers pick it up.
+function forgetStoreLogos() { _storeLogoPromise = null; }
+
+function useStoreLogos() {
+  const [logos, setLogos] = useState({});
+  useEffect(function() {
+    let alive = true;
+    loadStoreLogos().then(m => { if (alive) setLogos(m); });
+    return function(){ alive = false; };
+  }, []);
+  return logos;
+}
+
+// Posting goes to several stores at once, so this one ticks rather than picks.
+// Same tiles, so the two read as the same control.
+function StoreMultiPicker({ stores, selected, onToggle }) {
+  const logos = useStoreLogos();
+  const list  = stores || STORES;
+  return (
+    <div className="flex gap-1.5 flex-wrap">
+      {list.map(function(st) {
+        const on   = (selected || []).includes(st.id);
+        const logo = logos[st.id];
+        return (
+          <button key={st.id} onClick={()=>onToggle(st.id)} title={st.name}
+            className="flex items-center justify-center px-2.5 relative"
+            style={{
+              height:'48px', minWidth:'84px',
+              border:'1px solid ' + (on ? 'var(--cy)' : 'var(--line)'),
+              background: on ? 'var(--cy-glow)' : 'rgba(4,8,16,.45)',
+              boxShadow: on ? '0 0 14px rgba(56,224,240,.16)' : 'none',
+              opacity: on ? 1 : 0.55,
+            }}>
+            {logo
+              ? <span className="flex items-center justify-center w-full h-full px-1"
+                      style={{background:'rgba(255,255,255,.94)'}}>
+                  <img src={logo} alt={st.name} className="object-contain"
+                       style={{maxHeight:'32px', maxWidth:'92px'}}/>
+                </span>
+              : <span className="text-xs uppercase tracking-[.12em] whitespace-nowrap"
+                      style={{color: on ? 'var(--cy)' : 'var(--txt2)'}}>{st.name.split(' ')[0]}</span>}
+            {on && (
+              <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center"
+                    style={{width:'17px', height:'17px', background:'var(--cy)', color:'#04070e'}}>
+                <Icon name="check" size={11}/>
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// `allLabel` turns on a leading "everything" chip; the value it reports is
+// whatever the caller passes as `allValue`.
+function StorePicker({ value, onChange, stores, allLabel, allValue = 'all', extra, compact }) {
+  const logos = useStoreLogos();
+  const list  = stores || STORES;
+  const h     = compact ? 30 : 40;
+
+  const chip = function(key, active, content, title) {
+    return (
+      <button key={key} onClick={()=>onChange(key === '__all' ? allValue : key)} title={title}
+        className="flex items-center justify-center px-2.5"
+        style={{
+          height: h + 'px', minWidth: compact ? '54px' : '68px',
+          border: '1px solid ' + (active ? 'var(--cy)' : 'var(--line)'),
+          background: active ? 'var(--cy-glow)' : 'rgba(4,8,16,.45)',
+          boxShadow: active ? '0 0 14px rgba(56,224,240,.16)' : 'none',
+          opacity: active ? 1 : 0.62,
+          transition: 'opacity .15s, border-color .15s',
+        }}>
+        {content}
+      </button>
+    );
+  };
+
+  return (
+    <div className="flex gap-1.5 flex-wrap items-center">
+      {(extra || []).map(function(x) {
+        return chip(x.value, value === x.value,
+          <span className="text-xs uppercase tracking-[.14em]"
+                style={{color: value === x.value ? 'var(--cy)' : 'var(--txt2)'}}>{x.label}</span>,
+          x.title || x.label);
+      })}
+
+      {allLabel && chip('__all', value === allValue,
+        <span className="text-xs uppercase tracking-[.14em]"
+              style={{color: value === allValue ? 'var(--cy)' : 'var(--txt2)'}}>{allLabel}</span>,
+        allLabel)}
+
+      {list.map(function(st) {
+        const active = value === st.id;
+        const logo   = logos[st.id];
+        return chip(st.id, active,
+          logo
+            // Logos are artwork made for white paper, so they get a light tile
+            // rather than being left to disappear into the dark panel.
+            ? <span className="flex items-center justify-center w-full h-full px-1"
+                    style={{background:'rgba(255,255,255,.94)'}}>
+                <img src={logo} alt={st.name} className="object-contain"
+                     style={{maxHeight:(h-12)+'px', maxWidth: compact ? '54px' : '78px'}}/>
+              </span>
+            : <span className="text-xs uppercase tracking-[.12em] whitespace-nowrap"
+                    style={{color: active ? 'var(--cy)' : 'var(--txt2)'}}>
+                {st.name.split(' ')[0]}
+              </span>,
+          st.name);
+      })}
+    </div>
+  );
+}
 
 function useBrandImageLibrary() {
   const [images, setImages] = useState([]);
@@ -7102,15 +7234,7 @@ function PostComposer({ settings, pendingImage, onClearPending, visibleStores })
       <h2 className="text-base font-bold text-gray-900 dark:text-white mb-4"><Icon name="note"/> Compose Post</h2>
       <div className="mb-4">
         <Label>Stores</Label>
-        <div className="grid grid-cols-2 gap-2">
-          {myStores.map(s => (
-            <label key={s.id} className={`flex items-center gap-2 p-2.5 rounded-xl border cursor-pointer text-sm transition-all
-              ${selected.includes(s.id)?'border-indigo-500 bg-indigo-50 dark:bg-indigo-950/50 text-indigo-800 dark:text-indigo-200 shadow-sm':'border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300 hover:border-indigo-300'}`}>
-              <input type="checkbox" className="rounded" checked={selected.includes(s.id)} onChange={()=>toggleStore(s.id)}/>
-              <span className="leading-tight">{s.name}</span>
-            </label>
-          ))}
-        </div>
+        <StoreMultiPicker stores={myStores} selected={selected} onToggle={toggleStore}/>
       </div>
       <div className="mb-4">
         <Label>Publish to</Label>
@@ -7317,7 +7441,7 @@ function PostHistory({ settings, visibleStores }) {
     <Card>
       <div className="flex items-center gap-2 mb-4 flex-wrap">
         <h2 className="text-base font-bold text-gray-900 dark:text-white flex-1"><Icon name="note"/> Post History</h2>
-        <Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs">{myStores.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</Select>
+        <StorePicker value={storeId} onChange={setStoreId} stores={myStores} compact/>
         <Button variant="secondary" size="sm" onClick={load} loading={loading}>{loaded?'Refresh':'Load Posts'}</Button>
       </div>
       {!loaded&&!loading && <div className="text-center py-10 text-gray-400 dark:text-gray-500 text-sm">Select a store and click Load Posts</div>}
@@ -7441,7 +7565,7 @@ function CampaignBuilder({ settings }) {
       <Card>
         <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4 uppercase tracking-wide">Campaign</h3>
         <div className="grid grid-cols-2 gap-4">
-          <div><Label>Store</Label><Select value={storeId} onChange={e=>setStoreId(e.target.value)}>{STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</Select></div>
+          <div><Label>Store</Label><StorePicker value={storeId} onChange={setStoreId}/></div>
           <div><Label>Objective</Label><Select value={objective} onChange={e=>setObjective(e.target.value)}>{AD_OBJECTIVES.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</Select></div>
           <div><Label>Campaign Name</Label><Input value={campName} onChange={e=>setCampName(e.target.value)} placeholder="Summer Whiskey Sale"/></div>
           <div><Label>Daily Budget (CAD $)</Label><Input type="number" min="1" step="1" value={dailyBudget} onChange={e=>setDailyBudget(e.target.value)}/></div>
@@ -7547,9 +7671,7 @@ function CampaignDashboard({ settings }) {
       <div className="flex items-center gap-3 mb-4 flex-wrap">
         <h2 className="text-base font-bold text-gray-900 dark:text-white flex-1"><Icon name="chart"/> Campaign Dashboard</h2>
         {/* Each store has its own ad account, so campaigns are fetched per store. */}
-        <Select value={adStore} onChange={e=>setAdStore(e.target.value)} className="w-auto text-xs">
-          {STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-        </Select>
+        <StorePicker value={adStore} onChange={setAdStore} compact/>
         <Select value={filter} onChange={e=>setFilter(e.target.value)} className="w-auto text-xs">
           <option value="all">All Campaigns</option>
           {STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
@@ -8085,9 +8207,8 @@ function ImageGenerator({ settings, onUseInPost }) {
           <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4 uppercase tracking-wide"><Icon name="image"/> Generate Image</h3>
           <div className="mb-4">
             <Label>Store</Label>
-            <Select value={storeId} onChange={e=>{setStoreId(e.target.value);setResult(null);setShowPrompt(false);}}>
-              {STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-            </Select>
+            <StorePicker value={storeId}
+              onChange={function(v){ setStoreId(v); setResult(null); setShowPrompt(false); }}/>
             <div className="flex items-center gap-2 mt-2 flex-wrap">
               {logo && <img src={logo} alt="logo" className="h-7 w-7 rounded object-contain bg-white border border-gray-200 p-0.5"/>}
               {brand.personality && brand.personality.split(',').slice(0,3).map((p,i)=><Badge key={i} color="indigo">{p.trim()}</Badge>)}
@@ -9628,10 +9749,7 @@ function PostCalendar({ posts, onOpen }) {
 
         <span className="flex-1"/>
 
-        <Select value={store} onChange={e=>setStore(e.target.value)} className="w-auto text-xs">
-          <option value="all">All stores</option>
-          {STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}
-        </Select>
+        <StorePicker value={store} onChange={setStore} allLabel="All" compact/>
         <Select value={status} onChange={e=>setStatus(e.target.value)} className="w-auto text-xs">
           <option value="all">Any status</option>
           {Object.keys(POST_STATUS).map(k=><option key={k} value={k}>{POST_STATUS[k].label}</option>)}
@@ -11229,7 +11347,7 @@ function BrandPage({ settings }) {
             <button key={t.id} onClick={()=>setTab(t.id)} className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}><Icon name={t.icon} size={14} className="mr-2"/>{t.label}</button>
           ))}
         </div>
-        {<Select value={storeId} onChange={e=>setStoreId(e.target.value)} className="w-auto text-xs mb-1">{STORES.map(s=><option key={s.id} value={s.id}>{s.name}</option>)}</Select>}
+        <StorePicker value={storeId} onChange={setStoreId} compact/>
       </div>
       {tab==='profile'   && <BrandProfileEditor storeId={storeId}/>}
       {tab==='templates' && <TemplateManager storeId={storeId}/>}

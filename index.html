@@ -5589,102 +5589,106 @@ function useStoreLogos() {
   return logos;
 }
 
+// One tile, drawn the same everywhere. Logos differ wildly in shape — some
+// wide wordmarks, some tall badges — so the tile is a fixed square and the
+// artwork is contained inside it. Uniform tiles read as a set; letting each
+// logo set its own size reads as a mistake.
+const TILE = { sm: 46, md: 64 };
+
+function StoreTile({ store, logo, active, onClick, size = 'md', showLabel, badge, disabled }) {
+  const px = TILE[size] || TILE.md;
+  return (
+    <button onClick={onClick} disabled={disabled} title={store.name}
+      className="flex flex-col items-center gap-1.5"
+      style={{ opacity: disabled ? 0.4 : 1 }}>
+      <span className="relative flex items-center justify-center"
+        style={{
+          width: px + 'px', height: px + 'px',
+          // Always a solid white plate. Brand marks are drawn for white paper,
+          // and dimming the plate to show "unselected" makes them look broken —
+          // so selection is shown by the border and the label instead.
+          background: '#ffffff',
+          border: '2px solid ' + (active ? 'var(--cy)' : 'var(--line)'),
+          boxShadow: active ? '0 0 14px rgba(56,224,240,.28)' : 'none',
+          transition: 'border-color .15s, box-shadow .15s',
+        }}>
+        {logo
+          ? <img src={logo} alt={store.name} className="object-contain"
+                 style={{ maxWidth: Math.round(px * 0.78) + 'px', maxHeight: Math.round(px * 0.78) + 'px' }}/>
+          : <span className="mono" style={{ color:'#1a2230', fontSize: Math.round(px/3) + 'px' }}>
+              {store.name.replace(/[^A-Za-z ]/g,'').split(' ').filter(Boolean).slice(0,2).map(w=>w[0]).join('')}
+            </span>}
+        {badge}
+      </span>
+      {showLabel && (
+        <span className="text-center leading-tight"
+              style={{ fontSize:'10px', letterSpacing:'.06em', textTransform:'uppercase',
+                       color: active ? 'var(--cy)' : 'var(--txt3)', maxWidth:(px+18)+'px' }}>
+          {store.name.replace(/ Liquor Store.*$/i,'').replace(/^Brothers.*/i,'Brothers')}
+        </span>
+      )}
+    </button>
+  );
+}
+
 // Posting goes to several stores at once, so this one ticks rather than picks.
 // Same tiles, so the two read as the same control.
 function StoreMultiPicker({ stores, selected, onToggle }) {
   const logos = useStoreLogos();
   const list  = stores || STORES;
   return (
-    <div className="flex gap-1.5 flex-wrap">
+    <div className="flex gap-3 flex-wrap">
       {list.map(function(st) {
-        const on   = (selected || []).includes(st.id);
-        const logo = logos[st.id];
+        const on = (selected || []).includes(st.id);
         return (
-          <button key={st.id} onClick={()=>onToggle(st.id)} title={st.name}
-            className="flex items-center justify-center px-2.5 relative"
-            style={{
-              height:'48px', minWidth:'84px',
-              border:'1px solid ' + (on ? 'var(--cy)' : 'var(--line)'),
-              background: on ? 'var(--cy-glow)' : 'rgba(4,8,16,.45)',
-              boxShadow: on ? '0 0 14px rgba(56,224,240,.16)' : 'none',
-              opacity: on ? 1 : 0.55,
-            }}>
-            {logo
-              ? <span className="flex items-center justify-center w-full h-full px-1"
-                      style={{background:'rgba(255,255,255,.94)'}}>
-                  <img src={logo} alt={st.name} className="object-contain"
-                       style={{maxHeight:'32px', maxWidth:'92px'}}/>
-                </span>
-              : <span className="text-xs uppercase tracking-[.12em] whitespace-nowrap"
-                      style={{color: on ? 'var(--cy)' : 'var(--txt2)'}}>{st.name.split(' ')[0]}</span>}
-            {on && (
-              <span className="absolute -top-1.5 -right-1.5 flex items-center justify-center"
-                    style={{width:'17px', height:'17px', background:'var(--cy)', color:'#04070e'}}>
+          <StoreTile key={st.id} store={st} logo={logos[st.id]} active={on} showLabel
+            onClick={()=>onToggle(st.id)}
+            badge={on && (
+              <span className="absolute flex items-center justify-center"
+                    style={{ top:'-7px', right:'-7px', width:'18px', height:'18px',
+                             background:'var(--cy)', color:'#04070e' }}>
                 <Icon name="check" size={11}/>
               </span>
-            )}
-          </button>
+            )}/>
         );
       })}
     </div>
   );
 }
 
-// `allLabel` turns on a leading "everything" chip; the value it reports is
-// whatever the caller passes as `allValue`.
 function StorePicker({ value, onChange, stores, allLabel, allValue = 'all', extra, compact }) {
   const logos = useStoreLogos();
   const list  = stores || STORES;
-  const h     = compact ? 30 : 40;
+  const size  = compact ? 'sm' : 'md';
+  const px    = TILE[size];
 
-  const chip = function(key, active, content, title) {
-    return (
-      <button key={key} onClick={()=>onChange(key === '__all' ? allValue : key)} title={title}
-        className="flex items-center justify-center px-2.5"
-        style={{
-          height: h + 'px', minWidth: compact ? '54px' : '68px',
-          border: '1px solid ' + (active ? 'var(--cy)' : 'var(--line)'),
-          background: active ? 'var(--cy-glow)' : 'rgba(4,8,16,.45)',
-          boxShadow: active ? '0 0 14px rgba(56,224,240,.16)' : 'none',
-          opacity: active ? 1 : 0.62,
-          transition: 'opacity .15s, border-color .15s',
-        }}>
-        {content}
-      </button>
-    );
-  };
+  // "All" and "Global" aren't stores, so they get a plain chip the same height
+  // as the tiles rather than a white plate with nothing on it.
+  const chip = (key, label, active, title) => (
+    <button key={key} onClick={()=>onChange(key)} title={title || label}
+      className="flex flex-col items-center gap-1.5">
+      <span className="flex items-center justify-center px-3"
+        style={{ height: px + 'px', minWidth: px + 'px',
+                 border: '2px solid ' + (active ? 'var(--cy)' : 'var(--line)'),
+                 background: active ? 'var(--cy-glow)' : 'rgba(4,8,16,.45)',
+                 color: active ? 'var(--cy)' : 'var(--txt2)',
+                 fontSize:'11px', letterSpacing:'.1em', textTransform:'uppercase' }}>
+        {label}
+      </span>
+      {!compact && <span style={{fontSize:'10px'}}>&nbsp;</span>}
+    </button>
+  );
 
   return (
-    <div className="flex gap-1.5 flex-wrap items-center">
-      {(extra || []).map(function(x) {
-        return chip(x.value, value === x.value,
-          <span className="text-xs uppercase tracking-[.14em]"
-                style={{color: value === x.value ? 'var(--cy)' : 'var(--txt2)'}}>{x.label}</span>,
-          x.title || x.label);
-      })}
-
-      {allLabel && chip('__all', value === allValue,
-        <span className="text-xs uppercase tracking-[.14em]"
-              style={{color: value === allValue ? 'var(--cy)' : 'var(--txt2)'}}>{allLabel}</span>,
-        allLabel)}
-
+    <div className="flex gap-3 flex-wrap items-start">
+      {(extra || []).map(x => chip(x.value, x.label, value === x.value, x.title))}
+      {allLabel && chip(allValue, allLabel, value === allValue)}
       {list.map(function(st) {
-        const active = value === st.id;
-        const logo   = logos[st.id];
-        return chip(st.id, active,
-          logo
-            // Logos are artwork made for white paper, so they get a light tile
-            // rather than being left to disappear into the dark panel.
-            ? <span className="flex items-center justify-center w-full h-full px-1"
-                    style={{background:'rgba(255,255,255,.94)'}}>
-                <img src={logo} alt={st.name} className="object-contain"
-                     style={{maxHeight:(h-12)+'px', maxWidth: compact ? '54px' : '78px'}}/>
-              </span>
-            : <span className="text-xs uppercase tracking-[.12em] whitespace-nowrap"
-                    style={{color: active ? 'var(--cy)' : 'var(--txt2)'}}>
-                {st.name.split(' ')[0]}
-              </span>,
-          st.name);
+        return (
+          <StoreTile key={st.id} store={st} logo={logos[st.id]} size={size}
+            showLabel={!compact} active={value === st.id}
+            onClick={()=>onChange(st.id)}/>
+        );
       })}
     </div>
   );
@@ -9991,6 +9995,11 @@ const ASSIGNABLE_SECTIONS = [
   { id:'features',  label:'Features' },
   { id:'creatives', label:'Creatives' },
   { id:'recipes',   label:'Recipes' },
+  // Off by default for everyone who isn't an admin. Ads spends money, so the
+  // edge function checks this same grant server-side rather than trusting the
+  // menu; Products is chain-wide, so a change there affects every store.
+  { id:'products',  label:'Products',  admin:true },
+  { id:'ads',       label:'Ads',       admin:true },
 ];
 
 function UserAccountsSection({ currentUserId }) {
@@ -10123,7 +10132,7 @@ function UserAccountsSection({ currentUserId }) {
     // today — so opening the panel shows the truth rather than an empty list.
     setEditSections((u.sections && u.sections.length)
       ? u.sections
-      : ASSIGNABLE_SECTIONS.map(x => x.id));
+      : ASSIGNABLE_SECTIONS.filter(x => !x.admin).map(x => x.id));
     setResetId(null);
   };
 
@@ -10133,14 +10142,18 @@ function UserAccountsSection({ currentUserId }) {
   const saveStores = async (userId) => {
     setSavingStores(true);
     try {
-      const all = ASSIGNABLE_SECTIONS.length;
+      const all = ASSIGNABLE_SECTIONS.filter(x => !x.admin).length;
       await getSB().from('user_roles').update({
         store_id: editStoreIds[0] || null,
         store_ids: editStoreIds,
         // All of them ticked is the same as no restriction, so it is stored as
         // NULL — that way adding a section later doesn't leave everyone
         // silently locked out of it.
-        sections: editSections.length === all ? null : editSections,
+        // "All the everyday ones and nothing special" is the default, stored as
+        // NULL. Anything else — fewer, or one of the elevated ones — is listed.
+        sections: (editSections.length === all
+                   && !editSections.some(id => (ASSIGNABLE_SECTIONS.find(x=>x.id===id)||{}).admin))
+                  ? null : editSections,
       }).eq('user_id', userId);
       toast.success('Access updated');
       setEditStoresId(null);
@@ -10246,9 +10259,17 @@ function UserAccountsSection({ currentUserId }) {
                           <input type="checkbox" checked={editSections.indexOf(sec.id) !== -1}
                                  onChange={()=>toggleEditSection(sec.id)} className="accent-indigo-600"/>
                           {sec.label}
+                          {sec.admin && <span className="text-xs" style={{color:'var(--amb)'}}>· elevated</span>}
                         </label>
                       ); })}
                     </div>
+                    {editSections.indexOf('ads') !== -1 && (
+                      <p className="text-xs mb-2" style={{color:'var(--amb)'}}>
+                        <Icon name="warn" size={11} className="mr-1"/>
+                        Ads access lets this person create campaigns against your ad accounts.
+                        Everything is created paused, but they can switch it on in Ads Manager.
+                      </p>
+                    )}
                     <p className="text-xs text-gray-400 mb-3">
                       Hides sections from the menu. What they can actually read and change
                       is still governed by their stores.
@@ -12634,15 +12655,20 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
   // Store assignments for non-hardcoded non-admin users (loaded above in combined effect)
   const [userStoreIds, setUserStoreIds] = useState([]);
 
+  // Products and Ads can be handed to a non-admin explicitly. Brand and
+  // Settings stay admin-only: one changes how every store's artwork looks, the
+  // other holds the tokens and the user list.
+  const granted = id => isAdmin || (allowedSections ? allowedSections.indexOf(id) !== -1 : false);
+
   const nav = [
     { id:'shelf', icon:'tag', label:'Shelf Talkers' },
     { id:'posts', icon:'note', label:'Social' },
     { id:'features', icon:'tag', label:'Features' },
     { id:'creatives', icon:'image', label:'Creatives' },
     { id:'recipes',   icon:'spark', label:'Recipes' },
-    ...(isAdmin ? [{ id:'products', icon:'package', label:'Products' }] : []),
+    ...(granted('products') ? [{ id:'products', icon:'package', label:'Products' }] : []),
+    ...(granted('ads')      ? [{ id:'ads',      icon:'mega',    label:'Ads' }] : []),
     ...(isAdmin ? [
-      { id:'ads',      icon:'mega', label:'Ads' },
       { id:'brand',    icon:'palette', label:'Brand' },
       { id:'settings', icon:'gear', label:'Settings' },
     ] : []),
@@ -12738,8 +12764,8 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
                                              myStores={isAdmin ? STORES : STORES.filter(st=>userStoreIds.includes(st.id))}/>}
         {page==='recipes'                && <RecipesPage isAdmin={isAdmin}
                                              myStores={isAdmin ? STORES : STORES.filter(st=>userStoreIds.includes(st.id))}/>}
-        {page==='products' && isAdmin    && <ProductLibrary/>}
-        {page==='ads'      && isAdmin    && <AdsPage         settings={settings}/>}
+        {page==='products' && granted('products') && <ProductLibrary/>}
+        {page==='ads'      && granted('ads')      && <AdsPage settings={settings}/>}
         {page==='brand'    && isAdmin    && <BrandPage        settings={settings}/>}
         {page==='settings' && isAdmin    && <SettingsPage     settings={settings} onSave={saveSettings} currentUserId={user ? user.id : null}/>}
       </main>

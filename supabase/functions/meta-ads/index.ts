@@ -97,6 +97,11 @@ function getSystemToken(): string {
 
 // ─── Auth: admin only ─────────────────────────────────────────────────────────
 
+// Admins, plus anyone an admin has explicitly granted the ads section.
+//
+// The grant is read here rather than trusted from the browser: hiding the menu
+// item is presentation, and this is the thing that actually stands between a
+// staff account and your ad spend.
 async function requireAdmin(authHeader: string | null, sb: ReturnType<typeof createClient>): Promise<string> {
   if (!authHeader) throw new Error('Missing Authorization header');
   const token = authHeader.replace('Bearer ', '');
@@ -105,14 +110,17 @@ async function requireAdmin(authHeader: string | null, sb: ReturnType<typeof cre
 
   const { data: role } = await sb
     .from('user_roles')
-    .select('role')
+    .select('role, sections')
     .eq('user_id', user.id)
     .single();
 
   // Also allow hardcoded admin emails as fallback
   const ADMIN_EMAILS = ['jasontexasranger@gmail.com', 'jason@vwdevelopments.com', 'tim@vwdevelopments.com'];
-  if (role?.role !== 'admin' && !ADMIN_EMAILS.includes(user.email ?? '')) {
-    throw new Error('Admin access required');
+  const isAdmin = role?.role === 'admin' || ADMIN_EMAILS.includes(user.email ?? '');
+  const granted = Array.isArray(role?.sections) && role.sections.includes('ads');
+
+  if (!isAdmin && !granted) {
+    throw new Error('You do not have access to ads. An admin can grant it under Settings.');
   }
   return user.id;
 }

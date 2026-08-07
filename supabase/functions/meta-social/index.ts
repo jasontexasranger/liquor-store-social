@@ -767,19 +767,25 @@ Deno.serve(async (req) => {
       };
 
       if (action === 'aiDescribeImage') {
-        const { base64, mime } = params as { base64: string; mime: string };
+        const { base64, mime, prompt: askFor } = params as
+          { base64: string; mime: string; prompt?: string };
         if (!base64) throw new Error('base64 image required');
+        // Callers that want something other than an image-generation blurb —
+        // ad card copy, for instance — pass their own question.
+        const question = (askFor && askFor.trim())
+          ? askFor.trim()
+          : 'Describe this product image in detail for a DALL-E image generation prompt. Focus on the product, packaging, label, colours, and visual characteristics. Be specific and vivid. Under 80 words, no intro text.';
         const res = await fetch('https://api.openai.com/v1/chat/completions', {
           method: 'POST',
           headers: oaHeaders,
           body: JSON.stringify({
             model: 'gpt-4o-mini',
-            max_tokens: 200,
+            max_tokens: 300,
             messages: [{
               role: 'user',
               content: [
                 { type: 'image_url', image_url: { url: `data:${mime || 'image/jpeg'};base64,${base64}` } },
-                { type: 'text', text: 'Describe this product image in detail for a DALL-E image generation prompt. Focus on the product, packaging, label, colours, and visual characteristics. Be specific and vivid. Under 80 words, no intro text.' },
+                { type: 'text', text: question },
               ],
             }],
           }),

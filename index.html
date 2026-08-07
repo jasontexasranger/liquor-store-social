@@ -7810,6 +7810,7 @@ function CampaignBuilder({ settings }) {
   const [cardPick,    setCardPick]    = useState(false);
   const [optimizeOrder, setOptimizeOrder] = useState(false);
   const [endCard,     setEndCard]     = useState(true);
+  const [writing,     setWriting]     = useState(false);
   const [showAdCreatives, setShowAdCreatives] = useState(false);
   const [adCreativeUrl, setAdCreativeUrl] = useState(null);
   const [adImg,       setAdImg]       = useState(null);
@@ -7834,6 +7835,29 @@ function CampaignBuilder({ settings }) {
 
   const addStep    = (label,status='pending',detail='') => setSteps(p=>[...p,{label,status,detail}]);
   const finishStep = (status,detail='') => setSteps(p=>{ const a=[...p]; a[a.length-1]={...a[a.length-1],status,detail}; return a; });
+
+  // Only touches cards you haven't written yourself, so pressing it twice is
+  // safe and it never overwrites an edit.
+  const fillCards = async function() {
+    const todo = cards.map((c, i) => ({ c, i })).filter(x => !x.c.headline.trim());
+    if (!todo.length) { toast.success('Every card already has a headline'); return; }
+    setWriting(true);
+    let done = 0, failed = 0;
+    for (const { c, i } of todo) {
+      try {
+        const copy = await cardCopyFromImage(c.url);
+        if (!copy.headline) { failed++; continue; }
+        setCards(prev => prev.map((x, ix) => ix === i
+          ? Object.assign({}, x, { headline: copy.headline,
+                                   description: x.description.trim() || copy.description })
+          : x));
+        done++;
+      } catch(e) { failed++; }
+    }
+    setWriting(false);
+    if (done)   toast.success(done + ' card' + (done===1?'':'s') + ' written');
+    if (failed) toast.error(failed + ' card' + (failed===1?'':'s') + " couldn't be read — type those in");
+  };
 
   const launch = async () => {
     if (!campName.trim())  { toast.error('Enter a campaign name'); return; }
@@ -7956,10 +7980,19 @@ function CampaignBuilder({ settings }) {
                 <Label className="mb-0">
                   Cards <span className="text-gray-400 font-normal normal-case">({cards.length}/10)</span>
                 </Label>
-                <button onClick={()=>setCardPick(true)} className="text-xs font-semibold hover:underline"
-                        style={{color:'var(--cy)'}}>
-                  <Icon name="image"/> Add from library
-                </button>
+                <div className="flex items-center gap-3">
+                  {cards.length > 0 && (
+                    <button onClick={fillCards} disabled={writing}
+                            className="text-xs font-semibold hover:underline"
+                            style={{color:'var(--vio)', opacity: writing ? 0.5 : 1}}>
+                      <Icon name="spark"/> {writing ? 'Reading…' : 'Write empty cards'}
+                    </button>
+                  )}
+                  <button onClick={()=>setCardPick(true)} className="text-xs font-semibold hover:underline"
+                          style={{color:'var(--cy)'}}>
+                    <Icon name="image"/> Add from library
+                  </button>
+                </div>
               </div>
 
               {cards.length === 0 && (
@@ -8035,10 +8068,24 @@ function CampaignBuilder({ settings }) {
               {cardPick && (
                 <CreativePicker allowed={['1:1']} storeIds={storeId?[storeId]:null}
                   onPick={function(c){
+                    let index = -1;
                     setCards(function(prev){
                       if (prev.length >= 10) return prev;
-                      return prev.concat({ url:c.public_url, headline:'', description:'', link:'' });
+                      index = prev.length;
+                      return prev.concat({ url:c.public_url, headline:'', description:'', link:'',
+                                           featureId: c.feature_id || null });
                     });
+                    // Filled straight from the feature it was made for. No API
+                    // call, no wait, and the numbers are the real ones.
+                    if (index >= 0 && c.feature_id) {
+                      getSB().from('features').select('*').eq('id', c.feature_id).maybeSingle()
+                        .then(function(res){
+                          const copy = cardCopyFromFeature(res.data);
+                          if (!copy) return;
+                          setCards(prev => prev.map((x, ix) =>
+                            ix === index ? Object.assign({}, x, copy) : x));
+                        });
+                    }
                   }}
                   onClose={()=>setCardPick(false)}/>
               )}
@@ -8067,6 +8114,74 @@ function CampaignBuilder({ settings }) {
       <Button onClick={launch} loading={running} className="w-full" size="lg"><Icon name="rocket"/> Create Campaign (starts Paused)</Button>
     </div>
   );
+}
+
+// ─────────────────────────────────────────────
+// CAROUSEL CARD COPY
+// ─────────────────────────────────────────────
+// Two ways to fill a card, and the cheap one is also the accurate one.
+//
+// A creative generated from a monthly feature carries feature_id, so the exact
+// name, price and saving are one query away — no guessing, no cost, no waiting.
+// Reading numbers back off an image we rendered ourselves would be daft.
+//
+// Only when that link is missing does the image go to a vision model.
+
+async function urlToBase64(url) {
+  const blob = await (await fetch(url)).blob();
+  const dataUrl = await new Promise(function(res, rej) {
+    const fr = new FileReader();
+    fr.onload = () => res(fr.result);
+    fr.onerror = () => rej(new Error('Could not read the image'));
+    fr.readAsDataURL(blob);
+  });
+  const comma = dataUrl.indexOf(',');
+  return {
+    base64: dataUrl.slice(comma + 1),
+    mime: (dataUrl.slice(0, comma).match(/^data:([^;]+)/) || [, 'image/png'])[1],
+  };
+}
+
+const clip = (t, n) => {
+  const s = String(t || '').trim();
+  return s.length <= n ? s : s.slice(0, n - 1).trimEnd() + '…';
+};
+
+// Headline and description straight from the feature row.
+function cardCopyFromFeature(f) {
+  if (!f) return null;
+  const bits = [];
+  if (f.sale_price != null) bits.push(money(f.sale_price));
+  if (f.savings != null && Number(f.savings) > 0) bits.push('save ' + money(f.savings));
+  else if (f.reg_price != null && Number(f.reg_price) > Number(f.sale_price)) {
+    bits.push('was ' + money(f.reg_price));
+  }
+  if (f.size) bits.push(f.size);
+  return {
+    headline: clip(f.name, 40),
+    description: clip(bits.join(' · '), 60),
+  };
+}
+
+async function cardCopyFromImage(url) {
+  const { base64, mime } = await urlToBase64(url);
+  const prompt =
+    'This is a retail ad for a liquor store in British Columbia. ' +
+    'Read the product name and any price or saving printed on it.\n' +
+    'Reply with JSON only, no code fence: {"headline":"","description":""}\n' +
+    'headline: the product name as printed, at most 40 characters. ' +
+    'description: the price and saving if shown, like "$15.49 · save $4.00", at most 60 characters. ' +
+    'Leave description empty if no price is visible. ' +
+    'Invent nothing. Canadian English spelling. No hashtags, no emoji.';
+  const r = await callEdge('meta-social', 'aiDescribeImage', { base64, mime, prompt });
+  const raw = String(r.text || '').replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch(e) { throw new Error('Could not read that image'); }
+  return {
+    headline: clip(stripHashtags(parsed.headline || ''), 40),
+    description: clip(stripHashtags(parsed.description || ''), 60),
+  };
 }
 
 // ─────────────────────────────────────────────

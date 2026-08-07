@@ -1838,6 +1838,7 @@ function RecipesPage({ isAdmin, myStores }) {
         'The first ingredient must be exactly "' + label + '" — name the product itself, ' +
         'not a generic spirit, and give it a measure. Every other ingredient should be ' +
         'something an ordinary kitchen already has.\n' +
+        'Canadian English spelling throughout (colour, flavour, favourite, litre, centre).\n' +
         'glass: name the vessel in full, like "highball glass" or "copper mug", not just "highball". ' +
         'name: the drink name, 1 to 3 words. ' +
         'blurb: one sentence on what it tastes like. method: 2 to 4 short steps, ' +
@@ -3579,8 +3580,72 @@ const DOW_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 //
 // A hashtag starts with a letter or underscore: "#1 selling gin" and "aisle #3"
 // are ordinary English and survive untouched.
+// Canadian spelling. The prompts ask for it, but the models are trained mostly
+// on American text and drift back — especially in longer copy. This is the
+// belt to the prompt's braces.
+//
+// Deliberately narrow. Only words where Canadian usage is settled and the
+// American form would look wrong to a customer in BC. Left out on purpose:
+// -ize endings (Canadian keeps them), "program", "analyze", and whisky/whiskey
+// — Canadian whisky drops the e but Irish and American whiskey keep it, so
+// that one is a judgement call, not a substitution.
+const CA_SPELLINGS = [
+  [/\bcolor(s|ed|ing|ful|less)?\b/g,   'colour$1'],
+  [/\bflavor(s|ed|ing|ful|less)?\b/g,  'flavour$1'],
+  [/\bfavor(s|ed|ing)?\b/g,            'favour$1'],
+  [/\bfavorite(s)?\b/g,                'favourite$1'],
+  [/\bneighbor(s|hood|hoods|ing)?\b/g, 'neighbour$1'],
+  [/\bharbor(s)?\b/g,                  'harbour$1'],
+  [/\blabor(s|ed|ing)?\b/g,            'labour$1'],
+  [/\bhonor(s|ed|ing|able)?\b/g,       'honour$1'],
+  [/\bhumor(s|ed|ing|ous)?\b/g,        'humour$1'],
+  [/\bsavor(s|ed|ing)?\b/g,            'savour$1'],
+  [/\bsavory\b/g,                      'savoury'],
+  [/\bvapor(s)?\b/g,                   'vapour$1'],
+  [/\bcenter(s)?\b/g,                  'centre$1'],
+  [/\bcentered\b/g,                    'centred'],
+  [/\bliter(s)?\b/g,                   'litre$1'],
+  [/\bfiber(s)?\b/g,                   'fibre$1'],
+  [/\btheater(s)?\b/g,                 'theatre$1'],
+  [/\bcaliber(s)?\b/g,                 'calibre$1'],
+  [/\bsomber\b/g,                      'sombre'],
+  [/\bmaneuver(s|ed|ing)?\b/g,         'manoeuvre$1'],
+  [/\bgray(s|er|est|ish)?\b/g,         'grey$1'],
+  [/\btravel(ed|ing|er|ers)\b/g,       'travell$1'],
+  [/\bcancel(ed|ing)\b/g,              'cancell$1'],
+  [/\blabel(ed|ing)\b/g,               'labell$1'],
+  [/\bfuel(ed|ing)\b/g,                'fuell$1'],
+  [/\bcatalog(s)?\b/g,                 'catalogue$1'],
+  [/\bdialog(s)?\b/g,                  'dialogue$1'],
+  [/\bdefense\b/g,                     'defence'],
+  [/\boffense\b/g,                     'offence'],
+  // The noun. In this business it is always "a liquor licence".
+  [/\blicense(s)?\b/g,                 'licence$1'],
+];
+
+function canadianSpelling(text) {
+  let out = String(text || '');
+  CA_SPELLINGS.forEach(function(rule) {
+    // Both passes have to ignore case. Matching "Color" but rewriting with the
+    // lower-case pattern leaves it untouched, which is a silent no-op on every
+    // capitalised word — the ones at the start of a sentence.
+    const ci = new RegExp(rule[0].source, 'i');
+    out = out.replace(new RegExp(rule[0].source, 'gi'), function(match) {
+      const replaced = match.replace(ci, rule[1]);
+      // Carry the original casing across: COLOR, Color and color all keep
+      // their shape.
+      if (match === match.toUpperCase() && match.length > 1) return replaced.toUpperCase();
+      if (match[0] === match[0].toUpperCase()) {
+        return replaced.charAt(0).toUpperCase() + replaced.slice(1);
+      }
+      return replaced;
+    });
+  });
+  return out;
+}
+
 function stripHashtags(text) {
-  return String(text || '')
+  return canadianSpelling(String(text || ''))
     .replace(/(^|[\s(])#[A-Za-z_]\w*/g, '$1')
     .replace(/\(\s*\)/g, '')
     .replace(/[ \t]{2,}/g, ' ')
@@ -3789,7 +3854,8 @@ function PostPlanBuilder({ storeId, storeName, period, rows, products, onClose, 
           'These prices run all of ' + monthLabel(period) + '. Say "this month", never "this week", ' +
           '"today", "this weekend" or anything else that implies a shorter window — ' +
           'the same products are posted repeatedly through the month.\n' +
-          'Rules: 2 to 3 sentences, warm and straightforward, no hashtags at all, ' +
+          'Rules: Canadian English spelling throughout (colour, flavour, favourite, litre, centre). ' +
+          '2 to 3 sentences, warm and straightforward, no hashtags at all, ' +
           'no emoji, do not invent prices or claims, do not mention delivery. ' +
           'Do not add a disclaimer about tax or deposit — one is appended automatically. ' +
           'Vary the wording — this product may appear in several posts this month. ' +
@@ -6774,9 +6840,9 @@ function AIWriter({ storeName, apiKey, mode='caption', onResult, seedTopic='' })
     try {
       let prompt;
       if (mode==='caption') {
-        prompt = `Write a ${tone.toLowerCase()} Facebook post caption for "${storeName}", an independent retail liquor store in BC, Canada.\n\nPost topic/promotion: ${topic}${extra?`\n\nAdditional instructions: ${extra}`:''}\n\nRules:\n- Under 280 characters\n- Engaging and authentic\n- No hashtags, ever\n- Output ONLY the caption text with no quotes, labels, or explanation`;
+        prompt = `Write a ${tone.toLowerCase()} Facebook post caption for "${storeName}", an independent retail liquor store in BC, Canada.\n\nPost topic/promotion: ${topic}${extra?`\n\nAdditional instructions: ${extra}`:''}\n\nRules:\n- Under 280 characters\n- Engaging and authentic\n- No hashtags, ever\n- Canadian English spelling (colour, flavour, favourite, litre, centre)\n- Output ONLY the caption text with no quotes, labels, or explanation`;
       } else {
-        prompt = `Write Facebook ad copy for "${storeName}", an independent retail liquor store in BC, Canada.\n\nPromotion: ${topic}\nTone: ${tone}${extra?`\nNotes: ${extra}`:''}\n\nOutput EXACTLY two lines:\nHEADLINE: [max 25 characters]\nBODY: [max 90 characters]\n\nNo other text.`;
+        prompt = `Write Facebook ad copy for "${storeName}", an independent retail liquor store in BC, Canada.\n\nPromotion: ${topic}\nTone: ${tone}${extra?`\nNotes: ${extra}`:''}\n\nCanadian English spelling (colour, flavour, favourite, litre, centre). No hashtags.\n\nOutput EXACTLY two lines:\nHEADLINE: [max 25 characters]\nBODY: [max 90 characters]\n\nNo other text.`;
       }
       const result = stripHashtags(await callAI(prompt, apiKey, 400));
       onResult(result, mode);

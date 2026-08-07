@@ -7823,6 +7823,7 @@ function CampaignBuilder({ settings }) {
   const [optimizeOrder, setOptimizeOrder] = useState(false);
   const [endCard,     setEndCard]     = useState(true);
   const [writing,     setWriting]     = useState(false);
+  const [built,       setBuilt]       = useState(null);   // what the last build produced
   const [showAdCreatives, setShowAdCreatives] = useState(false);
   const [adCreativeUrl, setAdCreativeUrl] = useState(null);
   const [adImg,       setAdImg]       = useState(null);
@@ -7885,7 +7886,8 @@ function CampaignBuilder({ settings }) {
       if (cards.length > 10) { toast.error('Meta allows at most 10 carousel cards'); return; }
     }
 
-    setRunning(true); setSteps([{ label: 'Sending to server…', status: 'running', detail: '' }]);
+    setRunning(true); setBuilt(null);
+    setSteps([{ label: 'Sending to server…', status: 'running', detail: '' }]);
 
     try {
       // Upload ad image to Storage first if provided
@@ -7924,7 +7926,8 @@ function CampaignBuilder({ settings }) {
         endCard: endCard,
       });
       setSteps(result.steps || []);
-      toast.success('Campaign created!');
+      setBuilt(result);
+      toast.success('Campaign created — paused until you switch it on');
     } catch(e) {
       setSteps(function(p) { var a=[...p]; if(a.length) a[a.length-1]={...a[a.length-1],status:'error',detail:e.message}; return a; });
       toast.error('Failed: ' + e.message);
@@ -8186,7 +8189,30 @@ function CampaignBuilder({ settings }) {
           )}
         </div>
       </Card>
-      {steps.length>0 && <Card><h3 className="text-sm font-bold text-gray-900 dark:text-white mb-3 uppercase tracking-wide">Build Progress</h3><StepIndicator steps={steps}/></Card>}
+      {steps.length>0 && (
+        <Card>
+          <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-3 uppercase tracking-wide">Build Progress</h3>
+          <StepIndicator steps={steps}/>
+
+          {built && built.managerUrl && (
+            <div className="mt-4 pt-4" style={{borderTop:'1px solid var(--line)'}}>
+              <p className="text-xs mb-3" style={{color:'var(--txt2)'}}>
+                Nothing is spending yet. Everything was created paused — read it over
+                in Ads Manager, then switch the campaign on there.
+              </p>
+              <div className="flex gap-2 flex-wrap items-center">
+                {/* Opened in a new tab so a half-filled builder isn't lost. */}
+                <a href={built.managerUrl} target="_blank" rel="noopener noreferrer">
+                  <Button size="sm"><Icon name="up"/> Open in Ads Manager</Button>
+                </a>
+                <span className="mono text-xs" style={{color:'var(--txt3)'}}>
+                  Campaign {built.campaignId}
+                </span>
+              </div>
+            </div>
+          )}
+        </Card>
+      )}
       <Button onClick={launch} loading={running} className="w-full" size="lg"><Icon name="rocket"/> Create Campaign (starts Paused)</Button>
     </div>
   );

@@ -428,8 +428,23 @@ Deno.serve(async (req) => {
       }, token);
       steps[steps.length - 1] = { label: 'Ad created', status: 'done', detail: `ID: ${ad.id}` };
 
-      addStep('🎉 Campaign created — all assets PAUSED', 'done', 'Activate in Meta Ads Manager when ready.');
-      return Response.json({ steps, campaignId: camp.id }, { headers: corsHeaders });
+      addStep('Campaign created — everything is PAUSED', 'done', 'Review it, then switch it on in Ads Manager.');
+
+      // Ads Manager wants the bare numeric account id; meta_accounts stores it
+      // with the act_ prefix the Graph paths need.
+      const bareAccount = String(adAccountId).replace(/^act_/, '');
+      const managerUrl =
+        `https://adsmanager.facebook.com/adsmanager/manage/campaigns` +
+        `?act=${bareAccount}&selected_campaign_ids=${camp.id}`;
+
+      return Response.json({
+        steps,
+        campaignId: camp.id,
+        adSetId: adSet.id,
+        adId: ad.id,
+        adAccountId: bareAccount,
+        managerUrl,
+      }, { headers: corsHeaders });
     }
 
     // ── tokenStatus ──────────────────────────────────────────────────────────

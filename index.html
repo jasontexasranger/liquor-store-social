@@ -3546,8 +3546,30 @@ function PostPlanBuilder({ storeId, storeName, period, rows, products, onClose, 
   const [busy,     setBusy]     = useState(false);
   const [progress, setProgress] = useState({ n:0, total:0, label:'' });
   const [result,   setResult]   = useState(null);
+  // Times already spoken for by posts made elsewhere — by hand, by an earlier
+  // plan, or by the recipe builder.
+  const [busySlots, setBusySlots] = useState([]);
 
   const n = cadence === 'custom' ? perWeek : Number(cadence[0]);
+
+  useEffect(function() {
+    const sb = getSB(); if (!sb || !storeId || !period) return;
+    const [y, m] = String(period).split('-').map(Number);
+    const from = new Date(y, m-1, 1).toISOString();
+    const to   = new Date(y, m, 1).toISOString();
+    let alive = true;
+    sb.from('scheduled_posts')
+      .select('scheduled_at, status')
+      .eq('store_id', storeId)
+      .gte('scheduled_at', from).lt('scheduled_at', to)
+      // A post that failed or was never approved isn't occupying its slot.
+      .in('status', ['needs_approval','pending','publishing','published'])
+      .then(function(res) {
+        if (!alive) return;
+        setBusySlots((res.data || []).map(r => new Date(r.scheduled_at).getTime()));
+      });
+    return function(){ alive = false; };
+  }, [storeId, period, result]);
 
   // Keep the slot list the same length as the cadence.
   useEffect(function() {
@@ -3580,11 +3602,27 @@ function PostPlanBuilder({ storeId, storeName, period, rows, products, onClose, 
   };
 
   const eligible = rows.filter(r => r.product_id && products.some(p => p.id === r.product_id));
-  const maxPerPost = channels.includes('instagram') ? 10 : 10;
   const groups = groupFeatures(eligible, products, grouping, 4);
-  const slots  = planSlots(period, times, groups.length, new Date());
-  const planned = groups.slice(0, slots.length);
-  const overflow = groups.length - planned.length;
+
+  // Every slot left in the month, not just enough for one pass through the
+  // features. Twelve features at three a week leaves half of August empty
+  // otherwise, and a feature is on all month — running it twice is the point.
+  const allSlots = planSlots(period, times, 9999, new Date());
+
+  // A slot is taken if something is already booked near it. Two posts ninety
+  // minutes apart read as a double post, so the guard is a window rather than
+  // an exact match.
+  const NEAR_MS = 90 * 60 * 1000;
+  const isTaken = when => busySlots.some(t => Math.abs(t - when.getTime()) < NEAR_MS);
+
+  const freeSlots = allSlots.filter(sl => !isTaken(sl));
+  const blocked   = allSlots.length - freeSlots.length;
+
+  // Features cycle round so the month fills evenly and the same product never
+  // lands twice in a row while others are still waiting for their first run.
+  const planned = groups.length
+    ? freeSlots.map((when, i) => ({ when, group: groups[i % groups.length] }))
+    : [];
 
   const creativeFor = row =>
     creatives.filter(c => c.feature_id === row.id)
@@ -3613,8 +3651,8 @@ function PostPlanBuilder({ storeId, storeName, period, rows, products, onClose, 
       if (planErr) throw planErr;
 
       for (let i = 0; i < planned.length; i++) {
-        const group = planned[i];
-        const when  = slots[i];
+        const group = planned[i].group;
+        const when  = planned[i].when;
         setProgress({ n:i+1, total:planned.length, label: group.map(g=>g.name).join(', ') });
 
         const lines = group.map(function(r) {
@@ -3630,9 +3668,13 @@ function PostPlanBuilder({ storeId, storeName, period, rows, products, onClose, 
           'Write a short Facebook and Instagram post for ' + storeName + ', a liquor store in British Columbia.\n\n' +
           (group.category ? 'This post features our ' + group.category + ' specials:\n' : 'This post features:\n') +
           lines + '\n\n' +
+          'These prices run all of ' + monthLabel(period) + '. Say "this month", never "this week", ' +
+          '"today", "this weekend" or anything else that implies a shorter window — ' +
+          'the same products are posted repeatedly through the month.\n' +
           'Rules: 2 to 3 sentences, warm and straightforward, no hashtags at all, ' +
           'no emoji, do not invent prices or claims, do not mention delivery. ' +
           'Do not add a disclaimer about tax or deposit — one is appended automatically. ' +
+          'Vary the wording — this product may appear in several posts this month. ' +
           'Return only the post text.';
 
         let caption = '';
@@ -3836,34 +3878,41 @@ function PostPlanBuilder({ storeId, storeName, period, rows, products, onClose, 
               {planned.length === 0 ? (
                 <p className="text-xs" style={{color:'var(--amb)'}}>
                   Nothing to schedule — features need a linked product photo, and there must be
-                  slots left in {monthLabel(period)}.
+                  free slots left in {monthLabel(period)}.
                 </p>
               ) : (
-                <div style={{maxHeight:'170px', overflowY:'auto'}}>
-                  {planned.map(function(g, i) {
+                <div style={{maxHeight:'190px', overflowY:'auto'}}>
+                  {planned.map(function(p, i) {
                     return (
                       <div key={i} className="flex gap-2 text-xs py-0.5">
                         <span className="mono flex-none" style={{color:'var(--cy)', width:'92px'}}>
-                          {DOW_NAMES[slots[i].getDay()]} {slots[i].getDate()} {hourLabel(slots[i].getHours())}
+                          {DOW_NAMES[p.when.getDay()]} {p.when.getDate()} {hourLabel(p.when.getHours())}
                         </span>
                         <span className="truncate" style={{color:'var(--txt2)'}}>
-                          {g.category ? g.category + ' — ' : ''}{g.map(x=>x.name).join(', ')}
+                          {p.group.category ? p.group.category + ' — ' : ''}
+                          {p.group.map(x=>x.name).join(', ')}
                         </span>
                       </div>
                     );
                   })}
                 </div>
               )}
-              {overflow > 0 && (
+              {blocked > 0 && (
                 <p className="text-xs mt-2" style={{color:'var(--amb)'}}>
-                  {overflow} more won't fit before the month ends — raise the frequency or plan them next month.
+                  {blocked} slot{blocked===1?'':'s'} skipped — something is already scheduled there.
+                </p>
+              )}
+              {planned.length > 0 && groups.length > 0 && (
+                <p className="lbl mt-2">
+                  {groups.length} feature{groups.length===1?'':'s'} across {planned.length} posts —
+                  about {Math.round(planned.length / groups.length * 10) / 10} runs each.
                 </p>
               )}
             </div>
 
             <div className="flex gap-2 justify-end items-center">
               <span className="lbl mr-auto">
-                {planned.length} post{planned.length===1?'':'s'} · copy written by AI · all need approval
+                {planned.length} post{planned.length===1?'':'s'} filling {monthLabel(period)} · all need approval
               </span>
               <Button size="sm" variant="outline" onClick={onClose}>Cancel</Button>
               <Button size="sm" onClick={generate} disabled={!planned.length}>

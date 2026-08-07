@@ -208,6 +208,11 @@ Deno.serve(async (req) => {
         objective,
         status: 'PAUSED',
         special_ad_categories: [],
+        // Meta insists this is stated outright when the budget sits on the ad
+        // set rather than the campaign. False keeps each ad set's budget its
+        // own; true lets Meta move 20% of it between ad sets. These campaigns
+        // have a single ad set, so sharing has nothing to share with.
+        is_adset_budget_sharing_enabled: false,
       }, token);
       steps[steps.length - 1] = { label: 'Campaign created', status: 'done', detail: `ID: ${camp.id}` };
 

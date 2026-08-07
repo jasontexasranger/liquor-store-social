@@ -361,28 +361,20 @@ Deno.serve(async (req) => {
         return hash;
       };
 
-      // Get Directions has to point somewhere a map can open. A website or a
-      // Page URL is a valid link but not a destination, and Meta rejects it —
-      // which is the "should represent a valid URL" error, unhelpfully worded.
-      // The store's own coordinates are the right answer, and they're on hand.
-      const directionsUrl = (acct.lat != null && acct.lng != null)
-        ? `https://www.google.com/maps/dir/?api=1&destination=${acct.lat},${acct.lng}`
-        : (acct.address
-            ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(acct.address)}`
-            : null);
-
-      let linkUrl: string;
+      // GET_DIRECTIONS belongs to local awareness ads built on place page sets,
+      // not to the link ads created here. Meta refuses it with "should
+      // represent a valid URL", which reads like a broken link and isn't one —
+      // no URL will satisfy it. Rejected up front with an explanation rather
+      // than passed through to fail obscurely.
       if (ctaType === 'GET_DIRECTIONS') {
-        if (!directionsUrl) {
-          throw new Error(
-            'Get Directions needs the store\'s location. Set it under Settings → Store locations, ' +
-            'or choose a different call to action.'
-          );
-        }
-        linkUrl = directionsUrl;
-      } else {
-        linkUrl = destUrl?.trim() || `https://www.facebook.com/${acct.fb_page_id}`;
+        throw new Error(
+          'Meta does not accept Get Directions on this kind of ad. Choose Learn More ' +
+          "and use the store's map link as the destination — there's a button for it " +
+          'beside the Destination URL.'
+        );
       }
+
+      const linkUrl = destUrl?.trim() || `https://www.facebook.com/${acct.fb_page_id}`;
 
       // Anything else is rejected four calls deep with a vague message, so it
       // is checked before a single object is created.

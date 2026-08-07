@@ -200,7 +200,7 @@ Deno.serve(async (req) => {
 
       const { data: acct } = await sb
         .from('meta_accounts')
-        .select('fb_page_id, ad_account_id')
+        .select('fb_page_id, ad_account_id, address, lat, lng')
         .eq('store_id', storeId)
         .single();
       if (!acct) throw new Error('Store not found in meta_accounts');
@@ -361,7 +361,39 @@ Deno.serve(async (req) => {
         return hash;
       };
 
-      const linkUrl = destUrl?.trim() || `https://www.facebook.com/${acct.fb_page_id}`;
+      // Get Directions has to point somewhere a map can open. A website or a
+      // Page URL is a valid link but not a destination, and Meta rejects it —
+      // which is the "should represent a valid URL" error, unhelpfully worded.
+      // The store's own coordinates are the right answer, and they're on hand.
+      const directionsUrl = (acct.lat != null && acct.lng != null)
+        ? `https://www.google.com/maps/dir/?api=1&destination=${acct.lat},${acct.lng}`
+        : (acct.address
+            ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(acct.address)}`
+            : null);
+
+      let linkUrl: string;
+      if (ctaType === 'GET_DIRECTIONS') {
+        if (!directionsUrl) {
+          throw new Error(
+            'Get Directions needs the store\'s location. Set it under Settings → Store locations, ' +
+            'or choose a different call to action.'
+          );
+        }
+        linkUrl = directionsUrl;
+      } else {
+        linkUrl = destUrl?.trim() || `https://www.facebook.com/${acct.fb_page_id}`;
+      }
+
+      // Anything else is rejected four calls deep with a vague message, so it
+      // is checked before a single object is created.
+      try {
+        const u = new URL(linkUrl);
+        if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new Error('scheme');
+      } catch {
+        throw new Error(
+          `"${linkUrl}" is not a valid destination URL — it needs to start with https://`
+        );
+      }
 
       let imageHash: string | null = null;
       const cardHashes: Array<string | null> = [];

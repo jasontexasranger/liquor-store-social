@@ -8099,7 +8099,9 @@ function CampaignBuilder({ settings }) {
               <Input value={destUrl} onChange={e=>setDestUrl(e.target.value)}
                      placeholder="https://yourstore.com" type="url"/>
               <p className="lbl mt-1">
-                {destUrl.trim()
+                {ctaType === 'GET_DIRECTIONS'
+                  ? 'Ignored for Get Directions — that sends people to the store\'s map pin.'
+                  : destUrl.trim()
                   ? 'Blank falls back to the store\'s Facebook Page.'
                   : 'Set a website under Brand to fill this in automatically.'}
               </p>

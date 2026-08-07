@@ -111,13 +111,27 @@ Deno.serve(async (req) => {
         storeId, campName, objective, dailyBudget,
         lat, lng, radius, ageMin, ageMax, placements,
         headline, bodyText, ctaType, destUrl, imageUrl,
+        cards, optimizeOrder, endCard,
       } = params as {
         storeId: string; campName: string; objective: string;
         dailyBudget: number; lat: number; lng: number; radius: number;
         ageMin: number; ageMax: number; placements: string[];
         headline: string; bodyText: string; ctaType: string;
         destUrl: string; imageUrl?: string;
+        // Carousel. Two to ten cards, each its own image, headline, description
+        // and optional link. Absent or shorter than two means a single image ad.
+        cards?: Array<{ imageUrl: string; headline?: string; description?: string; link?: string }>;
+        optimizeOrder?: boolean;   // let Meta reorder cards by performance
+        endCard?: boolean;         // append the Page profile card at the end
       };
+
+      const carousel = Array.isArray(cards) ? cards.filter(c => c && c.imageUrl) : [];
+      if (carousel.length === 1) {
+        throw new Error('A carousel needs at least two cards — remove the extra image to run a single-image ad');
+      }
+      if (carousel.length > 10) {
+        throw new Error('Meta allows at most 10 carousel cards');
+      }
 
       const { data: acct } = await sb
         .from('meta_accounts')
@@ -182,32 +196,73 @@ Deno.serve(async (req) => {
       }, token);
       steps[steps.length - 1] = { label: 'Ad set created', status: 'done', detail: `ID: ${adSet.id}` };
 
-      // Optional image upload
-      let imageHash: string | null = null;
-      if (imageUrl) {
-        addStep('Uploading image…', 'running');
-        // Fetch image as binary, re-upload to Meta ad images
-        const imgRes = await fetch(imageUrl);
+      // Meta needs the bytes in its own image library; a URL isn't enough.
+      const uploadImage = async (url: string, i: number): Promise<string | null> => {
+        const imgRes = await fetch(url);
+        if (!imgRes.ok) throw new Error(`Could not fetch ad image ${i + 1} (${imgRes.status})`);
         const imgBlob = await imgRes.blob();
-        const imgBase64 = btoa(
-          new Uint8Array(await imgBlob.arrayBuffer()).reduce((d, b) => d + String.fromCharCode(b), '')
-        );
-        const imgName = `image_${Date.now()}.jpg`;
-        const uploadRes = await gPost(`/${adAccountId}/adimages`, { [imgName]: imgBase64 }, token);
-        imageHash = uploadRes.images ? Object.values(uploadRes.images)[0]?.hash ?? null : null;
+        const bytes = new Uint8Array(await imgBlob.arrayBuffer());
+        // Chunked: reduce() over a multi-megabyte array builds the string one
+        // character at a time and apply() on the whole thing blows the stack.
+        let bin = '';
+        for (let j = 0; j < bytes.length; j += 8192) {
+          bin += String.fromCharCode.apply(null, Array.from(bytes.subarray(j, j + 8192)));
+        }
+        const imgName = `image_${Date.now()}_${i}.jpg`;
+        const uploadRes = await gPost(`/${adAccountId}/adimages`, { [imgName]: btoa(bin) }, token);
+        return uploadRes.images ? Object.values(uploadRes.images)[0]?.hash ?? null : null;
+      };
+
+      const linkUrl = destUrl?.trim() || `https://www.facebook.com/${acct.fb_page_id}`;
+
+      let imageHash: string | null = null;
+      const cardHashes: Array<string | null> = [];
+
+      if (carousel.length >= 2) {
+        addStep(`Uploading ${carousel.length} carousel images…`, 'running');
+        for (let i = 0; i < carousel.length; i++) {
+          cardHashes.push(await uploadImage(carousel[i].imageUrl, i));
+        }
+        const ok = cardHashes.filter(Boolean).length;
+        if (ok < 2) throw new Error('Fewer than two carousel images uploaded successfully');
+        steps[steps.length - 1] = { label: `${ok} carousel images uploaded`, status: 'done', detail: '' };
+      } else if (imageUrl) {
+        addStep('Uploading image…', 'running');
+        imageHash = await uploadImage(imageUrl, 0);
         steps[steps.length - 1] = { label: 'Image uploaded', status: 'done', detail: imageHash ? `Hash: ${imageHash}` : 'Uploaded' };
       }
 
       // Creative
       addStep('Creating ad creative…', 'running');
-      const linkUrl = destUrl?.trim() || `https://www.facebook.com/${acct.fb_page_id}`;
       const linkData: Record<string, unknown> = {
         message: bodyText,
-        name: headline,
         link: linkUrl,
         call_to_action: { type: ctaType, value: { link: linkUrl } },
       };
-      if (imageHash) linkData.image_hash = imageHash;
+
+      if (carousel.length >= 2) {
+        // With child_attachments the top-level name and image_hash are ignored,
+        // and setting them anyway makes Meta reject the creative.
+        linkData.child_attachments = carousel.map((c, i) => {
+          const cardLink = (c.link || '').trim() || linkUrl;
+          const att: Record<string, unknown> = {
+            link: cardLink,
+            image_hash: cardHashes[i],
+            call_to_action: { type: ctaType, value: { link: cardLink } },
+          };
+          if (c.headline?.trim())    att.name = c.headline.trim();
+          if (c.description?.trim()) att.description = c.description.trim();
+          return att;
+        }).filter(a => a.image_hash);
+
+        // Meta reorders cards by performance unless told the sequence matters —
+        // it does for a "1, 2, 3" story, so this is opt-in.
+        linkData.multi_share_optimized = !!optimizeOrder;
+        linkData.multi_share_end_card  = !!endCard;
+      } else {
+        linkData.name = headline;
+        if (imageHash) linkData.image_hash = imageHash;
+      }
 
       const creative = await gPost(`/${adAccountId}/adcreatives`, {
         name: `${campName} — Creative`,

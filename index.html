@@ -7803,6 +7803,13 @@ function CampaignBuilder({ settings }) {
   const [bodyText,    setBodyText]    = useState('');
   const [ctaType,     setCtaType]     = useState('LEARN_MORE');
   const [destUrl,     setDestUrl]     = useState('');
+  // Carousel. Cards are held separately from the single ad image so switching
+  // format back and forth doesn't lose either one.
+  const [format,      setFormat]      = useState('single');   // 'single' | 'carousel'
+  const [cards,       setCards]       = useState([]);
+  const [cardPick,    setCardPick]    = useState(false);
+  const [optimizeOrder, setOptimizeOrder] = useState(false);
+  const [endCard,     setEndCard]     = useState(true);
   const [showAdCreatives, setShowAdCreatives] = useState(false);
   const [adCreativeUrl, setAdCreativeUrl] = useState(null);
   const [adImg,       setAdImg]       = useState(null);
@@ -7830,8 +7837,13 @@ function CampaignBuilder({ settings }) {
 
   const launch = async () => {
     if (!campName.trim())  { toast.error('Enter a campaign name'); return; }
-    if (!headline.trim()||!bodyText.trim()) { toast.error('Enter headline and body copy'); return; }
+    if (!bodyText.trim())  { toast.error('Enter the primary text'); return; }
+    if (format === 'single' && !headline.trim()) { toast.error('Enter a headline'); return; }
     if (placements.length===0) { toast.error('Select at least one placement'); return; }
+    if (format === 'carousel') {
+      if (cards.length < 2)  { toast.error('A carousel needs at least 2 cards'); return; }
+      if (cards.length > 10) { toast.error('Meta allows at most 10 carousel cards'); return; }
+    }
 
     setRunning(true); setSteps([{ label: 'Sending to server…', status: 'running', detail: '' }]);
 
@@ -7860,7 +7872,12 @@ function CampaignBuilder({ settings }) {
         bodyText: bodyText,
         ctaType: ctaType,
         destUrl: destUrl,
-        imageUrl: imageUrl,
+        imageUrl: format === 'carousel' ? null : imageUrl,
+        cards: format === 'carousel'
+          ? cards.map(c => ({ imageUrl:c.url, headline:c.headline, description:c.description, link:c.link }))
+          : null,
+        optimizeOrder: optimizeOrder,
+        endCard: endCard,
       });
       setSteps(result.steps || []);
       toast.success('Campaign created!');
@@ -7909,12 +7926,126 @@ function CampaignBuilder({ settings }) {
         </div>
         {showAI && <div className="mb-4"><AIWriter storeName={store.name} mode="ad" onResult={handleAI}/></div>}
         <div className="space-y-3">
-          <div><Label>Headline <span className="text-gray-400 font-normal normal-case">({headline.length}/25)</span></Label><Input value={headline} onChange={e=>setHeadline(e.target.value)} maxLength={25} placeholder="Shop Our Whiskey Sale"/></div>
+          <div>
+            <Label>Format</Label>
+            <div className="flex" style={{border:'1px solid var(--line)', width:'fit-content'}}>
+              {[['single','Single image'],['carousel','Carousel']].map(function(fm) {
+                const on = format===fm[0];
+                return (
+                  <button key={fm[0]} onClick={()=>setFormat(fm[0])}
+                    className="px-3 py-1.5 text-xs uppercase tracking-[.14em]"
+                    style={{ background:on?'var(--cy-glow)':'transparent', color:on?'var(--cy)':'var(--txt2)' }}>
+                    {fm[1]}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {format === 'single' && (
+            <div><Label>Headline <span className="text-gray-400 font-normal normal-case">({headline.length}/25)</span></Label><Input value={headline} onChange={e=>setHeadline(e.target.value)} maxLength={25} placeholder="Shop Our Whiskey Sale"/></div>
+          )}
           <div><Label>Primary Text</Label><Textarea value={bodyText} onChange={e=>setBodyText(e.target.value)} rows={3} placeholder="Discover amazing local spirits…"/></div>
           <div className="grid grid-cols-2 gap-3">
             <div><Label>Call to Action</Label><Select value={ctaType} onChange={e=>setCtaType(e.target.value)}>{CTA_OPTIONS.map(c=><option key={c} value={c}>{c.replace(/_/g,' ')}</option>)}</Select></div>
             <div><Label>Destination URL</Label><Input value={destUrl} onChange={e=>setDestUrl(e.target.value)} placeholder="https://yourstore.com" type="url"/></div>
           </div>
+          {format === 'carousel' && (
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <Label className="mb-0">
+                  Cards <span className="text-gray-400 font-normal normal-case">({cards.length}/10)</span>
+                </Label>
+                <button onClick={()=>setCardPick(true)} className="text-xs font-semibold hover:underline"
+                        style={{color:'var(--cy)'}}>
+                  <Icon name="image"/> Add from library
+                </button>
+              </div>
+
+              {cards.length === 0 && (
+                <p className="lbl mb-2">
+                  Two cards minimum, ten maximum. Square images only — Meta crops
+                  everything else to 1:1 in the carousel.
+                </p>
+              )}
+
+              <div className="space-y-2">
+                {cards.map(function(c, i) {
+                  const setCard = (k,v) => setCards(prev => prev.map((x,ix)=> ix===i ? {...x,[k]:v} : x));
+                  const move = d => setCards(function(prev) {
+                    const next = prev.slice();
+                    const j = i + d;
+                    if (j < 0 || j >= next.length) return prev;
+                    const t = next[i]; next[i] = next[j]; next[j] = t;
+                    return next;
+                  });
+                  return (
+                    <div key={i} className="flex gap-3 p-2.5"
+                         style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.4)'}}>
+                      <div className="flex-none">
+                        <img src={c.url} alt="" className="object-cover"
+                             style={{width:'76px', height:'76px', border:'1px solid var(--line2)'}}/>
+                        <p className="lbl text-center mt-1">Card {i+1}</p>
+                      </div>
+                      <div className="flex-1 min-w-0 space-y-1.5">
+                        <Input value={c.headline} maxLength={40} className="text-xs"
+                               placeholder="Card headline"
+                               onChange={e=>setCard('headline', e.target.value)}/>
+                        <Input value={c.description} maxLength={60} className="text-xs"
+                               placeholder="Description (optional)"
+                               onChange={e=>setCard('description', e.target.value)}/>
+                        <Input value={c.link} className="text-xs" type="url"
+                               placeholder="Card link — blank uses the destination URL"
+                               onChange={e=>setCard('link', e.target.value)}/>
+                      </div>
+                      <div className="flex-none flex flex-col gap-1">
+                        <Button size="sm" variant="ghost" onClick={()=>move(-1)} disabled={i===0}
+                                aria-label="Move up"><Icon name="up" size={11}/></Button>
+                        <Button size="sm" variant="ghost" onClick={()=>move(1)}
+                                disabled={i===cards.length-1} aria-label="Move down">
+                          <Icon name="down" size={11}/>
+                        </Button>
+                        <Button size="sm" variant="ghost"
+                                onClick={()=>setCards(cards.filter((_,ix)=>ix!==i))}
+                                aria-label="Remove card"><Icon name="trash" size={11}/></Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="mt-3 space-y-1.5">
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input type="checkbox" className="mt-0.5" checked={optimizeOrder}
+                         onChange={e=>setOptimizeOrder(e.target.checked)}/>
+                  <span className="text-xs" style={{color:'var(--txt2)'}}>
+                    Let Meta reorder the cards by performance
+                    <span className="lbl block">Leave off when the order tells a story or counts up a list.</span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-2 cursor-pointer">
+                  <input type="checkbox" className="mt-0.5" checked={endCard}
+                         onChange={e=>setEndCard(e.target.checked)}/>
+                  <span className="text-xs" style={{color:'var(--txt2)'}}>
+                    Finish with a card linking to the Page
+                  </span>
+                </label>
+              </div>
+
+              {cardPick && (
+                <CreativePicker allowed={['1:1']} storeIds={storeId?[storeId]:null}
+                  onPick={function(c){
+                    setCards(function(prev){
+                      if (prev.length >= 10) return prev;
+                      return prev.concat({ url:c.public_url, headline:'', description:'', link:'' });
+                    });
+                  }}
+                  onClose={()=>setCardPick(false)}/>
+              )}
+            </div>
+          )}
+
+          {format === 'single' && (
           <div>
             <div className="flex items-center justify-between mb-2">
               <Label className="mb-0">Ad Image (optional)</Label>
@@ -7929,6 +8060,7 @@ function CampaignBuilder({ settings }) {
                 onClose={()=>setShowAdCreatives(false)}/>
             )}
           </div>
+          )}
         </div>
       </Card>
       {steps.length>0 && <Card><h3 className="text-sm font-bold text-gray-900 dark:text-white mb-3 uppercase tracking-wide">Build Progress</h3><StepIndicator steps={steps}/></Card>}

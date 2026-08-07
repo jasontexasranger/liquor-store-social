@@ -3644,8 +3644,27 @@ function canadianSpelling(text) {
   return out;
 }
 
+// Models sometimes answer with a heading or a label before the copy —
+// "# Facebook & Instagram Post", "Caption:", "**Post**" — even when told to
+// return only the text. Left in, it publishes.
+function stripPreamble(text) {
+  let out = String(text || '').replace(/^\s+/, '');
+  for (let i = 0; i < 3; i++) {
+    const before = out;
+    // A markdown heading on its own line, or run straight into the copy.
+    out = out.replace(/^#{1,6}\s*[^\n]{0,60}?(post|caption|copy)\b[^\n]{0,20}\n+/i, '');
+    out = out.replace(/^#{1,6}\s*[^\n]{0,60}?(post|caption|copy)\b[:\-—]*\s+/i, '');
+    // A bare label line.
+    out = out.replace(/^\**(facebook|instagram|social)?\s*(and|&|\/)?\s*(facebook|instagram)?\s*(post|caption|copy)\**\s*[:\-—]\s*/i, '');
+    out = out.replace(/^\**\s*(post|caption|copy)\s*\**\s*\n+/i, '');
+    out = out.replace(/^\s+/, '');
+    if (out === before) break;
+  }
+  return out;
+}
+
 function stripHashtags(text) {
-  return canadianSpelling(String(text || ''))
+  return canadianSpelling(stripPreamble(text))
     .replace(/(^|[\s(])#[A-Za-z_]\w*/g, '$1')
     .replace(/\(\s*\)/g, '')
     .replace(/[ \t]{2,}/g, ' ')
@@ -10170,6 +10189,8 @@ function ScheduledPostsPanel() {
   const [loading,  setLoading]  = useState(false);
   const [canceling,setCanceling]= useState(null);
   const [reviewIx, setReviewIx] = useState(null);
+  const [picked,   setPicked]   = useState([]);   // ids ticked for a bulk action
+  const [bulk,     setBulk]     = useState(null);
   const [view,     setView]     = useState('list');
   const [detail,   setDetail]   = useState(null);
   const [editId,   setEditId]   = useState(null);
@@ -10257,6 +10278,48 @@ function ScheduledPostsPanel() {
   };
 
   const review  = posts.filter(function(p) { return p.status === 'needs_approval'; });
+
+  const togglePick = id => setPicked(function(prev) {
+    return prev.includes(id) ? prev.filter(x => x !== id) : prev.concat(id);
+  });
+  const allPicked = review.length > 0 && picked.length === review.length;
+
+  // Approve, reject and delete in one go. Approving runs on the reviewer's own
+  // token so the database records who did it — the edge function holds the
+  // service role and has no identity to record.
+  const bulkAct = async function(action) {
+    const ids = picked.filter(id => review.some(r => r.id === id));
+    if (!ids.length) return;
+
+    const word = action === 'approve' ? 'Approve' : action === 'reject' ? 'Reject' : 'Delete';
+    const warn = action === 'approve'
+      ? 'Approve ' + ids.length + ' post' + (ids.length===1?'':'s') + '? They publish automatically at their scheduled times, without anyone reading them again.'
+      : action === 'delete'
+      ? 'Delete ' + ids.length + ' post' + (ids.length===1?'':'s') + ' for good? This cannot be undone — reject instead if you only want to stop them going out.'
+      : 'Reject ' + ids.length + ' post' + (ids.length===1?'':'s') + '? They will not publish, and stay in the list marked rejected.';
+    if (!confirm(warn)) return;
+
+    setBulk(action);
+    try {
+      const sb = getSB();
+      let res;
+      if (action === 'delete') {
+        res = await sb.from('scheduled_posts').delete().in('id', ids).eq('status','needs_approval');
+      } else if (action === 'approve') {
+        res = await sb.from('scheduled_posts').update({ status:'pending' })
+                .in('id', ids).eq('status','needs_approval');
+      } else {
+        res = await sb.from('scheduled_posts')
+                .update({ status:'missed', error_msg:'Rejected in review' })
+                .in('id', ids).eq('status','needs_approval');
+      }
+      if (res.error) throw res.error;
+      toast.success(word + 'd ' + ids.length + ' post' + (ids.length===1?'':'s'));
+      setPicked([]);
+      await load();
+    } catch(e) { toast.error(e.message); }
+    finally { setBulk(null); }
+  };
   const pending = posts.filter(function(p) { return p.status === 'pending'; });
   const past    = posts.filter(function(p) { return p.status !== 'pending' && p.status !== 'needs_approval'; });
 
@@ -10304,14 +10367,48 @@ function ScheduledPostsPanel() {
             </Button>
           </div>
 
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input type="checkbox" checked={allPicked}
+                     onChange={function(){ setPicked(allPicked ? [] : review.map(r=>r.id)); }}/>
+              <span className="lbl">{allPicked ? 'None' : 'All'}</span>
+            </label>
+
+            {picked.length > 0 ? (
+              <React.Fragment>
+                <span className="lbl" style={{color:'var(--cy)'}}>{picked.length} selected</span>
+                <span className="flex-1"/>
+                <Button size="sm" variant="ghost" loading={bulk==='delete'}
+                        onClick={function(){ bulkAct('delete'); }}>
+                  <Icon name="trash" size={12}/> Delete
+                </Button>
+                <Button size="sm" variant="outline" loading={bulk==='reject'}
+                        onClick={function(){ bulkAct('reject'); }}>
+                  Reject
+                </Button>
+                <Button size="sm" loading={bulk==='approve'}
+                        onClick={function(){ bulkAct('approve'); }}>
+                  <Icon name="check" size={12}/> Approve {picked.length}
+                </Button>
+              </React.Fragment>
+            ) : (
+              <span className="lbl">Tick posts to approve, reject or delete several at once</span>
+            )}
+          </div>
+
           <div className="space-y-1.5">
             {review.map(function(p, ix) {
               var storeName = (STORES.find(function(s) { return s.id === p.store_id; }) || {}).name || p.store_id;
               var imgs = imagesOfPost(p);
               return (
-                <button key={p.id} onClick={function(){ setReviewIx(ix); }}
-                  className="flex items-center gap-3 w-full p-2 text-left"
-                  style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.45)'}}>
+                <div key={p.id} className="flex items-center gap-2 p-2"
+                  style={{border:'1px solid ' + (picked.includes(p.id) ? 'var(--cy)' : 'var(--line)'),
+                          background: picked.includes(p.id) ? 'var(--cy-glow)' : 'rgba(4,8,16,.45)'}}>
+                  <input type="checkbox" className="flex-none" checked={picked.includes(p.id)}
+                         onChange={function(){ togglePick(p.id); }}
+                         aria-label={'Select post for ' + storeName}/>
+                  <button onClick={function(){ setReviewIx(ix); }}
+                    className="flex items-center gap-3 flex-1 min-w-0 text-left">
                   {imgs.length
                     ? <img src={imgs[0]} alt="" className="w-11 h-11 object-cover flex-none"
                            style={{border:'1px solid var(--line2)'}}/>
@@ -10327,7 +10424,8 @@ function ScheduledPostsPanel() {
                     </p>
                   </div>
                   <Icon name="fwd" size={13} style={{color:'var(--cy)'}}/>
-                </button>
+                  </button>
+                </div>
               );
             })}
           </div>

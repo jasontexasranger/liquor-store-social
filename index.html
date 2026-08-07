@@ -7834,7 +7834,23 @@ function CampaignBuilder({ settings }) {
 
   const store = STORES.find(s=>s.id===storeId);
 
-  useEffect(()=>{ const s=STORES.find(x=>x.id===storeId); if(s){setLat(String(s.lat));setLng(String(s.lng));} },[storeId]);
+  // The saved location wins; the hardcoded constant is only a fallback for a
+  // store nobody has set up yet, and it is flagged as such in the UI.
+  const { forStore: locFor, loading: locLoading } = useStoreLocations();
+  const savedLoc = locFor(storeId);
+  const locIsSaved = !!(savedLoc && savedLoc.lat != null && savedLoc.lng != null);
+
+  useEffect(function(){
+    if (locLoading) return;
+    if (locIsSaved) {
+      setLat(String(savedLoc.lat));
+      setLng(String(savedLoc.lng));
+      if (savedLoc.ad_radius_km) setRadius(String(savedLoc.ad_radius_km));
+      return;
+    }
+    const s = STORES.find(x=>x.id===storeId);
+    if (s) { setLat(String(s.lat)); setLng(String(s.lng)); }
+  }, [storeId, locLoading, locIsSaved, savedLoc && savedLoc.lat, savedLoc && savedLoc.lng]);
 
   const togglePlacement = p => setPlacements(prev=>prev.includes(p)?prev.filter(x=>x!==p):[...prev,p]);
 
@@ -7993,6 +8009,18 @@ function CampaignBuilder({ settings }) {
           <div><Label>Latitude</Label><Input value={lat} onChange={e=>setLat(e.target.value)} placeholder="50.6745"/></div>
           <div><Label>Longitude</Label><Input value={lng} onChange={e=>setLng(e.target.value)} placeholder="-120.3273"/></div>
           <div><Label>Radius (km)</Label><Input type="number" min="1" max="80" value={radius} onChange={e=>setRadius(e.target.value)}/></div>
+        </div>
+        {!locLoading && !locIsSaved && (
+          <p className="text-xs mb-3" style={{color:'var(--amb)'}}>
+            <Icon name="warn" size={12} className="mr-1"/>
+            No saved location for this store — these are placeholder coordinates.
+            Set the real ones under Settings → Store locations before spending anything.
+          </p>
+        )}
+        {locIsSaved && savedLoc.address && (
+          <p className="lbl mb-3">Centred on {savedLoc.address}</p>
+        )}
+        <div className="grid grid-cols-3 gap-3 mb-4">
           <div>
             <Label>Min Age</Label>
             <Input type="number" min="19" max="65" value={ageMin} onChange={e=>setAgeMin(e.target.value)}/>
@@ -10054,6 +10082,133 @@ function UserAccountsSection({ currentUserId }) {
   );
 }
 
+// ─────────────────────────────────────────────
+// STORE LOCATIONS
+// ─────────────────────────────────────────────
+// Ad targeting is a circle around a point, so the point has to be right. Held
+// per store in meta_accounts and edited here rather than hardcoded, which is
+// how the app spent months aiming at the wrong town.
+function useStoreLocations() {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = useCallback(async function() {
+    const sb = getSB(); if (!sb) return;
+    const { data } = await sb.from('meta_accounts')
+      .select('store_id, address, lat, lng, ad_radius_km');
+    setRows(data || []); setLoading(false);
+  }, []);
+  useEffect(function(){ load(); }, [load]);
+
+  const save = async function(storeId, patch) {
+    const sb = getSB();
+    const { error } = await sb.from('meta_accounts').update(patch).eq('store_id', storeId);
+    if (error) throw error;
+    await load();
+  };
+
+  const forStore = id => rows.find(r => r.store_id === id) || null;
+  return { rows, loading, save, forStore, reload: load };
+}
+
+// "50.6745, -120.3273" is what Google Maps puts on the clipboard, so accept it
+// whole rather than making someone split it into two boxes.
+function parseLatLng(text) {
+  const m = String(text || '').match(/^\s*(-?\d+(?:\.\d+)?)\s*[, ]\s*(-?\d+(?:\.\d+)?)\s*$/);
+  if (!m) return null;
+  const lat = Number(m[1]), lng = Number(m[2]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+  return { lat, lng };
+}
+
+function StoreLocationsSection() {
+  const toast = useToast();
+  const { rows, loading, save } = useStoreLocations();
+  const [draft, setDraft] = useState({});
+  const [busy,  setBusy]  = useState(null);
+
+  const get = (id, key, fallback) => {
+    const d = draft[id] || {};
+    if (d[key] !== undefined) return d[key];
+    const row = rows.find(r => r.store_id === id) || {};
+    return row[key] != null ? row[key] : fallback;
+  };
+  const set = (id, key, val) =>
+    setDraft(prev => Object.assign({}, prev, { [id]: Object.assign({}, prev[id], { [key]: val }) }));
+
+  const commit = async function(st) {
+    const coords = parseLatLng(get(st.id, 'coords', ''));
+    const radius = Number(get(st.id, 'ad_radius_km', 15));
+    if (get(st.id, 'coords', '') && !coords) {
+      toast.error('Coordinates should look like  50.6745, -120.3273'); return;
+    }
+    if (!(radius >= 1 && radius <= 80)) { toast.error('Radius must be between 1 and 80 km'); return; }
+
+    setBusy(st.id);
+    try {
+      const patch = { address: get(st.id, 'address', '') || null, ad_radius_km: radius };
+      if (coords) { patch.lat = coords.lat; patch.lng = coords.lng; }
+      await save(st.id, patch);
+      setDraft(prev => Object.assign({}, prev, { [st.id]: {} }));
+      toast.success(st.name + ' location saved');
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(null); }
+  };
+
+  return (
+    <Card>
+      <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-1 uppercase tracking-wide">
+        <Icon name="store"/> Store locations
+      </h3>
+      <p className="lbl mb-4">
+        Ads target a circle around each store. In Google Maps, right-click the store
+        and click the coordinates to copy them, then paste them in below.
+      </p>
+
+      {loading ? <p className="lbl text-center py-6">Loading…</p> : STORES.map(function(st) {
+        const row = rows.find(r => r.store_id === st.id) || {};
+        const hasCoords = row.lat != null && row.lng != null;
+        return (
+          <div key={st.id} className="p-3 mb-2" style={{border:'1px solid var(--line)'}}>
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-xs font-semibold" style={{color:'var(--txt)'}}>{st.name}</span>
+              {hasCoords
+                ? <span className="mono text-xs" style={{color:'var(--cy)'}}>
+                    {Number(row.lat).toFixed(4)}, {Number(row.lng).toFixed(4)} · {row.ad_radius_km} km
+                  </span>
+                : <span className="lbl" style={{color:'var(--amb)'}}>Not set — ads fall back to a default</span>}
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <div className="sm:col-span-2">
+                <Label>Address</Label>
+                <Input className="text-xs" value={get(st.id,'address','')}
+                       placeholder="123 Main St, Town, BC"
+                       onChange={e=>set(st.id,'address',e.target.value)}/>
+              </div>
+              <div>
+                <Label>Radius (km)</Label>
+                <Input className="text-xs" type="number" min="1" max="80"
+                       value={get(st.id,'ad_radius_km',15)}
+                       onChange={e=>set(st.id,'ad_radius_km',e.target.value)}/>
+              </div>
+              <div className="sm:col-span-2">
+                <Label>Coordinates</Label>
+                <Input className="text-xs" value={get(st.id,'coords','')}
+                       placeholder={hasCoords ? Number(row.lat).toFixed(6)+', '+Number(row.lng).toFixed(6) : '50.6745, -120.3273'}
+                       onChange={e=>set(st.id,'coords',e.target.value)}/>
+              </div>
+              <div className="flex items-end">
+                <Button size="sm" onClick={()=>commit(st)} loading={busy===st.id}>Save</Button>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </Card>
+  );
+}
+
 function SettingsPage({ settings, onSave, currentUserId }) {
   const toast = useToast();
   const [form,   setForm]   = useState({ ...settings, tokens:{ ...settings.tokens } });
@@ -10072,6 +10227,7 @@ function SettingsPage({ settings, onSave, currentUserId }) {
   return (
     <div className="space-y-4 max-w-2xl">
       <UserAccountsSection currentUserId={currentUserId}/>
+      <StoreLocationsSection/>
       <Card>
         <h2 className="text-base font-bold text-gray-900 dark:text-white mb-1"><Icon name="lock"/> Credentials</h2>
         <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">

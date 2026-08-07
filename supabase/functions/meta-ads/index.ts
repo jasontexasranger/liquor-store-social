@@ -20,11 +20,33 @@ const corsHeaders = {
 
 // ─── Graph helpers ────────────────────────────────────────────────────────────
 
+// Meta's top-level message is often just "Invalid parameter", with the part
+// that tells you what to fix buried in error_user_msg or error_data. Throwing
+// only the message loses exactly the information needed, so everything useful
+// gets folded in — plus the endpoint, since a build makes five calls and
+// otherwise you cannot tell which one failed.
+function graphError(path: string, err: Record<string, unknown>): Error {
+  const bits: string[] = [];
+  const userMsg = (err.error_user_msg as string) || '';
+  const title   = (err.error_user_title as string) || '';
+  const blame   = (err.error_data as Record<string, unknown>)?.blame_field_specs;
+
+  bits.push(String(err.message ?? 'Graph API error'));
+  if (title && !bits[0].includes(title)) bits.push(title);
+  if (userMsg) bits.push(userMsg);
+  if (Array.isArray(blame) && blame.length) {
+    bits.push('Field: ' + blame.flat().join(', '));
+  }
+  const codes = [err.code, err.error_subcode].filter(Boolean).join('/');
+  const detail = bits.filter(Boolean).join(' — ');
+  return new Error(`${path}: ${detail}${codes ? ` [${codes}]` : ''}`);
+}
+
 async function gGet(path: string, params: Record<string, string>, token: string) {
   const qs = new URLSearchParams({ ...params, access_token: token }).toString();
   const res = await fetch(`${GRAPH}${path}?${qs}`);
   const data = await res.json();
-  if (data.error) throw new Error(data.error.message ?? 'Graph API error');
+  if (data.error) throw graphError(path, data.error);
   return data;
 }
 
@@ -35,7 +57,7 @@ async function gPost(path: string, body: Record<string, unknown>, token: string)
     body: JSON.stringify({ ...body, access_token: token }),
   });
   const data = await res.json();
-  if (data.error) throw new Error(data.error.message ?? 'Graph API error');
+  if (data.error) throw graphError(path, data.error);
   return data;
 }
 
@@ -112,6 +134,7 @@ Deno.serve(async (req) => {
         lat, lng, radius, ageMin, ageMax, placements,
         headline, bodyText, ctaType, destUrl, imageUrl,
         cards, optimizeOrder, endCard,
+        startTime, endTime, genders, budgetType,
       } = params as {
         storeId: string; campName: string; objective: string;
         dailyBudget: number; lat: number; lng: number; radius: number;
@@ -123,7 +146,22 @@ Deno.serve(async (req) => {
         cards?: Array<{ imageUrl: string; headline?: string; description?: string; link?: string }>;
         optimizeOrder?: boolean;   // let Meta reorder cards by performance
         endCard?: boolean;         // append the Page profile card at the end
+        startTime?: string;        // ISO. Absent means start when unpaused.
+        endTime?: string;          // ISO. Absent means run until stopped.
+        genders?: number[];        // [1] men, [2] women, empty or absent = all
+        budgetType?: string;       // 'daily' | 'lifetime'
       };
+
+      const lifetime = budgetType === 'lifetime';
+      if (lifetime && !endTime) {
+        throw new Error('A lifetime budget needs an end date — Meta has to know what to spread it over');
+      }
+      if (startTime && endTime && new Date(endTime) <= new Date(startTime)) {
+        throw new Error('The end date has to be after the start date');
+      }
+      if (endTime && new Date(endTime) <= new Date()) {
+        throw new Error('The end date is in the past');
+      }
 
       const carousel = Array.isArray(cards) ? cards.filter(c => c && c.imageUrl) : [];
       if (carousel.length === 1) {
@@ -157,10 +195,13 @@ Deno.serve(async (req) => {
 
       // Campaign
       addStep('Creating campaign…', 'running');
+      // OUTCOME_SALES normally optimises for OFFSITE_CONVERSIONS, which needs a
+      // pixel and a promoted_object. There isn't one, and asking for it is
+      // rejected — so sales campaigns optimise for clicks until a pixel exists.
       const objMeta: Record<string, string> = {
         OUTCOME_AWARENESS: 'REACH',
         OUTCOME_TRAFFIC: 'LINK_CLICKS',
-        OUTCOME_SALES: 'OFFSITE_CONVERSIONS',
+        OUTCOME_SALES: 'LINK_CLICKS',
       };
       const camp = await gPost(`/${adAccountId}/campaigns`, {
         name: campName,
@@ -172,28 +213,49 @@ Deno.serve(async (req) => {
 
       // Ad Set
       addStep('Creating ad set…', 'running');
+      // British Columbia's legal drinking age is 19, and Meta requires alcohol
+      // ads to be targeted no lower. Clamped here rather than trusted from the
+      // browser — this is a compliance floor, not a preference.
+      const MIN_AGE = 19;
       const targeting: Record<string, unknown> = {
         geo_locations: {
           custom_locations: [{ latitude: lat, longitude: lng, radius, distance_unit: 'kilometer' }],
         },
-        age_min: ageMin,
+        age_min: Math.max(MIN_AGE, ageMin || MIN_AGE),
         age_max: ageMax,
       };
+      // Meta reads an absent or empty genders array as everyone, which is what
+      // we want — sending [1,2] explicitly is the same thing said louder.
+      if (Array.isArray(genders) && genders.length === 1) {
+        targeting.genders = genders;
+      }
       const fbPlacements = placements.filter((p: string) => p.startsWith('facebook')).map((p: string) => p.replace('facebook_', '')).filter(Boolean);
       const igPlacements = placements.filter((p: string) => p.startsWith('instagram')).map((p: string) => p.replace('instagram_', '')).filter(Boolean);
       if (fbPlacements.length) targeting.facebook_positions = fbPlacements;
       if (igPlacements.length) targeting.instagram_positions = igPlacements;
 
-      const adSet = await gPost(`/${adAccountId}/adsets`, {
+      // No page_id here: ad sets have no such field, and sending it is what
+      // Meta reports as "Invalid parameter". Where a Page needs naming it goes
+      // in promoted_object, which only some optimisation goals accept.
+      const adSetBody: Record<string, unknown> = {
         name: `${campName} — Ad Set`,
         campaign_id: camp.id,
-        daily_budget: Math.round(dailyBudget * 100),
         billing_event: 'IMPRESSIONS',
         optimization_goal: objMeta[objective] ?? 'REACH',
         targeting,
         status: 'PAUSED',
-        page_id: acct.fb_page_id,
-      }, token);
+      };
+      if (lifetime) {
+        adSetBody.lifetime_budget = Math.round(dailyBudget * 100);
+      } else {
+        adSetBody.daily_budget = Math.round(dailyBudget * 100);
+      }
+      if (startTime) adSetBody.start_time = startTime;
+      if (endTime)   adSetBody.end_time   = endTime;
+      if ((objMeta[objective] ?? 'REACH') === 'LINK_CLICKS') {
+        adSetBody.destination_type = 'WEBSITE';
+      }
+      const adSet = await gPost(`/${adAccountId}/adsets`, adSetBody, token);
       steps[steps.length - 1] = { label: 'Ad set created', status: 'done', detail: `ID: ${adSet.id}` };
 
       // Meta needs the bytes in its own image library; a URL isn't enough.

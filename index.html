@@ -7796,7 +7796,11 @@ function CampaignBuilder({ settings }) {
   const [lat,         setLat]         = useState(String(STORES[0].lat));
   const [lng,         setLng]         = useState(String(STORES[0].lng));
   const [radius,      setRadius]      = useState('25');
-  const [ageMin,      setAgeMin]      = useState('21');
+  const [ageMin,      setAgeMin]      = useState('19');
+  const [budgetType,  setBudgetType]  = useState('daily');   // 'daily' | 'lifetime'
+  const [startAt,     setStartAt]     = useState('');
+  const [endAt,       setEndAt]       = useState('');
+  const [gender,      setGender]      = useState('all');     // 'all' | 'men' | 'women'
   const [ageMax,      setAgeMax]      = useState('65');
   const [placements,  setPlacements]  = useState(['facebook_feed']);
   const [headline,    setHeadline]    = useState('');
@@ -7864,6 +7868,10 @@ function CampaignBuilder({ settings }) {
     if (!bodyText.trim())  { toast.error('Enter the primary text'); return; }
     if (format === 'single' && !headline.trim()) { toast.error('Enter a headline'); return; }
     if (placements.length===0) { toast.error('Select at least one placement'); return; }
+    if (budgetType === 'lifetime' && !endAt) { toast.error('A lifetime budget needs an end date'); return; }
+    if (startAt && endAt && new Date(endAt) <= new Date(startAt)) {
+      toast.error('The end date has to be after the start date'); return;
+    }
     if (format === 'carousel') {
       if (cards.length < 2)  { toast.error('A carousel needs at least 2 cards'); return; }
       if (cards.length > 10) { toast.error('Meta allows at most 10 carousel cards'); return; }
@@ -7889,8 +7897,12 @@ function CampaignBuilder({ settings }) {
         lat: parseFloat(lat) || store.lat,
         lng: parseFloat(lng) || store.lng,
         radius: parseInt(radius) || 25,
-        ageMin: parseInt(ageMin) || 21,
+        ageMin: parseInt(ageMin) || 19,
         ageMax: parseInt(ageMax) || 65,
+        budgetType: budgetType,
+        startTime: startAt ? new Date(startAt).toISOString() : null,
+        endTime:   endAt   ? new Date(endAt).toISOString()   : null,
+        genders: gender === 'men' ? [1] : gender === 'women' ? [2] : [],
         placements: placements,
         headline: headline,
         bodyText: bodyText,
@@ -7920,7 +7932,48 @@ function CampaignBuilder({ settings }) {
           <div><Label>Store</Label><StorePicker value={storeId} onChange={setStoreId}/></div>
           <div><Label>Objective</Label><Select value={objective} onChange={e=>setObjective(e.target.value)}>{AD_OBJECTIVES.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}</Select></div>
           <div><Label>Campaign Name</Label><Input value={campName} onChange={e=>setCampName(e.target.value)} placeholder="Summer Whiskey Sale"/></div>
-          <div><Label>Daily Budget (CAD $)</Label><Input type="number" min="1" step="1" value={dailyBudget} onChange={e=>setDailyBudget(e.target.value)}/></div>
+          <div>
+            <Label>{budgetType==='lifetime' ? 'Total Budget (CAD $)' : 'Daily Budget (CAD $)'}</Label>
+            <Input type="number" min="1" step="1" value={dailyBudget} onChange={e=>setDailyBudget(e.target.value)}/>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 mt-3">
+          <div>
+            <Label>Budget type</Label>
+            <div className="flex" style={{border:'1px solid var(--line)'}}>
+              {[['daily','Per day'],['lifetime','Total']].map(function(b) {
+                const on = budgetType===b[0];
+                return (
+                  <button key={b[0]} onClick={()=>setBudgetType(b[0])}
+                    className="flex-1 px-3 py-1.5 text-xs uppercase tracking-[.14em]"
+                    style={{ background:on?'var(--cy-glow)':'transparent', color:on?'var(--cy)':'var(--txt2)' }}>
+                    {b[1]}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div className="flex items-end">
+            <p className="lbl">
+              {budgetType==='lifetime'
+                ? 'Spread across the run. Needs an end date.'
+                : 'Spent each day until you stop it.'}
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 mt-3">
+          <div>
+            <Label>Starts</Label>
+            <Input type="datetime-local" value={startAt} onChange={e=>setStartAt(e.target.value)}/>
+            <p className="lbl mt-1">Blank starts as soon as you unpause it.</p>
+          </div>
+          <div>
+            <Label>Ends</Label>
+            <Input type="datetime-local" value={endAt} onChange={e=>setEndAt(e.target.value)}/>
+            <p className="lbl mt-1">Blank runs until you stop it.</p>
+          </div>
         </div>
       </Card>
       <Card>
@@ -7929,9 +7982,24 @@ function CampaignBuilder({ settings }) {
           <div><Label>Latitude</Label><Input value={lat} onChange={e=>setLat(e.target.value)} placeholder="50.6745"/></div>
           <div><Label>Longitude</Label><Input value={lng} onChange={e=>setLng(e.target.value)} placeholder="-120.3273"/></div>
           <div><Label>Radius (km)</Label><Input type="number" min="1" max="80" value={radius} onChange={e=>setRadius(e.target.value)}/></div>
-          <div><Label>Min Age</Label><Input type="number" min="18" max="65" value={ageMin} onChange={e=>setAgeMin(e.target.value)}/></div>
-          <div><Label>Max Age</Label><Input type="number" min="18" max="65" value={ageMax} onChange={e=>setAgeMax(e.target.value)}/></div>
+          <div>
+            <Label>Min Age</Label>
+            <Input type="number" min="19" max="65" value={ageMin} onChange={e=>setAgeMin(e.target.value)}/>
+          </div>
+          <div><Label>Max Age</Label><Input type="number" min="19" max="65" value={ageMax} onChange={e=>setAgeMax(e.target.value)}/></div>
+          <div>
+            <Label>Gender</Label>
+            <Select value={gender} onChange={e=>setGender(e.target.value)}>
+              <option value="all">Everyone</option>
+              <option value="men">Men</option>
+              <option value="women">Women</option>
+            </Select>
+          </div>
         </div>
+        <p className="lbl mb-3">
+          BC's legal drinking age is 19, and Meta requires alcohol ads to be targeted no lower.
+          Anything below that is raised to 19 before the ad set is created.
+        </p>
         <div><Label>Placements</Label>
           <div className="flex gap-2 flex-wrap">
             {AD_PLACEMENTS.map(p => (

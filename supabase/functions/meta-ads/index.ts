@@ -234,8 +234,39 @@ Deno.serve(async (req) => {
       if (Array.isArray(genders) && genders.length === 1) {
         targeting.genders = genders;
       }
-      const fbPlacements = placements.filter((p: string) => p.startsWith('facebook')).map((p: string) => p.replace('facebook_', '')).filter(Boolean);
-      const igPlacements = placements.filter((p: string) => p.startsWith('instagram')).map((p: string) => p.replace('instagram_', '')).filter(Boolean);
+      // Meta's position names don't follow from the platform prefix, so they
+      // are mapped explicitly rather than derived by stripping it. Facebook
+      // Reels really is "facebook_reels" while Instagram's is plain "reels",
+      // and Facebook Stories is "story", not "stories". Guessing gets you
+      // "Invalid value reels for the placement field facebook_positions".
+      const PLACEMENT_MAP: Record<string, { network: string; position: string }> = {
+        facebook_feed:        { network: 'facebook',  position: 'feed' },
+        facebook_story:       { network: 'facebook',  position: 'story' },
+        facebook_reels:       { network: 'facebook',  position: 'facebook_reels' },
+        facebook_marketplace: { network: 'facebook',  position: 'marketplace' },
+        facebook_video_feeds: { network: 'facebook',  position: 'video_feeds' },
+        facebook_search:      { network: 'facebook',  position: 'search' },
+        instagram_stream:     { network: 'instagram', position: 'stream' },
+        instagram_stories:    { network: 'instagram', position: 'story' },
+        instagram_reels:      { network: 'instagram', position: 'reels' },
+        instagram_explore:    { network: 'instagram', position: 'explore' },
+        instagram_profile:    { network: 'instagram', position: 'profile_feed' },
+      };
+
+      const fbPlacements: string[] = [];
+      const igPlacements: string[] = [];
+      for (const p of placements) {
+        const m = PLACEMENT_MAP[p];
+        if (!m) throw new Error(`Unknown placement "${p}"`);
+        (m.network === 'facebook' ? fbPlacements : igPlacements).push(m.position);
+      }
+
+      // Naming positions without naming the platforms they belong to is
+      // rejected, so the platform list is derived from what was chosen.
+      const platforms: string[] = [];
+      if (fbPlacements.length) platforms.push('facebook');
+      if (igPlacements.length) platforms.push('instagram');
+      if (platforms.length) targeting.publisher_platforms = platforms;
       if (fbPlacements.length) targeting.facebook_positions = fbPlacements;
       if (igPlacements.length) targeting.instagram_positions = igPlacements;
 

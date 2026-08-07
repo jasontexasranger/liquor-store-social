@@ -212,10 +212,18 @@ const AD_OBJECTIVES = [
   { value: 'OUTCOME_TRAFFIC',   label: 'Traffic',    optGoal: 'LINK_CLICKS' },
   { value: 'OUTCOME_SALES',     label: 'Sales',      optGoal: 'OFFSITE_CONVERSIONS' },
 ];
+// Values are the app's own keys; the edge function maps them to Meta's
+// position names, which are not consistent enough to derive.
 const AD_PLACEMENTS = [
-  { value: 'facebook_feed',     label: 'FB Feed' },
-  { value: 'instagram_stories', label: 'IG Stories' },
-  { value: 'facebook_reels',    label: 'FB Reels' },
+  { value: 'facebook_feed',        label: 'FB Feed' },
+  { value: 'facebook_story',       label: 'FB Stories' },
+  { value: 'facebook_reels',       label: 'FB Reels' },
+  { value: 'facebook_marketplace', label: 'FB Marketplace' },
+  { value: 'facebook_video_feeds', label: 'FB Video' },
+  { value: 'instagram_stream',     label: 'IG Feed' },
+  { value: 'instagram_stories',    label: 'IG Stories' },
+  { value: 'instagram_reels',      label: 'IG Reels' },
+  { value: 'instagram_explore',    label: 'IG Explore' },
 ];
 const CTA_OPTIONS = ['LEARN_MORE','SHOP_NOW','GET_DIRECTIONS','CALL_NOW','MESSAGE_PAGE','SIGN_UP'];
 const TONES       = ['Friendly','Promotional','Informational'];

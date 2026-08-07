@@ -278,6 +278,11 @@ Deno.serve(async (req) => {
         campaign_id: camp.id,
         billing_event: 'IMPRESSIONS',
         optimization_goal: objMeta[objective] ?? 'REACH',
+        // Stated outright rather than left to the ad account's default. Some
+        // accounts default to a bid cap, which then demands a bid amount we
+        // have no sensible figure for. "Highest volume" spends the budget as
+        // efficiently as Meta can without us naming a price per result.
+        bid_strategy: 'LOWEST_COST_WITHOUT_CAP',
         targeting,
         status: 'PAUSED',
       };

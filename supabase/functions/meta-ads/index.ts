@@ -300,20 +300,38 @@ Deno.serve(async (req) => {
       steps[steps.length - 1] = { label: 'Ad set created', status: 'done', detail: `ID: ${adSet.id}` };
 
       // Meta needs the bytes in its own image library; a URL isn't enough.
+      //
+      // /adimages does not accept a JSON body keyed by filename — that shape is
+      // for multipart uploads, and posting it as JSON is what Meta reports as
+      // "The provided image file is invalid". Base64 goes in a form field
+      // called `bytes`, which is the documented way to upload without
+      // assembling a multipart body by hand.
       const uploadImage = async (url: string, i: number): Promise<string | null> => {
         const imgRes = await fetch(url);
         if (!imgRes.ok) throw new Error(`Could not fetch ad image ${i + 1} (${imgRes.status})`);
         const imgBlob = await imgRes.blob();
         const bytes = new Uint8Array(await imgBlob.arrayBuffer());
+        if (!bytes.length) throw new Error(`Ad image ${i + 1} was empty`);
+
         // Chunked: reduce() over a multi-megabyte array builds the string one
         // character at a time and apply() on the whole thing blows the stack.
         let bin = '';
         for (let j = 0; j < bytes.length; j += 8192) {
           bin += String.fromCharCode.apply(null, Array.from(bytes.subarray(j, j + 8192)));
         }
-        const imgName = `image_${Date.now()}_${i}.jpg`;
-        const uploadRes = await gPost(`/${adAccountId}/adimages`, { [imgName]: btoa(bin) }, token);
-        return uploadRes.images ? Object.values(uploadRes.images)[0]?.hash ?? null : null;
+
+        const form = new FormData();
+        form.append('bytes', btoa(bin));
+        form.append('access_token', token);
+
+        const up = await fetch(`${GRAPH}/${adAccountId}/adimages`, { method: 'POST', body: form });
+        const data = await up.json();
+        if (data.error) throw graphError(`/${adAccountId}/adimages`, data.error);
+
+        const images = data.images as Record<string, { hash?: string }> | undefined;
+        const hash = images ? Object.values(images)[0]?.hash ?? null : null;
+        if (!hash) throw new Error(`Meta accepted ad image ${i + 1} but returned no hash`);
+        return hash;
       };
 
       const linkUrl = destUrl?.trim() || `https://www.facebook.com/${acct.fb_page_id}`;

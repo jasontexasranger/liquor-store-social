@@ -1361,6 +1361,19 @@ function toOunces(amount) {
   return label + ' oz' + (m[3] || '');
 }
 
+// "highball" is what the model returns, and "Serve in a highball." reads like
+// a sentence with a word missing. Vessels that already name themselves —
+// a mug, a jar, a flute — are left alone; everything else gets "glass".
+const GLASS_NOUNS = /\b(glass(es)?|mug|jar|cup|flute|tin|goblet|stein|snifter|tumbler|coupe|pitcher|carafe|shot)\b/i;
+
+function glassPhrase(glass) {
+  const t = String(glass || '').trim().replace(/\.+$/, '');
+  if (!t) return '';
+  const full = GLASS_NOUNS.test(t) ? t : t + ' glass';
+  const article = /^[aeiou]/i.test(full) ? 'an' : 'a';
+  return 'Serve in ' + article + ' ' + full + '.';
+}
+
 // The recipe as a post caption: ingredients as a list, method as steps, and
 // the offer if the drink was built around something on feature. A recipe post
 // that doesn't mention the price is a recipe post; one that does is an ad for
@@ -1392,7 +1405,8 @@ function recipeCaption(recipe, productName, offer) {
     lines.push('');
     method.forEach((m, i) => lines.push((i+1) + '. ' + m));
   }
-  if (recipe.glass)   lines.push('', 'Serve in a ' + recipe.glass + '.');
+  const glassLine = glassPhrase(recipe.glass);
+  if (glassLine) lines.push('', glassLine);
   if (recipe.garnish) lines.push('Garnish with ' + recipe.garnish + '.');
   return stripHashtags(lines.join('\n'));
 }
@@ -1734,6 +1748,7 @@ function RecipesPage({ isAdmin, myStores }) {
         'The first ingredient must be exactly "' + label + '" — name the product itself, ' +
         'not a generic spirit, and give it a measure. Every other ingredient should be ' +
         'something an ordinary kitchen already has.\n' +
+        'glass: name the vessel in full, like "highball glass" or "copper mug", not just "highball". ' +
         'name: the drink name, 1 to 3 words. ' +
         'blurb: one sentence on what it tastes like. method: 2 to 4 short steps, ' +
         'referring to the product by name in the first step. ' +

@@ -57,12 +57,39 @@ async function gDelete(path: string, token: string) {
 // Get the page access token for a given page ID.
 // Checks PT_{pageId} secret first (preferred: permanent page tokens stored directly).
 // Falls back to exchanging META_SYSTEM_USER_TOKEN if available.
-async function getPageToken(pageId: string): Promise<string> {
+// A Page token derived from a user token inherits that user token's
+// permissions. The stored PT_ secrets were generated before pages_read_engagement
+// was ever granted, which is why reading insights fails on Pages that publish
+// perfectly well — the token is old, not the access.
+async function pageTokenFromUser(pageId: string): Promise<string | null> {
+  const user = Deno.env.get('META_USER_TOKEN');
+  if (!user) return null;
+  try {
+    const data = await gGet('/' + pageId, { fields: 'access_token' }, user);
+    return data.access_token ?? null;
+  } catch {
+    return null;   // no role on that Page, or the token has lapsed
+  }
+}
+
+// `preferUser` is set by the read-only analytics calls. Publishing deliberately
+// keeps using the stored PT_ secrets: those are known to work, and a personal
+// token generated with only the ads scopes would lack pages_manage_posts and
+// would break posting for every store at once.
+async function getPageToken(pageId: string, preferUser = false): Promise<string> {
+  if (preferUser) {
+    const derived = await pageTokenFromUser(pageId);
+    if (derived) return derived;
+  }
+
   // 1. Direct per-page token secret (e.g. PT_470483222987070)
   const direct = Deno.env.get('PT_' + pageId);
   if (direct) return direct;
 
-  // 2. Fallback: system-user token exchange
+  // 2. Fallback: user token, then system-user token
+  const derived = await pageTokenFromUser(pageId);
+  if (derived) return derived;
+
   const sut = Deno.env.get('META_SYSTEM_USER_TOKEN');
   if (!sut) {
     throw new Error(
@@ -480,7 +507,7 @@ Deno.serve(async (req) => {
         .single();
       if (!acct) throw new Error('Store not found in meta_accounts');
 
-      const pageToken = await getPageToken(acct.fb_page_id);
+      const pageToken = await getPageToken(acct.fb_page_id, true);
       const data = await gGet(
         `/${acct.fb_page_id}/feed`,
         {
@@ -513,7 +540,7 @@ Deno.serve(async (req) => {
         .from('meta_accounts').select('fb_page_id').eq('store_id', storeId).single();
       if (!acct) throw new Error('Store not found in meta_accounts');
 
-      const pageToken = await getPageToken(acct.fb_page_id);
+      const pageToken = await getPageToken(acct.fb_page_id, true);
 
       // Two pages of history is plenty to see a weekly shape without making
       // the planner wait on a long pagination walk.
@@ -587,7 +614,7 @@ Deno.serve(async (req) => {
         .single();
       if (!acct) throw new Error('Store not found in meta_accounts');
 
-      const pageToken = await getPageToken(acct.fb_page_id);
+      const pageToken = await getPageToken(acct.fb_page_id, true);
       const data = await gGet(`/${postId}/comments`, {
         fields: 'id,message,from,created_time,like_count',
         order: 'chronological',
@@ -672,7 +699,7 @@ Deno.serve(async (req) => {
         .single();
       if (!acct) throw new Error('Store not found in meta_accounts');
 
-      const pageToken = await getPageToken(acct.fb_page_id);
+      const pageToken = await getPageToken(acct.fb_page_id, true);
       const numDays = days ?? 28;
       const since = Math.floor(Date.now() / 1000) - numDays * 24 * 60 * 60;
 

@@ -520,13 +520,38 @@ function useCreatives() {
 }
 
 // Reusable picker — Posts passes POST_ASPECTS, Ads passes AD_ASPECTS.
-function CreativePicker({ allowed, storeIds, onPick, onClose }) {
+//
+// Pass `multi` to tick several and add them in one go, with `max` capping how
+// many more will fit. Single-pick callers are untouched.
+function CreativePicker({ allowed, storeIds, onPick, onPickMany, onClose, multi, max }) {
   const dragPanel = useDragPanel();
   const { creatives, loading } = useCreatives();
   const { campaigns } = useCampaigns();
   const [camp, setCamp] = useState('all');
   const [asp,  setAsp]  = useState('all');
   const [per,  setPer]  = useState('all');
+  const [picked, setPicked] = useState([]);   // ids, in the order they were ticked
+
+  const limit = max == null ? Infinity : max;
+  const atLimit = picked.length >= limit;
+
+  // Order matters: ticking 1, 2, 3 should add them in that order, so selection
+  // is held as a list rather than a set.
+  const toggle = id => setPicked(function(prev) {
+    if (prev.includes(id)) return prev.filter(x => x !== id);
+    if (prev.length >= limit) return prev;
+    return prev.concat(id);
+  });
+
+  const confirm = function() {
+    const chosen = picked
+      .map(id => creatives.find(c => c.id === id))
+      .filter(Boolean);
+    if (!chosen.length) return;
+    if (onPickMany) onPickMany(chosen);
+    else chosen.forEach(onPick);
+    onClose();
+  };
 
   const periods = creativePeriods(creatives);
 
@@ -548,6 +573,11 @@ function CreativePicker({ allowed, storeIds, onPick, onClose }) {
         <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-5">
           <span className="ttl">Creative Library</span>
           <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          {multi && (
+            <span className="lbl">
+              {picked.length} selected{limit !== Infinity ? ' · room for ' + limit : ''}
+            </span>
+          )}
           <button onClick={onClose} style={{color:'var(--txt2)'}}><Icon name="close"/></button>
         </div>
 
@@ -580,12 +610,29 @@ function CreativePicker({ allowed, storeIds, onPick, onClose }) {
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
             {visible.map(function(c) {
               const cp = campaigns.find(x=>x.id===c.campaign_id);
+              const order = picked.indexOf(c.id);
+              const on = order !== -1;
+              const blocked = multi && !on && atLimit;
               return (
-                <button key={c.id} onClick={()=>{ onPick(c); onClose(); }}
-                  className="hud p-0 overflow-hidden text-left group">
+                <button key={c.id}
+                  onClick={()=>{ if (multi) { toggle(c.id); } else { onPick(c); onClose(); } }}
+                  disabled={blocked}
+                  className="hud p-0 overflow-hidden text-left group relative"
+                  style={ multi ? {
+                    outline: on ? '2px solid var(--cy)' : 'none',
+                    outlineOffset: '-2px',
+                    opacity: blocked ? 0.35 : 1,
+                  } : undefined}>
                   <div className="w-full" style={{aspectRatio:String(aspectMeta(c.aspect).ratio), background:'rgba(4,8,16,.7)'}}>
                     <img src={c.public_url} alt={c.name} className="w-full h-full object-cover"/>
                   </div>
+                  {/* The number, not just a tick — card order is the carousel's order. */}
+                  {multi && on && (
+                    <span className="absolute top-2 left-2 flex items-center justify-center mono"
+                          style={{width:'22px', height:'22px', background:'var(--cy)', color:'#04070e', fontSize:'11px'}}>
+                      {order + 1}
+                    </span>
+                  )}
                   <div className="p-2.5">
                     <p className="text-xs truncate" style={{color:'var(--txt)'}}>{c.name}</p>
                     <p className="lbl mt-1 truncate">
@@ -595,6 +642,22 @@ function CreativePicker({ allowed, storeIds, onPick, onClose }) {
                 </button>
               );
             })}
+          </div>
+        )}
+
+        {multi && (
+          <div className="flex items-center gap-2 mt-4 pt-4" style={{borderTop:'1px solid var(--line)'}}>
+            <span className="lbl mr-auto">
+              {picked.length
+                ? 'Added in the order you tick them — the numbers show the card order.'
+                : 'Tick the images you want. ' + (limit !== Infinity ? 'Room for ' + limit + '.' : '')}
+            </span>
+            <Button size="sm" variant="ghost" onClick={()=>setPicked([])} disabled={!picked.length}>
+              Clear
+            </Button>
+            <Button size="sm" onClick={confirm} disabled={!picked.length}>
+              Add {picked.length || ''}
+            </Button>
           </div>
         )}
       </div>
@@ -2299,6 +2362,22 @@ function ProductPickerModal({ products, onPick, onClose }) {
                 </button>
               );
             })}
+          </div>
+        )}
+
+        {multi && (
+          <div className="flex items-center gap-2 mt-4 pt-4" style={{borderTop:'1px solid var(--line)'}}>
+            <span className="lbl mr-auto">
+              {picked.length
+                ? 'Added in the order you tick them — the numbers show the card order.'
+                : 'Tick the images you want. ' + (limit !== Infinity ? 'Room for ' + limit + '.' : '')}
+            </span>
+            <Button size="sm" variant="ghost" onClick={()=>setPicked([])} disabled={!picked.length}>
+              Clear
+            </Button>
+            <Button size="sm" onClick={confirm} disabled={!picked.length}>
+              Add {picked.length || ''}
+            </Button>
           </div>
         )}
       </div>
@@ -4450,6 +4529,22 @@ function FeaturePicker({ storeId, onPick, onClose }) {
                 </button>
               );
             })}
+          </div>
+        )}
+
+        {multi && (
+          <div className="flex items-center gap-2 mt-4 pt-4" style={{borderTop:'1px solid var(--line)'}}>
+            <span className="lbl mr-auto">
+              {picked.length
+                ? 'Added in the order you tick them — the numbers show the card order.'
+                : 'Tick the images you want. ' + (limit !== Infinity ? 'Room for ' + limit + '.' : '')}
+            </span>
+            <Button size="sm" variant="ghost" onClick={()=>setPicked([])} disabled={!picked.length}>
+              Clear
+            </Button>
+            <Button size="sm" onClick={confirm} disabled={!picked.length}>
+              Add {picked.length || ''}
+            </Button>
           </div>
         )}
       </div>
@@ -8214,25 +8309,32 @@ function CampaignBuilder({ settings }) {
 
               {cardPick && (
                 <CreativePicker allowed={['1:1']} storeIds={storeId?[storeId]:null}
-                  onPick={function(c){
-                    let index = -1;
-                    setCards(function(prev){
-                      if (prev.length >= 10) return prev;
-                      index = prev.length;
-                      return prev.concat({ url:c.public_url, headline:'', description:'', link:'',
-                                           featureId: c.feature_id || null });
-                    });
-                    // Filled straight from the feature it was made for. No API
-                    // call, no wait, and the numbers are the real ones.
-                    if (index >= 0 && c.feature_id) {
-                      getSB().from('features').select('*').eq('id', c.feature_id).maybeSingle()
-                        .then(function(res){
-                          const copy = cardCopyFromFeature(res.data);
-                          if (!copy) return;
-                          setCards(prev => prev.map((x, ix) =>
-                            ix === index ? Object.assign({}, x, copy) : x));
-                        });
-                    }
+                  multi max={10 - cards.length}
+                  onPickMany={function(chosen){
+                    const base = cards.length;
+                    setCards(prev => prev.concat(chosen.map(c => ({
+                      url: c.public_url, headline:'', description:'', link:'',
+                      featureId: c.feature_id || null,
+                    }))));
+
+                    // Anything made from a monthly feature fills its own copy
+                    // from that feature — no API call, and the real numbers.
+                    const linked = chosen
+                      .map((c, i) => ({ c, i: base + i }))
+                      .filter(x => x.c.feature_id);
+                    if (!linked.length) return;
+                    getSB().from('features').select('*')
+                      .in('id', linked.map(x => x.c.feature_id))
+                      .then(function(res){
+                        const byId = {};
+                        (res.data || []).forEach(f => { byId[f.id] = f; });
+                        setCards(prev => prev.map(function(card, ix) {
+                          const hit = linked.find(x => x.i === ix);
+                          if (!hit) return card;
+                          const copy = cardCopyFromFeature(byId[hit.c.feature_id]);
+                          return copy ? Object.assign({}, card, copy) : card;
+                        }));
+                      });
                   }}
                   onClose={()=>setCardPick(false)}/>
               )}
@@ -9880,6 +9982,17 @@ function fmtLastSeen(ts) {
 
 // USER ACCOUNTS SECTION (admin only)
 // ─────────────────────────────────────────────
+// Sections a non-admin can be given. Ads, Brand, Products and Settings are
+// admin-only already, so offering them here would promise something the role
+// check would then refuse.
+const ASSIGNABLE_SECTIONS = [
+  { id:'shelf',     label:'Shelf Talkers' },
+  { id:'posts',     label:'Social' },
+  { id:'features',  label:'Features' },
+  { id:'creatives', label:'Creatives' },
+  { id:'recipes',   label:'Recipes' },
+];
+
 function UserAccountsSection({ currentUserId }) {
   const toast = useToast();
   const [users,        setUsers]        = useState([]);
@@ -9897,6 +10010,7 @@ function UserAccountsSection({ currentUserId }) {
   const [editStoresId, setEditStoresId] = useState(null);
   const [editStoreIds, setEditStoreIds] = useState([]);
   const [savingStores, setSavingStores] = useState(false);
+  const [editSections, setEditSections] = useState([]);
 
   const callAdmin = async (body) => {
     const { data: { session } } = await getSB().auth.getSession();
@@ -9923,7 +10037,7 @@ function UserAccountsSection({ currentUserId }) {
       if (userIds.length > 0) {
         const sb = getSB();
         if (sb) {
-          const rolesResult = await sb.from('user_roles').select('user_id, store_id, store_ids').in('user_id', userIds);
+          const rolesResult = await sb.from('user_roles').select('user_id, store_id, store_ids, sections').in('user_id', userIds);
           const rolesData = rolesResult.data || [];
           const rolesMap = {};
           rolesData.forEach(function(r) { rolesMap[r.user_id] = r; });
@@ -9932,6 +10046,7 @@ function UserAccountsSection({ currentUserId }) {
             if (r) {
               x.store_id = r.store_id;
               x.store_ids = (r.store_ids && r.store_ids.length > 0) ? r.store_ids : (r.store_id ? [r.store_id] : []);
+              x.sections = r.sections || null;
             } else {
               x.store_ids = x.store_id ? [x.store_id] : [];
             }
@@ -10004,17 +10119,30 @@ function UserAccountsSection({ currentUserId }) {
   const openEditStores = (u) => {
     setEditStoresId(u.user_id);
     setEditStoreIds(u.store_ids || []);
+    // Nothing saved means every assignable section, which is what they have
+    // today — so opening the panel shows the truth rather than an empty list.
+    setEditSections((u.sections && u.sections.length)
+      ? u.sections
+      : ASSIGNABLE_SECTIONS.map(x => x.id));
     setResetId(null);
   };
+
+  const toggleEditSection = id => setEditSections(prev =>
+    prev.indexOf(id) !== -1 ? prev.filter(x => x !== id) : prev.concat(id));
 
   const saveStores = async (userId) => {
     setSavingStores(true);
     try {
+      const all = ASSIGNABLE_SECTIONS.length;
       await getSB().from('user_roles').update({
         store_id: editStoreIds[0] || null,
         store_ids: editStoreIds,
+        // All of them ticked is the same as no restriction, so it is stored as
+        // NULL — that way adding a section later doesn't leave everyone
+        // silently locked out of it.
+        sections: editSections.length === all ? null : editSections,
       }).eq('user_id', userId);
-      toast.success('Stores updated');
+      toast.success('Access updated');
       setEditStoresId(null);
       await loadUsers();
     } catch(e) { toast.error(e.message); }
@@ -10111,7 +10239,21 @@ function UserAccountsSection({ currentUserId }) {
                         </label>
                       ); })}
                     </div>
-                    <Button size="sm" loading={savingStores} onClick={()=>saveStores(u.user_id)}>Save Stores</Button>
+                    <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-2 mt-3">Sections they can open</p>
+                    <div className="flex flex-wrap gap-x-4 gap-y-2 mb-2">
+                      {ASSIGNABLE_SECTIONS.map(function(sec) { return (
+                        <label key={sec.id} className="flex items-center gap-1.5 text-sm cursor-pointer text-gray-700 dark:text-gray-300">
+                          <input type="checkbox" checked={editSections.indexOf(sec.id) !== -1}
+                                 onChange={()=>toggleEditSection(sec.id)} className="accent-indigo-600"/>
+                          {sec.label}
+                        </label>
+                      ); })}
+                    </div>
+                    <p className="text-xs text-gray-400 mb-3">
+                      Hides sections from the menu. What they can actually read and change
+                      is still governed by their stores.
+                    </p>
+                    <Button size="sm" loading={savingStores} onClick={()=>saveStores(u.user_id)}>Save access</Button>
                   </div>
                 )}
                 {resetId===u.user_id && (
@@ -12421,6 +12563,8 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
   const toast = useToast();
   const hardcodedAdmin = ADMIN_EMAILS.includes((user && user.email ? user.email : '').toLowerCase());
   const [isAdmin,        setIsAdmin]        = useState(hardcodedAdmin);
+  // null = no per-user restriction; an array narrows the nav.
+  const [allowedSections, setAllowedSections] = useState(null);
   const [page,           setPage]           = useState('shelf');
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [settings,       setSettings]       = useState({
@@ -12439,7 +12583,7 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
     setSettingsLoaded(true);
     // Check DB role (catches admin accounts not in hardcoded list)
     if (!hardcodedAdmin && user) {
-      sb.from('user_roles').select('role, store_id, store_ids').eq('user_id', user.id).maybeSingle()
+      sb.from('user_roles').select('role, store_id, store_ids, sections').eq('user_id', user.id).maybeSingle()
         .then(function(result) {
           var data = result.data;
           if (data && data.role === 'admin') {
@@ -12448,6 +12592,9 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
             var ids = (data.store_ids && data.store_ids.length > 0) ? data.store_ids : (data.store_id ? [data.store_id] : []);
             setUserStoreIds(ids);
           }
+          // Empty array and null both mean "no restriction set", so an admin
+          // clearing every box doesn't accidentally lock someone out entirely.
+          if (data && data.sections && data.sections.length) setAllowedSections(data.sections);
         });
     }
   }, []);
@@ -12489,7 +12636,7 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
 
   const nav = [
     { id:'shelf', icon:'tag', label:'Shelf Talkers' },
-    { id:'posts', icon:'note', label:'Posts' },
+    { id:'posts', icon:'note', label:'Social' },
     { id:'features', icon:'tag', label:'Features' },
     { id:'creatives', icon:'image', label:'Creatives' },
     { id:'recipes',   icon:'spark', label:'Recipes' },
@@ -12499,7 +12646,19 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
       { id:'brand',    icon:'palette', label:'Brand' },
       { id:'settings', icon:'gear', label:'Settings' },
     ] : []),
-  ];
+  ]
+  // A per-user list narrows what the role already allows; it can never widen
+  // it, so a store user cannot be handed Ads by ticking a box. Settings is
+  // always kept, or an admin could lock themselves out of the screen that
+  // undoes it.
+  .filter(t => !allowedSections || t.id === 'settings' || allowedSections.includes(t.id));
+
+  // If the section you were on is no longer permitted — access changed, or a
+  // stale link — land somewhere real rather than rendering a blank shell.
+  useEffect(function() {
+    if (!tabs.length) return;
+    if (!tabs.some(t => t.id === page)) setPage(tabs[0].id);
+  }, [allowedSections, isAdmin, page]);
 
   if (!settingsLoaded) return (
     <div className="min-h-screen flex items-center justify-center bg-gray-100 dark:bg-gray-900">

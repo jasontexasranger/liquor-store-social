@@ -3707,6 +3707,262 @@ const signagePlaylistName = (storeName, period) => {
   return storeName.split(' ')[0].toUpperCase() + ' LRS - ' + mon + ' ' + String(y).slice(2);
 };
 
+// ─────────────────────────────────────────────
+// SIGNAGE CONSOLE
+// ─────────────────────────────────────────────
+// The admin view of everything OptiSigns is playing: which playlist each
+// screen runs, and what's inside each playlist — order, timing, contents.
+// Deleting playlists and screens stays in OptiSigns; the API key can't.
+function SignagePage() {
+  const toast = useToast();
+  const [screens,   setScreens]   = useState(null);
+  const [playlists, setPlaylists] = useState(null);
+  const [open,      setOpen]      = useState(null);   // playlist id being edited
+  const [items,     setItems]     = useState(null);
+  const [busy,      setBusy]      = useState(null);
+  const [durDraft,  setDurDraft]  = useState({});     // pos -> value being typed
+  const [showAdd,   setShowAdd]   = useState(false);
+  const [newName,   setNewName]   = useState('');
+
+  const load = useCallback(async function() {
+    try {
+      const [s, p] = await Promise.all([
+        callEdge('optisigns', 'listScreens', {}),
+        callEdge('optisigns', 'listPlaylists', {}),
+      ]);
+      setScreens(s.screens || []);
+      setPlaylists((p.playlists || []).sort((a,b)=>a.name.localeCompare(b.name)));
+    } catch(e) { setScreens([]); setPlaylists([]); toast.error(e.message); }
+  }, []);
+  useEffect(function(){ load(); }, [load]);
+
+  const plName = id => (playlists || []).find(p => p._id === id)?.name || '—';
+
+  const openPlaylist = async function(id) {
+    if (open === id) { setOpen(null); setItems(null); return; }
+    setOpen(id); setItems(null); setDurDraft({});
+    try {
+      const r = await callEdge('optisigns', 'playlistItems', { playlistId: id });
+      setItems(r.playlist.assets || []);
+    } catch(e) { setItems([]); toast.error(e.message); }
+  };
+
+  const refreshItems = async function(id) {
+    const r = await callEdge('optisigns', 'playlistItems', { playlistId: id });
+    setItems(r.playlist.assets || []);
+    await load();
+  };
+
+  const act = async function(label, fn) {
+    setBusy(label);
+    try { await fn(); }
+    catch(e) { toast.error(e.message); }
+    finally { setBusy(null); }
+  };
+
+  const assign = (screenId, playlistId) => act('assign-' + screenId, async function() {
+    if (!playlistId) return;
+    const scr = screens.find(x => x._id === screenId);
+    if (!confirm('Put "' + plName(playlistId) + '" on ' + (scr?.deviceName || 'this screen') + ' now?')) return;
+    await callEdge('optisigns', 'assignScreen', { screenId, playlistId });
+    toast.success((scr?.deviceName || 'Screen') + ' is now playing ' + plName(playlistId));
+    await load();
+  });
+
+  const removeAt = (pos) => act('rm-' + pos, async function() {
+    await callEdge('optisigns', 'removeItems', { playlistId: open, pos: [pos] });
+    await refreshItems(open);
+  });
+
+  const move = (from, to) => act('mv-' + from, async function() {
+    if (to < 0 || to >= items.length) return;
+    await callEdge('optisigns', 'moveItems', { playlistId: open, froms: [from], to });
+    await refreshItems(open);
+  });
+
+  const commitDur = (pos) => act('dur-' + pos, async function() {
+    const v = Number(durDraft[pos]);
+    if (!(v >= 1 && v <= 300)) { toast.error('Seconds must be between 1 and 300'); return; }
+    await callEdge('optisigns', 'setDurations', { playlistId: open, updates: [{ pos, duration: v }] });
+    await refreshItems(open);
+  });
+
+  const createList = () => act('create', async function() {
+    if (!newName.trim()) { toast.error('Give the playlist a name'); return; }
+    await callEdge('optisigns', 'createPlaylist', { name: newName.trim() });
+    setNewName('');
+    toast.success('Playlist created');
+    await load();
+  });
+
+  const screensPlaying = id => (screens || []).filter(s => s.currentPlaylistId === id).map(s => s.deviceName);
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <div className="flex items-center gap-3 mb-4 flex-wrap">
+          <span className="ttl">Screens</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          <Button size="sm" variant="secondary" onClick={load}>Refresh</Button>
+        </div>
+
+        {screens === null ? <p className="lbl text-center py-8">Loading from OptiSigns…</p> : (
+          <div className="overflow-x-auto">
+            <table style={{width:'100%', minWidth:'640px', borderCollapse:'collapse'}}>
+              <thead>
+                <tr style={{borderBottom:'1px solid var(--line2)'}}>
+                  {['Screen','Now playing','Change to'].map(h=>(
+                    <th key={h} className="lbl" style={{textAlign:'left', padding:'0 8px 8px'}}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {screens.map(function(sc) {
+                  return (
+                    <tr key={sc._id} style={{borderBottom:'1px solid rgba(56,224,240,.07)'}}>
+                      <td className="text-xs" style={{padding:'7px 8px', color:'var(--txt)'}}>
+                        {sc.deviceName}
+                        <span className="lbl block">{sc.orientation}</span>
+                      </td>
+                      <td className="text-xs" style={{padding:'7px 8px', color:'var(--cy)'}}>
+                        {sc.currentType === 'playlist' ? plName(sc.currentPlaylistId)
+                         : sc.currentType || '—'}
+                      </td>
+                      <td style={{padding:'7px 8px'}}>
+                        {/* The dropdown resets to placeholder after each change;
+                            the confirm is the real gate — this alters a live
+                            screen the moment it succeeds. */}
+                        <Select value="" className="w-auto text-xs"
+                                disabled={busy === 'assign-' + sc._id}
+                                onChange={e=>{ assign(sc._id, e.target.value); e.target.value=''; }}>
+                          <option value="">{busy === 'assign-' + sc._id ? 'Switching…' : 'Pick a playlist…'}</option>
+                          {(playlists||[]).map(p=>(
+                            <option key={p._id} value={p._id}>{p.name}</option>
+                          ))}
+                        </Select>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <div className="flex items-center gap-3 mb-4 flex-wrap">
+          <span className="ttl">Playlists</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          <Input value={newName} onChange={e=>setNewName(e.target.value)}
+                 placeholder="New playlist name…" className="w-auto text-xs"/>
+          <Button size="sm" onClick={createList} loading={busy==='create'}>Create</Button>
+        </div>
+
+        {playlists === null ? <p className="lbl text-center py-8">Loading…</p> : playlists.map(function(pl) {
+          const playing = screensPlaying(pl._id);
+          const isOpen = open === pl._id;
+          return (
+            <div key={pl._id} className="mb-2" style={{border:'1px solid ' + (isOpen ? 'var(--cy)' : 'var(--line)')}}>
+              <button onClick={()=>openPlaylist(pl._id)}
+                className="flex items-center gap-3 w-full p-3 text-left">
+                <span className="text-xs font-semibold" style={{color:'var(--txt)'}}>{pl.name}</span>
+                <span className="lbl">{(pl.assets||[]).length} item{(pl.assets||[]).length===1?'':'s'}</span>
+                {playing.length > 0 && (
+                  <span className="lbl" style={{color:'var(--grn)'}}>
+                    playing on {playing.join(', ')}
+                  </span>
+                )}
+                <span className="flex-1"/>
+                <Icon name={isOpen ? 'up' : 'down'} size={12} style={{color:'var(--txt3)'}}/>
+              </button>
+
+              {isOpen && (
+                <div className="px-3 pb-3" style={{borderTop:'1px solid var(--line)'}}>
+                  {playing.length > 0 && (
+                    <p className="text-xs mt-2" style={{color:'var(--amb)'}}>
+                      <Icon name="warn" size={11} className="mr-1"/>
+                      Live on {playing.join(', ')} — edits show on screen within a minute or two.
+                    </p>
+                  )}
+
+                  {items === null ? <p className="lbl py-4">Loading items…</p>
+                   : items.length === 0 ? <p className="lbl py-4">Empty playlist.</p>
+                   : items.map(function(it, i) {
+                    return (
+                      <div key={(it._id||'') + i} className="flex items-center gap-2 py-1.5"
+                           style={{borderBottom:'1px solid rgba(56,224,240,.06)'}}>
+                        {it.thumbnail
+                          ? <img src={it.thumbnail} alt="" className="w-12 h-8 object-cover flex-none"
+                                 style={{border:'1px solid var(--line)'}}/>
+                          : <span className="w-12 h-8 flex-none flex items-center justify-center"
+                                  style={{border:'1px dashed var(--line)'}}>
+                              <Icon name="image" size={11} style={{color:'var(--txt3)'}}/>
+                            </span>}
+                        <span className="mono lbl flex-none" style={{width:'20px'}}>{i+1}</span>
+                        <span className="text-xs flex-1 truncate" style={{color:'var(--txt2)'}}
+                              title={it.filename}>{it.filename}</span>
+
+                        <span className="flex items-center gap-1 flex-none">
+                          <Input type="number" min="1" max="300" className="text-xs"
+                                 style={{width:'58px', padding:'3px 6px'}}
+                                 value={durDraft[i] !== undefined ? durDraft[i] : (it.duration ?? 7)}
+                                 onChange={e=>setDurDraft(prev=>Object.assign({}, prev, {[i]: e.target.value}))}
+                                 onBlur={()=>{ if (durDraft[i] !== undefined && Number(durDraft[i]) !== it.duration) commitDur(i); }}
+                                 onKeyDown={e=>{ if (e.key === 'Enter') e.target.blur(); }}/>
+                          <span className="lbl">s</span>
+                        </span>
+
+                        <Button size="sm" variant="ghost" onClick={()=>move(i, i-1)}
+                                disabled={i===0 || !!busy} aria-label="Move up">
+                          <Icon name="up" size={11}/>
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={()=>move(i, i+1)}
+                                disabled={i===items.length-1 || !!busy} aria-label="Move down">
+                          <Icon name="down" size={11}/>
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={()=>removeAt(i)}
+                                disabled={!!busy} aria-label="Remove from playlist">
+                          <Icon name="close" size={11}/>
+                        </Button>
+                      </div>
+                    );
+                  })}
+
+                  <div className="flex gap-2 mt-3">
+                    <Button size="sm" variant="outline" onClick={()=>setShowAdd(true)}>
+                      <Icon name="image"/> Add from creative library
+                    </Button>
+                  </div>
+
+                  {showAdd && (
+                    <CreativePicker allowed={AD_ASPECTS} storeIds={null} multi max={20}
+                      onPickMany={function(chosen){
+                        act('add', async function() {
+                          await callEdge('optisigns', 'addCreatives', {
+                            playlistId: open,
+                            items: chosen.map(c => ({ url: c.public_url, name: c.name })),
+                          });
+                          toast.success(chosen.length + ' added');
+                          await refreshItems(open);
+                        });
+                      }}
+                      onClose={()=>setShowAdd(false)}/>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+        <p className="lbl mt-2">
+          Deleting playlists, assets or screens happens in the OptiSigns dashboard —
+          this key deliberately can't.
+        </p>
+      </Card>
+    </div>
+  );
+}
+
 function SignagePushModal({ storeId, storeName, period, onClose }) {
   const dragPanel = useDragPanel();
   const toast = useToast();
@@ -10597,6 +10853,7 @@ const ASSIGNABLE_SECTIONS = [
   // menu; Products is chain-wide, so a change there affects every store.
   { id:'products',  label:'Products',  admin:true },
   { id:'ads',       label:'Ads',       admin:true },
+  { id:'signage',   label:'Signage',   admin:true },
 ];
 
 function UserAccountsSection({ currentUserId }) {
@@ -13360,6 +13617,7 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
     { id:'creatives', icon:'image', label:'Creatives' },
     { id:'recipes',   icon:'spark', label:'Recipes' },
     { id:'prices',    icon:'search', label:'Price Check' },
+    ...(granted('signage')  ? [{ id:'signage',  icon:'grid',    label:'Signage' }] : []),
     ...(granted('products') ? [{ id:'products', icon:'package', label:'Products' }] : []),
     ...(granted('ads')      ? [{ id:'ads',      icon:'mega',    label:'Ads' }] : []),
     ...(isAdmin ? [
@@ -13457,6 +13715,7 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
         {page==='features'               && <FeaturesPage isAdmin={isAdmin}
                                              myStores={isAdmin ? STORES : STORES.filter(st=>userStoreIds.includes(st.id))}/>}
         {page==='prices'                 && <PriceCheckPage isAdmin={isAdmin}/>}
+        {page==='signage' && granted('signage') && <SignagePage/>}
         {page==='recipes'                && <RecipesPage isAdmin={isAdmin}
                                              myStores={isAdmin ? STORES : STORES.filter(st=>userStoreIds.includes(st.id))}/>}
         {page==='products' && granted('products') && <ProductLibrary/>}

@@ -183,17 +183,19 @@ Deno.serve(async (req) => {
 
       // Per-item duration, when asked for. addPlaylistItems has no duration
       // field, so items that want one are updated after the fact.
-      const wantDur = items.some(it => it.duration && it.duration !== 7);
-      if (wantDur) {
-        for (let i = 0; i < items.length; i++) {
-          const d = items[i].duration;
-          if (!d || d === 7) continue;
-          try {
-            await gql(
-              'mutation($id:String!,$p:UpdatePlaylistItemsInput!){ updatePlaylistItems(_id:$id, payload:$p){ _id } }',
-              { id: playlistId, p: { pos: [i], updates: { duration: d } } }, secret);
-          } catch (_e) { /* duration is cosmetic; the push still stands */ }
-        }
+      // UpdatePlaylistItemsInput is { items: [{ item, pos[] }] } — the item is a
+      // PlaylistItemInput carrying the new duration, applied at the positions.
+      const durUpdates = items
+        .map((it, i) => ({ i, d: it.duration }))
+        .filter(x => x.d && x.d !== 7);
+      if (durUpdates.length) {
+        try {
+          await gql(
+            'mutation($id:String!,$p:UpdatePlaylistItemsInput!){ updatePlaylistItems(_id:$id, payload:$p){ _id } }',
+            { id: playlistId,
+              p: { items: durUpdates.map(x => ({ item: { duration: x.d }, pos: [x.i] })) } },
+            secret);
+        } catch (_e) { /* duration is cosmetic; the push still stands */ }
       }
 
       // Putting it on screens is opt-in and store-scoped: only screens the
@@ -243,8 +245,106 @@ Deno.serve(async (req) => {
       const { error: upErr } = await sb.from('meta_accounts')
         .update({ optisigns_screen_ids: screenIds ?? [] })
         .eq('store_id', storeId);
-      if (upErr) throw upErr;
+      // Supabase errors are plain objects, not Errors — thrown raw they reach
+      // the user as "[object Object]".
+      if (upErr) throw new Error(upErr.message || JSON.stringify(upErr));
       return Response.json({ ok: true }, { headers: corsHeaders });
+    }
+
+    // ── Signage console actions (admin only) ───────────────────────────────
+    // Direct management of what the screens play. Admin-gated: these reach
+    // every screen on the account, including businesses outside the stores.
+    if (['assignScreen','playlistItems','removeItems','moveItems','setDurations',
+         'renamePlaylist','addCreatives','createPlaylist'].includes(body.action)) {
+      if (!isAdmin) throw new Error('Admin only');
+      const secret = await keyFor(body.storeId);
+      const b = body as unknown as {
+        action: string; storeId?: string; screenId?: string; playlistId?: string;
+        name?: string; pos?: number[]; froms?: number[]; to?: number;
+        updates?: Array<{ pos: number; duration: number }>;
+        items?: Array<{ url: string; name: string; duration?: number }>;
+      };
+
+      if (b.action === 'assignScreen') {
+        if (!b.screenId || !b.playlistId) throw new Error('screenId and playlistId required');
+        const d = await gql(
+          'mutation($id:String!,$p:UpdateDeviceInput!){ updateDevice(_id:$id, payload:$p){ _id deviceName currentType currentPlaylistId } }',
+          { id: b.screenId, p: { currentType: 'PLAYLIST', currentPlaylistId: b.playlistId } },
+          secret);
+        return Response.json({ screen: d?.updateDevice ?? null }, { headers: corsHeaders });
+      }
+
+      if (b.action === 'playlistItems') {
+        if (!b.playlistId) throw new Error('playlistId required');
+        const d = await gql(
+          'query($q:QueryPlaylistInput!){ playlists(query:$q){ page { edges { node { _id name assets { _id filename duration type thumbnail webLink } } } } } }',
+          { q: { _id: b.playlistId } }, secret);
+        const node = (d?.playlists?.page?.edges ?? [])
+          .map((e: { node: { _id: string } }) => e.node)
+          .find((p: { _id: string }) => p._id === b.playlistId);
+        if (!node) throw new Error('Playlist not found');
+        return Response.json({ playlist: node }, { headers: corsHeaders });
+      }
+
+      if (b.action === 'removeItems') {
+        if (!b.playlistId || !b.pos?.length) throw new Error('playlistId and pos required');
+        await gql(
+          'mutation($id:String!,$p:RemovePlaylistItemsInput!){ removePlaylistItems(_id:$id, payload:$p){ _id } }',
+          { id: b.playlistId, p: { pos: b.pos } }, secret);
+        return Response.json({ ok: true }, { headers: corsHeaders });
+      }
+
+      if (b.action === 'moveItems') {
+        if (!b.playlistId || !b.froms?.length || b.to == null) throw new Error('playlistId, froms, to required');
+        await gql(
+          'mutation($id:String!,$p:MovePlaylistItemsInput!){ movePlaylistItems(_id:$id, payload:$p){ _id } }',
+          { id: b.playlistId, p: { froms: b.froms, to: b.to } }, secret);
+        return Response.json({ ok: true }, { headers: corsHeaders });
+      }
+
+      if (b.action === 'setDurations') {
+        if (!b.playlistId || !b.updates?.length) throw new Error('playlistId and updates required');
+        await gql(
+          'mutation($id:String!,$p:UpdatePlaylistItemsInput!){ updatePlaylistItems(_id:$id, payload:$p){ _id } }',
+          { id: b.playlistId,
+            p: { items: b.updates.map(u => ({ item: { duration: u.duration }, pos: [u.pos] })) } },
+          secret);
+        return Response.json({ ok: true }, { headers: corsHeaders });
+      }
+
+      if (b.action === 'renamePlaylist') {
+        if (!b.playlistId || !b.name?.trim()) throw new Error('playlistId and name required');
+        await gql(
+          'mutation($p:PlaylistInput!){ savePlaylist(payload:$p){ _id name } }',
+          { p: { _id: b.playlistId, name: b.name.trim() } }, secret);
+        return Response.json({ ok: true }, { headers: corsHeaders });
+      }
+
+      if (b.action === 'createPlaylist') {
+        if (!b.name?.trim()) throw new Error('name required');
+        const d = await gql(
+          'mutation($p:PlaylistInput!){ savePlaylist(payload:$p){ _id name } }',
+          { p: { name: b.name.trim() } }, secret);
+        return Response.json({ playlist: d?.savePlaylist ?? null }, { headers: corsHeaders });
+      }
+
+      if (b.action === 'addCreatives') {
+        if (!b.playlistId || !b.items?.length) throw new Error('playlistId and items required');
+        const ids: string[] = [];
+        for (const it of b.items) {
+          if (!/^https:\/\//.test(it.url)) throw new Error('Item URLs must be https');
+          const a = await gql(
+            'mutation($p:AssetInput!){ saveAsset(payload:$p){ _id } }',
+            { p: { originalFileName: it.name, webLink: it.url,
+                   webType: 'website', fileType: 'web', type: 'web' } }, secret);
+          if (!a?.saveAsset?._id) throw new Error('No asset id for "' + it.name + '"');
+          ids.push(a.saveAsset._id);
+        }
+        await gql(
+          'mutation($id:String!,$p:AddPlaylistItemsInput!){ addPlaylistItems(_id:$id, payload:$p){ _id } }',
+          { id: b.playlistId, p: { ids, pos: 0, type: 'ASSET' } }, secret);
+        return Response.json({ added: ids.length }, { headers: corsHeaders });
+      }
     }
 
     // ── gql (admin only) ────────────────────────────────────────────────────
@@ -259,7 +359,10 @@ Deno.serve(async (req) => {
 
     throw new Error(`Unknown action: ${body.action}`);
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
+    const msg = e instanceof Error ? e.message
+      : (e && typeof e === 'object' && 'message' in e) ? String((e as { message: unknown }).message)
+      : typeof e === 'object' ? JSON.stringify(e)
+      : String(e);
     return Response.json({ error: msg }, { status: 400, headers: corsHeaders });
   }
 });

@@ -4076,6 +4076,7 @@ function SignagePushModal({ storeId, storeName, period, onClose }) {
   const [mapped,   setMapped]   = useState([]);
   const [pickScr,  setPickScr]  = useState([]);
   const [picked,   setPicked]   = useState(null);   // creative ids; null = all
+  const [aspect,   setAspect]   = useState('all');
   const [name,     setName]     = useState(signagePlaylistName(storeName, period));
   const [duration, setDuration] = useState(8);
   const [busy,     setBusy]     = useState(false);
@@ -4083,9 +4084,13 @@ function SignagePushModal({ storeId, storeName, period, onClose }) {
 
   // This month's creatives for this store. Screens are 16:9, so those lead;
   // squares still work — OptiSigns letterboxes them.
-  const monthCreatives = creatives
+  const allMonth = creatives
     .filter(c => c.store_id === storeId && String(c.period) === String(period))
     .sort((a,b) => (a.aspect === '16:9' ? -1 : 1) - (b.aspect === '16:9' ? -1 : 1));
+  const sizesPresent = [...new Set(allMonth.map(c => c.aspect))];
+  const monthCreatives = aspect === 'all'
+    ? allMonth
+    : allMonth.filter(c => c.aspect === aspect);
 
   useEffect(function() {
     let alive = true;
@@ -4183,7 +4188,25 @@ function SignagePushModal({ storeId, storeName, period, onClose }) {
                   </div>
                 </div>
 
-                <Label>Images · {chosen.length} of {monthCreatives.length}</Label>
+                <div className="flex items-center gap-2 mb-1 flex-wrap">
+                  <Label className="mb-0">Images · {chosen.length} of {monthCreatives.length}</Label>
+                  <span className="flex-1"/>
+                  {sizesPresent.length > 1 && (
+                    <div className="flex" style={{border:'1px solid var(--line)'}}>
+                      {[['all','All']].concat(sizesPresent.map(a=>[a,a])).map(function(o) {
+                        const on = aspect === o[0];
+                        return (
+                          <button key={o[0]} onClick={()=>setAspect(o[0])}
+                            className="px-2.5 py-1 text-xs"
+                            style={{ background:on?'var(--cy-glow)':'transparent',
+                                     color:on?'var(--cy)':'var(--txt2)' }}>
+                            {o[1]}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
                 <div className="grid grid-cols-4 sm:grid-cols-6 gap-2 mb-4"
                      style={{maxHeight:'190px', overflowY:'auto'}}>
                   {monthCreatives.map(function(c) {

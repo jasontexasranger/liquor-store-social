@@ -1791,49 +1791,87 @@ function bclUnitLabel(row) {
 function PriceCheckPage({ isAdmin }) {
   const toast = useToast();
   const [q,       setQ]       = useState('');
+  const [cat,     setCat]     = useState('all');
+  const [sub,     setSub]     = useState('all');
+  const [sort,    setSort]    = useState({ col:'name', dir:'asc' });
+  const [pageN,   setPageN]   = useState(0);
   const [rows,    setRows]    = useState([]);
-  const [count,   setCount]   = useState(null);   // total in the table
+  const [total,   setTotal]   = useState(0);
+  const [count,   setCount]   = useState(null);
   const [label,   setLabel]   = useState('');
+  const [updated, setUpdated] = useState(null);
+  const [cats,    setCats]    = useState([]);
+  const [subs,    setSubs]    = useState([]);
   const [busy,    setBusy]    = useState(false);
   const [syncing, setSyncing] = useState(false);
-  const [live,    setLive]    = useState({});     // sku -> { price, at } | { error }
+  const [live,    setLive]    = useState({});
+  const PER = 50;
 
-  // How fresh is the list, and is there anything in it at all?
+  // How fresh the list is, and the category tree for the filters. The list
+  // label says which published list this is; updated_at says when it was
+  // actually pulled — both matter, and they answer different questions.
   const loadMeta = useCallback(async function() {
     const sb = getSB(); if (!sb) return;
     const { count: n } = await sb.from('bcl_products').select('sku', { count:'exact', head:true });
     setCount(n ?? 0);
-    if (n) {
-      const { data } = await sb.from('bcl_products').select('list_label').limit(1);
-      if (data && data[0]) setLabel(data[0].list_label || '');
+    if (!n) return;
+    const { data: meta } = await sb.from('bcl_products')
+      .select('list_label, updated_at').order('updated_at', { ascending:false }).limit(1);
+    if (meta && meta[0]) {
+      setLabel(meta[0].list_label || '');
+      setUpdated(meta[0].updated_at || null);
     }
+    const { data: c } = await sb.from('bcl_products').select('category, subcategory').limit(10000);
+    const catSet = {}, subSet = {};
+    (c || []).forEach(function(r) {
+      if (r.category) {
+        catSet[r.category] = true;
+        (subSet[r.category] = subSet[r.category] || {})[r.subcategory || ''] = true;
+      }
+    });
+    setCats(Object.keys(catSet).sort());
+    setSubs(subSet);
   }, []);
   useEffect(function(){ loadMeta(); }, [loadMeta]);
 
-  // Search-as-you-type against the local table. Debounced so half-typed words
-  // don't stack queries.
+  // One query serves both browsing and searching: filters, sort and paging are
+  // all pushed to the database, so flicking through 8,000 rows stays instant.
   useEffect(function() {
-    const term = q.trim();
-    if (term.length < 2) { setRows([]); return; }
+    const sb = getSB(); if (!sb || count === null || count === 0) return;
     let alive = true;
     const t = setTimeout(async function() {
       setBusy(true);
-      const sb = getSB();
-      const { data } = await sb.from('bcl_products')
-        .select('*')
-        .or('name.ilike.%' + term.replace(/[%,()]/g, '') + '%,sku.eq.' + term.replace(/[^0-9]/g, '').padStart(1,'0'))
-        .order('name')
-        .limit(40);
-      if (alive) { setRows(data || []); setBusy(false); }
-    }, 250);
+      let qy = sb.from('bcl_products').select('*', { count:'exact' });
+      const term = q.trim();
+      if (term.length >= 2) {
+        const digits = term.replace(/[^0-9]/g, '');
+        qy = (digits.length >= 4 && digits.length === term.length)
+          ? qy.eq('sku', digits)
+          : qy.ilike('name', '%' + term.replace(/[%,()]/g, '') + '%');
+      }
+      if (cat !== 'all') qy = qy.eq('category', cat);
+      if (sub !== 'all') qy = qy.eq('subcategory', sub);
+      qy = qy.order(sort.col, { ascending: sort.dir === 'asc', nullsFirst: false })
+             .range(pageN * PER, pageN * PER + PER - 1);
+      const { data, count: n } = await qy;
+      if (alive) { setRows(data || []); setTotal(n ?? 0); setBusy(false); }
+    }, q.trim() ? 250 : 0);
     return function(){ alive = false; clearTimeout(t); };
-  }, [q]);
+  }, [q, cat, sub, sort, pageN, count]);
+
+  // Any filter change starts back at page one.
+  useEffect(function(){ setPageN(0); }, [q, cat, sub, sort]);
+
+  const flip = col => setSort(prev => ({
+    col,
+    // Prices sort high-first on first click — "what's expensive" is the
+    // question people bring to a price column.
+    dir: prev.col === col ? (prev.dir === 'asc' ? 'desc' : 'asc') : (col === 'price' ? 'desc' : 'asc'),
+  }));
 
   const checkLive = async function(sku) {
     setLive(prev => Object.assign({}, prev, { [sku]: { loading:true } }));
     try {
-      // The existing catalogue search, by SKU — same guarded endpoint the
-      // product import uses, one request per press.
       const r = await callEdge('bcliquor', 'search', { query: sku });
       const hit = (r.products || []).find(p => p.sku === sku);
       if (!hit) throw new Error('Not in the live catalogue — may be delisted');
@@ -1856,13 +1894,26 @@ function PriceCheckPage({ isAdmin }) {
     finally { setSyncing(false); }
   };
 
+  const Th = function({ col, children, right }) {
+    const on = sort.col === col;
+    return (
+      <th className="lbl" style={{textAlign: right ? 'right' : 'left', padding:'0 8px 8px'}}>
+        <button onClick={()=>flip(col)} className="lbl hover:underline"
+                style={{color: on ? 'var(--cy)' : undefined}}>
+          {children}{on ? (sort.dir === 'asc' ? ' ↑' : ' ↓') : ''}
+        </button>
+      </th>
+    );
+  };
+
+  const pages = Math.max(1, Math.ceil(total / PER));
+
   return (
     <div className="space-y-4">
       <Card>
         <div className="flex items-center gap-3 mb-1 flex-wrap">
           <span className="ttl">BCL Price Check</span>
           <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
-          {label && <span className="lbl">{label} list · {count} products</span>}
           {isAdmin && (
             <Button size="sm" variant="outline" onClick={sync} loading={syncing}>
               <Icon name="refresh"/> Update list
@@ -1870,8 +1921,9 @@ function PriceCheckPage({ isAdmin }) {
           )}
         </div>
         <p className="lbl mb-4">
-          BC Liquor Stores' published prices, for comparison. The list is updated
-          a few times a year — use the live check when it matters today.
+          {label ? label + ' price list · ' + count + ' products' : 'BC Liquor Stores\' published prices'}
+          {updated ? ' · imported ' + new Date(updated).toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'}) : ''}
+          {' · use the live check when today\'s price matters'}
         </p>
 
         {count === 0 && (
@@ -1886,62 +1938,89 @@ function PriceCheckPage({ isAdmin }) {
 
         {count > 0 && (
           <React.Fragment>
-            <Input value={q} onChange={e=>setQ(e.target.value)} className="max-w-md"
-                   placeholder="Search by product name or SKU…"/>
+            <div className="flex gap-2 flex-wrap items-center mb-4">
+              <Input value={q} onChange={e=>setQ(e.target.value)} className="max-w-xs text-sm"
+                     placeholder="Search name or SKU…"/>
+              <Select value={cat} className="w-auto text-xs"
+                      onChange={e=>{ setCat(e.target.value); setSub('all'); }}>
+                <option value="all">All categories</option>
+                {cats.map(c=><option key={c} value={c}>{c}</option>)}
+              </Select>
+              {cat !== 'all' && subs[cat] && Object.keys(subs[cat]).filter(Boolean).length > 1 && (
+                <Select value={sub} className="w-auto text-xs" onChange={e=>setSub(e.target.value)}>
+                  <option value="all">All {cat.toLowerCase()}</option>
+                  {Object.keys(subs[cat]).filter(Boolean).sort().map(x=>
+                    <option key={x} value={x}>{x}</option>)}
+                </Select>
+              )}
+              <span className="mono text-xs ml-auto self-center" style={{color:'var(--txt3)'}}>
+                {busy ? '…' : total + ' product' + (total===1?'':'s')}
+              </span>
+            </div>
 
-            {busy && <p className="lbl mt-3">Searching…</p>}
-            {!busy && q.trim().length >= 2 && rows.length === 0 && (
-              <p className="lbl mt-3">Nothing matches "{q.trim()}".</p>
-            )}
+            <div className="overflow-x-auto">
+              <table style={{width:'100%', minWidth:'720px', borderCollapse:'collapse'}}>
+                <thead>
+                  <tr style={{borderBottom:'1px solid var(--line2)'}}>
+                    <Th col="name">Product</Th>
+                    <Th col="litres">Size</Th>
+                    <Th col="subcategory">Category</Th>
+                    <Th col="alcohol_pct">Alc %</Th>
+                    <Th col="price">BCL price</Th>
+                    <th className="lbl" style={{textAlign:'left', padding:'0 8px 8px'}}>Live</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map(function(r) {
+                    const lv = live[r.sku];
+                    return (
+                      <tr key={r.sku} style={{borderBottom:'1px solid rgba(56,224,240,.07)'}}>
+                        <td style={{padding:'7px 8px'}}>
+                          <p className="text-xs" style={{color:'var(--txt)'}}>{r.name}</p>
+                          <p className="lbl">SKU {r.sku}{r.country ? ' · ' + r.country : ''}</p>
+                        </td>
+                        <td className="text-xs" style={{padding:'7px 8px', color:'var(--txt2)', whiteSpace:'nowrap'}}>
+                          {bclUnitLabel(r)}
+                        </td>
+                        <td className="text-xs" style={{padding:'7px 8px', color:'var(--txt2)'}}>
+                          {r.subcategory || r.category || ''}
+                        </td>
+                        <td className="mono text-xs" style={{padding:'7px 8px', color:'var(--txt2)'}}>
+                          {r.alcohol_pct != null ? r.alcohol_pct + '%' : ''}
+                        </td>
+                        <td className="mono text-sm" style={{padding:'7px 8px', color:'var(--cy)', whiteSpace:'nowrap'}}>
+                          {r.price != null ? money(r.price) : '—'}
+                        </td>
+                        <td style={{padding:'7px 8px', whiteSpace:'nowrap'}}>
+                          {lv && lv.loading ? <span className="lbl">…</span>
+                           : lv && lv.error ? <span className="text-xs" title={lv.error} style={{color:'var(--amb)'}}>{lv.error.length > 24 ? 'Unavailable' : lv.error}</span>
+                           : lv ? (
+                             <span className="mono text-sm" style={{color: lv.price !== lv.regular ? 'var(--grn)' : 'var(--txt)'}}>
+                               {money(lv.price)}
+                               {lv.regular != null && lv.regular !== lv.price &&
+                                 <span className="lbl"> reg {money(lv.regular)}</span>}
+                               <span className="lbl block">as of {lv.at}</span>
+                             </span>
+                           ) : (
+                             <Button size="sm" variant="ghost" onClick={()=>checkLive(r.sku)}>Check</Button>
+                           )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
 
-            {rows.length > 0 && (
-              <div className="overflow-x-auto mt-4">
-                <table style={{width:'100%', minWidth:'680px', borderCollapse:'collapse'}}>
-                  <thead>
-                    <tr style={{borderBottom:'1px solid var(--line2)'}}>
-                      {['Product','Size','Category','BCL price','Live'].map(h=>(
-                        <th key={h} className="lbl" style={{textAlign:'left', padding:'0 8px 8px'}}>{h}</th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rows.map(function(r) {
-                      const lv = live[r.sku];
-                      return (
-                        <tr key={r.sku} style={{borderBottom:'1px solid rgba(56,224,240,.07)'}}>
-                          <td style={{padding:'7px 8px'}}>
-                            <p className="text-xs" style={{color:'var(--txt)'}}>{r.name}</p>
-                            <p className="lbl">SKU {r.sku}{r.country ? ' · ' + r.country : ''}</p>
-                          </td>
-                          <td className="text-xs" style={{padding:'7px 8px', color:'var(--txt2)', whiteSpace:'nowrap'}}>
-                            {bclUnitLabel(r)}
-                          </td>
-                          <td className="text-xs" style={{padding:'7px 8px', color:'var(--txt2)'}}>
-                            {r.subcategory || r.category || ''}
-                          </td>
-                          <td className="mono text-sm" style={{padding:'7px 8px', color:'var(--cy)', whiteSpace:'nowrap'}}>
-                            {r.price != null ? money(r.price) : '—'}
-                            <span className="lbl block">{r.list_label}</span>
-                          </td>
-                          <td style={{padding:'7px 8px', whiteSpace:'nowrap'}}>
-                            {lv && lv.loading ? <span className="lbl">…</span>
-                             : lv && lv.error ? <span className="text-xs" title={lv.error} style={{color:'var(--amb)'}}>{lv.error.length > 24 ? 'Unavailable' : lv.error}</span>
-                             : lv ? (
-                               <span className="mono text-sm" style={{color: lv.price !== lv.regular ? 'var(--grn)' : 'var(--txt)'}}>
-                                 {money(lv.price)}
-                                 {lv.regular != null && lv.regular !== lv.price &&
-                                   <span className="lbl"> reg {money(lv.regular)}</span>}
-                                 <span className="lbl block">as of {lv.at}</span>
-                               </span>
-                             ) : (
-                               <Button size="sm" variant="ghost" onClick={()=>checkLive(r.sku)}>Check</Button>
-                             )}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+            {pages > 1 && (
+              <div className="flex items-center gap-2 mt-4 justify-end">
+                <Button size="sm" variant="ghost" onClick={()=>setPageN(p=>Math.max(0,p-1))}
+                        disabled={pageN===0}><Icon name="back" size={12}/></Button>
+                <span className="mono text-xs" style={{color:'var(--txt2)'}}>
+                  {pageN+1} / {pages}
+                </span>
+                <Button size="sm" variant="ghost" onClick={()=>setPageN(p=>Math.min(pages-1,p+1))}
+                        disabled={pageN>=pages-1}><Icon name="fwd" size={12}/></Button>
               </div>
             )}
           </React.Fragment>

@@ -3717,6 +3717,24 @@ const signagePlaylistName = (storeName, period) => {
   return storeName.split(' ')[0].toUpperCase() + ' LRS - ' + mon + ' ' + String(y).slice(2);
 };
 
+// One permanent schedule per store — OptiSigns keys can't delete schedules,
+// so it's found by this name and reused forever. Month pushes become dated
+// entries inside it.
+const signageScheduleName = storeName =>
+  storeName.split(' ')[0].toUpperCase() + ' LRS SCHEDULE';
+
+const isoDay = d => {
+  const p = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth()+1) + '-' + p(d.getDate());
+};
+
+// 'YYYY-MM-DD' → '1 Sep 2026' without timezone drift.
+const fmtDay = s => {
+  const [y, m, d] = String(s).split('-').map(Number);
+  if (!y || !m || !d) return String(s);
+  return new Date(y, m-1, d).toLocaleDateString('en-CA', { day:'numeric', month:'short', year:'numeric' });
+};
+
 // ─────────────────────────────────────────────
 // SIGNAGE CONSOLE
 // ─────────────────────────────────────────────
@@ -3763,6 +3781,7 @@ function SignagePage() {
   const [durDraft,  setDurDraft]  = useState({});     // pos -> value being typed
   const [showAdd,   setShowAdd]   = useState(false);
   const [newName,   setNewName]   = useState('');
+  const [schedules, setSchedules] = useState(null);
 
   useEffect(function() {
     const sb = getSB(); if (!sb) return;
@@ -3779,15 +3798,19 @@ function SignagePage() {
   }, []);
 
   const load = useCallback(async function() {
-    setScreens(null); setPlaylists(null);
+    setScreens(null); setPlaylists(null); setSchedules(null);
     try {
-      const [s, p] = await Promise.all([
+      const [s, p, sc] = await Promise.all([
         callEdge('optisigns', 'listScreens', { storeId: account }),
         callEdge('optisigns', 'listPlaylists', { storeId: account }),
+        callEdge('optisigns', 'listSchedules', { storeId: account }),
       ]);
       setScreens(s.screens || []);
       setPlaylists((p.playlists || []).sort((a,b)=>a.name.localeCompare(b.name)));
-    } catch(e) { setScreens([]); setPlaylists([]); toast.error(e.message); }
+      // LRS schedules first — the pub and office ones matter less here.
+      setSchedules((sc.schedules || []).sort((a,b)=>
+        (/LRS SCHEDULE/i.test(b.name) - /LRS SCHEDULE/i.test(a.name)) || a.name.localeCompare(b.name)));
+    } catch(e) { setScreens([]); setPlaylists([]); setSchedules([]); toast.error(e.message); }
   }, [account]);
   useEffect(function(){ setOpen(null); setItems(null); load(); }, [load]);
 
@@ -3895,7 +3918,11 @@ function SignagePage() {
                       </td>
                       <td className="text-xs" style={{padding:'7px 8px', color:'var(--cy)'}}>
                         {sc.currentType === 'playlist' ? plName(sc.currentPlaylistId)
+                         : (sc.currentType || '').toLowerCase() === 'schedule'
+                           ? ((schedules||[]).find(x=>x._id===sc.currentScheduleId)||{}).name || 'schedule'
                          : sc.currentType || '—'}
+                        {(sc.currentType || '').toLowerCase() === 'schedule' &&
+                          <span className="lbl block" style={{color:'var(--txt3)'}}>on a schedule</span>}
                       </td>
                       <td style={{padding:'7px 8px'}}>
                         {/* The dropdown resets to placeholder after each change;
@@ -3917,6 +3944,66 @@ function SignagePage() {
             </table>
           </div>
         )}
+      </Card>
+
+      <Card>
+        <div className="flex items-center gap-3 mb-4">
+          <span className="ttl">Scheduled runs</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+        </div>
+        {schedules === null ? <p className="lbl text-center py-6">Loading…</p>
+         : schedules.length === 0 ? (
+          <p className="lbl py-2">
+            No schedules yet. Push a month with "Run on set dates" and one is created for the store.
+          </p>
+        ) : schedules.map(function(s) {
+          return (
+            <div key={s._id} className="mb-2" style={{border:'1px solid var(--line)'}}>
+              <div className="flex items-center gap-3 p-3">
+                <span className="text-xs font-semibold" style={{color:'var(--txt)'}}>{s.name}</span>
+                <span className="lbl">{s.items.length} run{s.items.length===1?'':'s'}</span>
+              </div>
+              {s.items.length > 0 && (
+                <div className="px-3 pb-2">
+                  {s.items
+                    .slice()
+                    .sort((a,b)=>String(a.startDate).localeCompare(String(b.startDate)))
+                    .map(function(it) {
+                    const past = it.endDate && it.endDate < isoDay(new Date());
+                    const live = !past && it.startDate <= isoDay(new Date());
+                    return (
+                      <div key={it._id} className="flex items-center gap-3 py-1.5"
+                           style={{borderTop:'1px solid rgba(56,224,240,.07)'}}>
+                        <span className="text-xs" style={{color: past ? 'var(--txt3)' : 'var(--txt)'}}>
+                          {it.playlistName}
+                        </span>
+                        <span className="lbl">{fmtDay(it.startDate)} – {fmtDay(it.endDate)}</span>
+                        {live && <span className="lbl" style={{color:'var(--grn)'}}>live now</span>}
+                        {past && <span className="lbl">ended</span>}
+                        <span className="flex-1"/>
+                        <button
+                          disabled={busy === 'schrm-' + it._id}
+                          onClick={function(){
+                            if (!confirm('Take "' + it.playlistName + '" (' + fmtDay(it.startDate) + ' – '
+                                + fmtDay(it.endDate) + ') off this schedule?'
+                                + (live ? '\n\nIt is live right now — screens on this schedule stop showing it immediately.' : ''))) return;
+                            act('schrm-' + it._id, async function() {
+                              await callEdge('optisigns', 'removeScheduleEntry', { itemId: it._id, storeId: account });
+                              toast.success('Removed from the schedule');
+                              await load();
+                            });
+                          }}
+                          style={{color:'var(--red)'}} title="Remove this run">
+                          <Icon name="close" size={12}/>
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </Card>
 
       <Card>
@@ -4071,7 +4158,7 @@ function SignagePage() {
   );
 }
 
-function SignagePushModal({ storeId, storeName, period, onClose }) {
+function SignagePushModal({ storeId, storeName, period, periodRow, onClose }) {
   const dragPanel = useDragPanel();
   const toast = useToast();
   const { creatives } = useCreatives();
@@ -4084,6 +4171,16 @@ function SignagePushModal({ storeId, storeName, period, onClose }) {
   const [duration, setDuration] = useState(8);
   const [busy,     setBusy]     = useState(false);
   const [done,     setDone]     = useState(null);
+
+  // When the month's run dates start in the future, the natural intent is
+  // "have it appear on the start date" — so scheduled is the default then,
+  // and "now" is the default when the run is already underway.
+  const runR = periodRange(period, periodRow);
+  const runStart = isoDay(runR.start);
+  const runEnd   = isoDay(runR.end);
+  const [when,      setWhen]      = useState(runStart > isoDay(new Date()) ? 'dates' : 'now');
+  const [schedFrom, setSchedFrom] = useState(runStart);
+  const [schedTo,   setSchedTo]   = useState(runEnd);
 
   // This month's creatives for this store. Screens are 16:9, so those lead;
   // squares still work — OptiSigns letterboxes them.
@@ -4126,6 +4223,9 @@ function SignagePushModal({ storeId, storeName, period, onClose }) {
         storeId, name,
         items: chosen.map(c => ({ url: c.public_url, name: c.name, duration: Number(duration) || 8 })),
         screenIds: pickScr,
+        schedule: when === 'dates'
+          ? { name: signageScheduleName(storeName), startDate: schedFrom, endDate: schedTo }
+          : undefined,
       });
       setDone(r);
       toast.success('Playlist "' + r.name + '" created with ' + r.items + ' items'
@@ -4154,9 +4254,18 @@ function SignagePushModal({ storeId, storeName, period, onClose }) {
             <p className="text-sm mb-2" style={{color:'var(--txt)'}}>
               "{done.name}" is on OptiSigns with {done.items} item{done.items===1?'':'s'}.
             </p>
+            {done.scheduled && (
+              <p className="text-xs mb-2" style={{color:'var(--cy)'}}>
+                Scheduled {fmtDay(done.scheduled.startDate)} – {fmtDay(done.scheduled.endDate)} on
+                "{done.scheduled.name}".
+                {done.bridged ? ' The current playlist keeps playing until then.' : ''}
+              </p>
+            )}
             {done.assigned.length > 0 && (
               <p className="text-xs mb-2" style={{color:'var(--grn)'}}>
-                Now playing on {done.assigned.length} screen{done.assigned.length===1?'':'s'}.
+                {done.scheduled
+                  ? done.assigned.length + ' screen' + (done.assigned.length===1?'':'s') + ' set to follow the schedule.'
+                  : 'Now playing on ' + done.assigned.length + ' screen' + (done.assigned.length===1?'':'s') + '.'}
               </p>
             )}
             {done.failedAssign.length > 0 && (
@@ -4228,7 +4337,45 @@ function SignagePushModal({ storeId, storeName, period, onClose }) {
                   })}
                 </div>
 
-                <Label>Put it on screens now</Label>
+                <Label>When should it play?</Label>
+                <div className="flex mb-2" style={{border:'1px solid var(--line)'}}>
+                  {[['now','Go live now'],['dates','Run on set dates']].map(function(o) {
+                    const on = when === o[0];
+                    return (
+                      <button key={o[0]} onClick={()=>setWhen(o[0])}
+                        className="px-3 py-1.5 text-xs flex-1"
+                        style={{ background:on?'var(--cy-glow)':'transparent',
+                                 color:on?'var(--cy)':'var(--txt2)' }}>
+                        {o[1]}
+                      </button>
+                    );
+                  })}
+                </div>
+                {when === 'dates' ? (
+                  <div className="mb-3">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <Label>Starts</Label>
+                        <Input type="date" value={schedFrom}
+                               onChange={e=>setSchedFrom(e.target.value)} className="text-xs"/>
+                      </div>
+                      <div>
+                        <Label>Ends</Label>
+                        <Input type="date" value={schedTo}
+                               onChange={e=>setSchedTo(e.target.value)} className="text-xs"/>
+                      </div>
+                    </div>
+                    <p className="lbl mt-1">
+                      Prefilled from this month's run dates. Screens switch over automatically —
+                      whatever's playing now stays up until the start date, and this playlist
+                      stops after the end date.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="lbl mb-3">Ticked screens switch to this playlist immediately.</p>
+                )}
+
+                <Label>{when === 'dates' ? 'Screens on this run' : 'Put it on screens now'}</Label>
                 {screens === null ? <p className="lbl mb-3">Loading screens…</p>
                  : mappedScreens.length === 0 ? (
                   <p className="text-xs mb-3" style={{color:'var(--amb)'}}>
@@ -4523,6 +4670,23 @@ function FeatureCreativeBatch({ storeId, storeName, period, rows, products, camp
 
 const DOW_NAMES = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
+// When a feature month actually runs. Explicit dates on the period win;
+// absent, it's the calendar month — which is what every month so far has been.
+function periodRange(period, periodRow) {
+  const [y, m] = String(period).split('-').map(Number);
+  const start = (periodRow && periodRow.starts_on)
+    ? new Date(periodRow.starts_on + 'T00:00:00')
+    : new Date(y, m-1, 1);
+  const end = (periodRow && periodRow.ends_on)
+    ? new Date(periodRow.ends_on + 'T23:59:59')
+    : new Date(y, m, 0, 23, 59, 59);
+  return { start, end };
+}
+
+const rangeLabel = r =>
+  r.start.toLocaleDateString(undefined,{day:'numeric',month:'short'}) + ' – ' +
+  r.end.toLocaleDateString(undefined,{day:'numeric',month:'short',year:'numeric'});
+
 // The prompts say no hashtags, but a model that has read the whole internet
 // drifts back to them, and a stray #SummerSale would go out unnoticed on an
 // approved post. Belt and braces.
@@ -4637,11 +4801,11 @@ const DEFAULT_SLOTS = [
 
 // Every occurrence of the chosen weekday/hour slots inside the month, in order,
 // starting from `from` so a plan built mid-month doesn't schedule into the past.
-function planSlots(period, times, count, from) {
+function planSlots(period, times, count, from, range) {
   if (!times.length || count <= 0) return [];
-  const [y, m] = String(period).split('-').map(Number);
-  const first = new Date(y, m-1, 1);
-  const last  = new Date(y, m, 0);
+  const r = range || periodRange(period, null);
+  const first = new Date(r.start.getFullYear(), r.start.getMonth(), r.start.getDate());
+  const last  = new Date(r.end.getFullYear(), r.end.getMonth(), r.end.getDate());
   const out = [];
 
   for (let d = new Date(first); d <= last; d.setDate(d.getDate()+1)) {
@@ -4681,7 +4845,8 @@ function groupFeatures(rows, products, grouping, maxPerPost) {
   return groups;
 }
 
-function PostPlanBuilder({ storeId, storeName, period, rows, products, onClose, onDone }) {
+function PostPlanBuilder({ storeId, storeName, period, periodRow, rows, products, onClose, onDone }) {
+  const runRange = periodRange(period, periodRow);
   const dragPanel = useDragPanel();
   const toast = useToast();
   const { creatives } = useCreatives();
@@ -4758,7 +4923,7 @@ function PostPlanBuilder({ storeId, storeName, period, rows, products, onClose, 
   // Every slot left in the month, not just enough for one pass through the
   // features. Twelve features at three a week leaves half of August empty
   // otherwise, and a feature is on all month — running it twice is the point.
-  const allSlots = planSlots(period, times, 9999, new Date());
+  const allSlots = planSlots(period, times, 9999, new Date(), runRange);
 
   // A slot is taken if something is already booked near it. Two posts ninety
   // minutes apart read as a double post, so the guard is a window rather than
@@ -4819,7 +4984,7 @@ function PostPlanBuilder({ storeId, storeName, period, rows, products, onClose, 
           'Write a short Facebook and Instagram post for ' + storeName + ', a liquor store in British Columbia.\n\n' +
           (group.category ? 'This post features our ' + group.category + ' specials:\n' : 'This post features:\n') +
           lines + '\n\n' +
-          'These prices run all of ' + monthLabel(period) + '. Say "this month", never "this week", ' +
+          'These prices run ' + rangeLabel(runRange) + '. Say "this month", never "this week", ' +
           '"today", "this weekend" or anything else that implies a shorter window — ' +
           'the same products are posted repeatedly through the month.\n' +
           'Rules: Canadian English spelling throughout (colour, flavour, favourite, litre, centre). ' +
@@ -5064,7 +5229,7 @@ function PostPlanBuilder({ storeId, storeName, period, rows, products, onClose, 
 
             <div className="flex gap-2 justify-end items-center">
               <span className="lbl mr-auto">
-                {planned.length} post{planned.length===1?'':'s'} filling {monthLabel(period)} · all need approval
+                {planned.length} post{planned.length===1?'':'s'} filling {rangeLabel(runRange)} · all need approval
               </span>
               <Button size="sm" variant="outline" onClick={onClose}>Cancel</Button>
               <Button size="sm" onClick={generate} disabled={!planned.length}>
@@ -5289,6 +5454,47 @@ function FeaturesPage({ isAdmin, myStores }) {
           {periodRow && <Badge color={periodRow.status==='closed'?'gray':periodRow.status==='active'?'green':'yellow'}>{periodRow.status}</Badge>}
         </div>
 
+        {/* When these prices run. Defaults to the calendar month; setting
+            dates here travels everywhere the feature goes — post scheduling,
+            ad campaign dates, whatever is built next. */}
+        <div className="flex items-center gap-2 mb-4 flex-wrap">
+          <span className="lbl">Runs</span>
+          <Input type="date" className="w-auto text-xs"
+            value={(periodRow && periodRow.starts_on) || monthKey(period).slice(0,8) + '01'}
+            onChange={async function(e){
+              try {
+                const p = await ensurePeriod();
+                await getSB().from('feature_periods').update({ starts_on: e.target.value || null }).eq('id', p.id);
+                await reload();
+              } catch(err){ toast.error(err.message); }
+            }}/>
+          <span className="lbl">to</span>
+          <Input type="date" className="w-auto text-xs"
+            value={(periodRow && periodRow.ends_on) || (function(){
+              const [y,m] = period.split('-').map(Number);
+              const d = new Date(y, m, 0);
+              return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+            })()}
+            onChange={async function(e){
+              try {
+                const p = await ensurePeriod();
+                await getSB().from('feature_periods').update({ ends_on: e.target.value || null }).eq('id', p.id);
+                await reload();
+              } catch(err){ toast.error(err.message); }
+            }}/>
+          {periodRow && (periodRow.starts_on || periodRow.ends_on) ? (
+            <button className="lbl hover:underline"
+              onClick={async function(){
+                try {
+                  await getSB().from('feature_periods').update({ starts_on:null, ends_on:null }).eq('id', periodRow.id);
+                  await reload();
+                } catch(err){ toast.error(err.message); }
+              }}>Reset to the full month</button>
+          ) : (
+            <span className="lbl">Defaults to the whole of {monthLabel(period)}.</span>
+          )}
+        </div>
+
         <div className="flex gap-4 flex-wrap mb-4">
           <ReadinessBar label="Data completeness" pct={stats.data}/>
           <ReadinessBar label="Sales entered" pct={stats.sales}/>
@@ -5453,7 +5659,7 @@ function FeaturesPage({ isAdmin, myStores }) {
         <SignagePushModal
           storeId={storeId}
           storeName={(myStores.find(s=>s.id===storeId)||{}).name || ''}
-          period={period}
+          period={period} periodRow={periodRow}
           onClose={()=>setShowSign(false)}/>
       )}
 
@@ -5461,7 +5667,7 @@ function FeaturesPage({ isAdmin, myStores }) {
         <PostPlanBuilder
           storeId={storeId}
           storeName={(myStores.find(s=>s.id===storeId)||{}).name || ''}
-          period={period} rows={rows} products={products}
+          period={period} periodRow={periodRow} rows={rows} products={products}
           onClose={()=>setShowPlan(false)} onDone={reload}/>
       )}
     </div>

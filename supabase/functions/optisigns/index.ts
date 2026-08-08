@@ -95,6 +95,55 @@ Deno.serve(async (req) => {
       storeId?: string; name?: string;
       items?: Array<{ url: string; name: string; duration?: number }>;
       screenIds?: string[];
+      // When present, the push is dated: the playlist goes into the store's
+      // schedule and plays only between these days (inclusive, YYYY-MM-DD).
+      schedule?: { name: string; startDate: string; endDate: string };
+    };
+
+    // ── Schedule helpers ────────────────────────────────────────────────────
+    // OptiSigns stores schedule times as floating local wall-clock with a Z
+    // suffix — their own UI writes 09:00Z for a 9am open. Verified against
+    // items the account's owners created by hand. A month-long run is one
+    // all-day item repeating daily until the end date.
+    const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+    const compact = (d: string) => d.replace(/-/g, '');
+    const dailyRule = (start: string, end: string) =>
+      `DTSTART:${compact(start)}T000000Z\nRRULE:FREQ=DAILY;INTERVAL=1;UNTIL=${compact(end)}T235900Z`;
+    // The UNTIL date back out of a stored rrule, as YYYY-MM-DD.
+    const ruleUntil = (rrule?: string | null): string | null => {
+      const m = /UNTIL=(\d{4})(\d{2})(\d{2})/.exec(rrule ?? '');
+      return m ? `${m[1]}-${m[2]}-${m[3]}` : null;
+    };
+    const todayISO = () => new Date().toISOString().slice(0, 10);
+
+    type SchedItem = {
+      _id: string; name?: string; type?: string; playlistId?: string;
+      range?: { startDate?: string; endDate?: string };
+      repeatObject?: { rrule?: string };
+    };
+
+    const findOrCreateSchedule = async (schedName: string, secret?: string): Promise<string> => {
+      const d = await gql(
+        'query { schedules(query:{}) { page { edges { node { _id name } } } } }', {}, secret);
+      const hit = (d?.schedules?.page?.edges ?? [])
+        .map((e: { node: { _id: string; name: string } }) => e.node)
+        .find((s: { name: string }) => s.name.trim().toLowerCase() === schedName.trim().toLowerCase());
+      if (hit) return hit._id;
+      // The API key cannot delete schedules (API_SCOPE_OFF, deliberately), so
+      // each store gets exactly one, found by name and reused forever.
+      const made = await gql(
+        'mutation($p:ScheduleInput!){ saveSchedule(payload:$p){ _id } }',
+        { p: { name: schedName.trim() } }, secret);
+      const id = made?.saveSchedule?._id;
+      if (!id) throw new Error('OptiSigns did not return a schedule id');
+      return id;
+    };
+
+    const scheduleItemsOf = async (scheduleId: string, secret?: string): Promise<SchedItem[]> => {
+      const d = await gql(
+        'query($q:QueryScheduleItemsInput!){ scheduleItems(query:$q){ page { edges { node { _id name type playlistId range { startDate endDate } repeatObject { rrule } } } } } }',
+        { q: { scheduleId } }, secret);
+      return (d?.scheduleItems?.page?.edges ?? []).map((e: { node: SchedItem }) => e.node);
     };
 
     // Resolve which OptiSigns account a store lives on.
@@ -209,21 +258,118 @@ Deno.serve(async (req) => {
         } catch (_e) { /* duration is cosmetic; the push still stands */ }
       }
 
+      // Dated run: the playlist joins the store's schedule instead of going
+      // straight to the screens. The schedule is found or created by name,
+      // expired entries are swept out, and the new month is added as an
+      // all-day daily item between the run dates.
+      let scheduleId: string | null = null;
+      let bridged: string | null = null;
+      const sched = body.schedule;
+      if (sched) {
+        if (!DATE_RE.test(sched.startDate) || !DATE_RE.test(sched.endDate)) {
+          throw new Error('Schedule dates must be YYYY-MM-DD');
+        }
+        if (sched.endDate < sched.startDate) throw new Error('The end date is before the start date');
+        if (!sched.name?.trim()) throw new Error('A schedule name is required');
+
+        scheduleId = await findOrCreateSchedule(sched.name, secret);
+
+        // Sweep entries whose run has fully ended — the schedule stays a
+        // short, readable list of what is coming instead of years of history.
+        const existing = await scheduleItemsOf(scheduleId, secret);
+        const today = todayISO();
+        for (const it of existing) {
+          const until = ruleUntil(it.repeatObject?.rrule);
+          if (until && until < today) {
+            try {
+              await gql(
+                'mutation($p:RemoveScheduleItemInput!){ removeScheduleItem(payload:$p, scope:ALL) }',
+                { p: { _id: it._id } }, secret);
+            } catch (_e) { /* housekeeping only */ }
+          }
+        }
+
+        try {
+          await gql(
+            'mutation($p:AddScheduleItemInput!){ addScheduleItem(force:false, payload:$p){ _id } }',
+            { p: { scheduleId, type: 'PLAYLIST', playlistId,
+                   range: { startDate: sched.startDate + 'T00:00:00.000Z',
+                            endDate: sched.startDate + 'T23:59:00.000Z' },
+                   repeatObject: { rrule: dailyRule(sched.startDate, sched.endDate), repeat: 'daily' } } },
+            secret);
+        } catch (e) {
+          const m = e instanceof Error ? e.message : String(e);
+          if (/overlap/i.test(m)) {
+            throw new Error(
+              'Those dates overlap something already on the "' + sched.name + '" schedule. ' +
+              'Remove the clashing entry from the Signage page first, or adjust the run dates.'
+            );
+          }
+          throw e;
+        }
+      }
+
       // Putting it on screens is opt-in and store-scoped: only screens the
       // admin mapped to this store are accepted, whatever the request says.
+      // Dated pushes point the screen at the schedule; immediate pushes point
+      // it at the playlist, exactly as before.
       const assigned: string[] = [];
       const failedAssign: string[] = [];
       if (screenIds?.length) {
         const { data: acct } = await sb.from('meta_accounts')
           .select('optisigns_screen_ids').eq('store_id', storeId).maybeSingle();
         const allowed = new Set(acct?.optisigns_screen_ids ?? []);
+
+        // A screen moved onto the schedule before the run starts would sit
+        // black until the start date. If nothing on the schedule covers today,
+        // whatever the first screen is currently playing is added as a bridge
+        // that runs until the day before the new dates begin.
+        if (sched && scheduleId && sched.startDate > todayISO()) {
+          const items = await scheduleItemsOf(scheduleId, secret);
+          const today = todayISO();
+          const coversToday = items.some(it => {
+            const s = (it.range?.startDate ?? '').slice(0, 10);
+            const u = ruleUntil(it.repeatObject?.rrule);
+            return s && u && s <= today && u >= today;
+          });
+          if (!coversToday) {
+            const firstMapped = screenIds.find(sid => allowed.has(sid));
+            if (firstMapped) {
+              try {
+                const dv = await gql(
+                  'query($q:QueryDeviceInput!){ devices(query:$q){ page { edges { node { _id currentType currentPlaylistId } } } } }',
+                  { q: { _id: firstMapped } }, secret);
+                const node = (dv?.devices?.page?.edges ?? [])
+                  .map((e: { node: { _id: string; currentType?: string; currentPlaylistId?: string } }) => e.node)
+                  .find((n: { _id: string }) => n._id === firstMapped);
+                const curPl = node?.currentType === 'PLAYLIST' ? node?.currentPlaylistId : null;
+                if (curPl) {
+                  const dayBefore = new Date(sched.startDate + 'T12:00:00Z');
+                  dayBefore.setUTCDate(dayBefore.getUTCDate() - 1);
+                  const bridgeEnd = dayBefore.toISOString().slice(0, 10);
+                  await gql(
+                    'mutation($p:AddScheduleItemInput!){ addScheduleItem(force:false, payload:$p){ _id } }',
+                    { p: { scheduleId, type: 'PLAYLIST', playlistId: curPl,
+                           range: { startDate: today + 'T00:00:00.000Z',
+                                    endDate: today + 'T23:59:00.000Z' },
+                           repeatObject: { rrule: dailyRule(today, bridgeEnd), repeat: 'daily' } } },
+                    secret);
+                  bridged = curPl;
+                }
+              } catch (_e) { /* bridging is best-effort; worst case the screen waits */ }
+            }
+          }
+        }
+
         for (const sid of screenIds) {
           if (!allowed.has(sid)) { failedAssign.push(sid + ' (not mapped to this store)'); continue; }
           try {
+            const p = sched && scheduleId
+              ? { currentType: 'SCHEDULE', currentScheduleId: scheduleId }
+              : { currentType: 'PLAYLIST', currentPlaylistId: playlistId };
             await gql(
-              'mutation($id:String!,$p:UpdateDeviceInput!){ updateDevice(_id:$id, payload:$p){ _id deviceName currentPlaylistId } }',
-              { id: sid, p: { currentType: 'PLAYLIST', currentPlaylistId: playlistId } },
-              secret);
+              'mutation($id:String!,$p:UpdateDeviceInput!){ updateDevice(_id:$id, payload:$p){ _id deviceName } }',
+              { id: sid, p }, secret);
             assigned.push(sid);
           } catch (e) {
             failedAssign.push(sid + ': ' + (e instanceof Error ? e.message : String(e)));
@@ -243,6 +389,8 @@ Deno.serve(async (req) => {
       return Response.json({
         playlistId, name: name.trim(), items: assetIds.length,
         assigned, failedAssign,
+        scheduleId, scheduled: sched ? { name: sched.name, startDate: sched.startDate, endDate: sched.endDate } : null,
+        bridged: !!bridged,
       }, { headers: corsHeaders });
     }
 
@@ -266,7 +414,8 @@ Deno.serve(async (req) => {
     // Direct management of what the screens play. Admin-gated: these reach
     // every screen on the account, including businesses outside the stores.
     if (['assignScreen','playlistItems','removeItems','moveItems','setDurations',
-         'renamePlaylist','addCreatives','createPlaylist','deletePlaylist'].includes(body.action)) {
+         'renamePlaylist','addCreatives','createPlaylist','deletePlaylist',
+         'listSchedules','removeScheduleEntry','assignScreenSchedule'].includes(body.action)) {
       if (!isAdmin) throw new Error('Admin only');
       const secret = await keyFor(body.storeId);
       const b = body as unknown as {
@@ -274,7 +423,64 @@ Deno.serve(async (req) => {
         name?: string; pos?: number[]; froms?: number[]; to?: number;
         updates?: Array<{ pos: number; duration: number }>;
         items?: Array<{ url: string; name: string; duration?: number }>;
+        scheduleId?: string; itemId?: string;
       };
+
+      // ── listSchedules: every schedule with its upcoming entries, playlist
+      // names resolved so the console can show "SEP 26 · 1 Sep – 30 Sep".
+      if (b.action === 'listSchedules') {
+        const d = await gql(
+          'query { schedules(query:{}) { page { edges { node { _id name } } } } }', {}, secret);
+        const scheds = (d?.schedules?.page?.edges ?? [])
+          .map((e: { node: { _id: string; name: string } }) => e.node);
+        const pls = await gql(
+          'query { playlists(query:{}) { page { edges { node { _id name } } } } }', {}, secret);
+        const plName = new Map(
+          (pls?.playlists?.page?.edges ?? [])
+            .map((e: { node: { _id: string; name: string } }) => [e.node._id, e.node.name] as [string, string]));
+        const out = [];
+        for (const s of scheds) {
+          const items = await scheduleItemsOf(s._id, secret);
+          out.push({
+            _id: s._id, name: s.name,
+            items: items.map(it => ({
+              _id: it._id,
+              playlistId: it.playlistId ?? null,
+              playlistName: (it.playlistId && plName.get(it.playlistId)) || it.name || '(unnamed)',
+              type: it.type,
+              startDate: (it.range?.startDate ?? '').slice(0, 10),
+              endDate: ruleUntil(it.repeatObject?.rrule) ?? (it.range?.endDate ?? '').slice(0, 10),
+            })),
+          });
+        }
+        return Response.json({ schedules: out }, { headers: corsHeaders });
+      }
+
+      // ── removeScheduleEntry: take one dated entry off a schedule.
+      if (b.action === 'removeScheduleEntry') {
+        if (!b.itemId) throw new Error('itemId required');
+        await gql(
+          'mutation($p:RemoveScheduleItemInput!){ removeScheduleItem(payload:$p, scope:ALL) }',
+          { p: { _id: b.itemId } }, secret);
+        await sb.from('audit_log').insert({
+          user_id: user.id,
+          action: 'remove_schedule_entry',
+          entity_type: 'optisigns',
+          changed_fields: ['schedule'],
+          safe_metadata: { itemId: b.itemId },
+        });
+        return Response.json({ ok: true }, { headers: corsHeaders });
+      }
+
+      // ── assignScreenSchedule: point a screen at a schedule.
+      if (b.action === 'assignScreenSchedule') {
+        if (!b.screenId || !b.scheduleId) throw new Error('screenId and scheduleId required');
+        const d = await gql(
+          'mutation($id:String!,$p:UpdateDeviceInput!){ updateDevice(_id:$id, payload:$p){ _id deviceName currentType currentScheduleId } }',
+          { id: b.screenId, p: { currentType: 'SCHEDULE', currentScheduleId: b.scheduleId } },
+          secret);
+        return Response.json({ screen: d?.updateDevice ?? null }, { headers: corsHeaders });
+      }
 
       if (b.action === 'assignScreen') {
         if (!b.screenId || !b.playlistId) throw new Error('screenId and playlistId required');

@@ -3785,9 +3785,14 @@ function SignagePage() {
   const [runDates,  setRunDates]  = useState({});     // asset_id -> row, for the open playlist
   const [rdDraft,   setRdDraft]   = useState({});     // asset_id -> {so, eo} being edited
 
+  // Which screens belong to which brand, and which account each brand lives
+  // on — drives both the brand filter tiles and the account auto-switch.
+  const [brand,     setBrand]     = useState(null);   // store id or null = all
+  const [brandMap,  setBrandMap]  = useState({});     // store_id -> { screenIds, ownAccount }
+
   useEffect(function() {
     const sb = getSB(); if (!sb) return;
-    sb.from('meta_accounts').select('store_id, optisigns_key_secret')
+    sb.from('meta_accounts').select('store_id, optisigns_key_secret, optisigns_screen_ids')
       .then(function(res) {
         const extra = (res.data || [])
           .filter(r => r.optisigns_key_secret && r.optisigns_key_secret !== 'OPTISIGNS_API_KEY')
@@ -3796,8 +3801,26 @@ function SignagePage() {
             storeId: r.store_id,
           }));
         setAccounts([{ label:'Sueño', storeId: undefined }].concat(extra));
+        const bm = {};
+        (res.data || []).forEach(function(r) {
+          bm[r.store_id] = {
+            screenIds: r.optisigns_screen_ids || [],
+            ownAccount: (r.optisigns_key_secret && r.optisigns_key_secret !== 'OPTISIGNS_API_KEY')
+              ? r.store_id : undefined,
+          };
+        });
+        setBrandMap(bm);
       });
   }, []);
+
+  // Picking a brand narrows the screens to that store's mapped signs — and
+  // hops to its OptiSigns account first if it lives on a separate one.
+  const pickBrand = function(id) {
+    if (id === 'all') { setBrand(null); return; }
+    setBrand(id);
+    const acct = (brandMap[id] || {}).ownAccount;
+    if (acct !== account) setAccount(acct);
+  };
 
   const load = useCallback(async function() {
     setScreens(null); setPlaylists(null); setSchedules(null);
@@ -3919,6 +3942,10 @@ function SignagePage() {
 
   const screensPlaying = id => (screens || []).filter(s => s.currentPlaylistId === id).map(s => s.deviceName);
 
+  const shownScreens = brand
+    ? (screens || []).filter(s => ((brandMap[brand] || {}).screenIds || []).includes(s._id))
+    : (screens || []);
+
   return (
     <div className="space-y-4">
       <Card>
@@ -3930,7 +3957,7 @@ function SignagePage() {
               {accounts.map(function(a) {
                 const on = account === a.storeId;
                 return (
-                  <button key={a.label} onClick={()=>setAccount(a.storeId)}
+                  <button key={a.label} onClick={()=>{ setBrand(null); setAccount(a.storeId); }}
                     className="px-3 py-1.5 text-xs uppercase tracking-[.14em]"
                     style={{ background:on?'var(--cy-glow)':'transparent', color:on?'var(--cy)':'var(--txt2)' }}>
                     {a.label}
@@ -3940,6 +3967,10 @@ function SignagePage() {
             </div>
           )}
           <Button size="sm" variant="secondary" onClick={load}>Refresh</Button>
+        </div>
+
+        <div className="mb-4">
+          <StorePicker compact value={brand || 'all'} onChange={pickBrand} allLabel="All screens"/>
         </div>
 
         {screens === null ? <p className="lbl text-center py-8">Loading from OptiSigns…</p> : (
@@ -3953,7 +3984,14 @@ function SignagePage() {
                 </tr>
               </thead>
               <tbody>
-                {screens.map(function(sc) {
+                {shownScreens.length === 0 && (
+                  <tr><td colSpan="3" className="text-xs py-6 text-center" style={{color:'var(--amb)'}}>
+                    {brand
+                      ? 'No screens are mapped to this store yet — set that under Settings → Store locations.'
+                      : 'No screens on this account.'}
+                  </td></tr>
+                )}
+                {shownScreens.map(function(sc) {
                   return (
                     <tr key={sc._id} style={{borderBottom:'1px solid rgba(56,224,240,.07)'}}>
                       <td className="text-xs" style={{padding:'7px 8px', color:'var(--txt)'}}>

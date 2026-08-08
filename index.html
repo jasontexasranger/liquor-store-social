@@ -3728,7 +3728,10 @@ const signagePlaylistName = (storeName, period) => {
 // OptiSigns live in their private bucket behind signed URLs we cannot mint —
 // those get a typed tile rather than a broken image pretending otherwise.
 function signagePreviewUrl(it) {
-  const w = it.webLink || '';
+  let w = it.webLink || '';
+  // Pushed items point at the letterbox viewer with the real image in ?img=.
+  const m = /[?&]img=([^&]+)/.exec(w);
+  if (m) { try { w = decodeURIComponent(m[1]); } catch(e) {} }
   if (/^https:\/\/.+\.(png|jpe?g|webp|gif)(\?|$)/i.test(w)) return w;
   // Some web assets point at Storage without an extension; our own bucket is
   // trustworthy for an <img>.

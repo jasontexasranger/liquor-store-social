@@ -19,6 +19,13 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const GQL = 'https://graphql-gateway.optisigns.com/graphql';
 
+// OptiSigns players render a bare image URL at natural size — a 1080-wide ad
+// on a 1080p screen shows zoomed and cropped to its top-left corner. Every
+// image is wrapped in this tiny hosted page, which letterboxes it to the
+// viewport. The page only accepts images from our own storage.
+const VIEWER = 'https://yyveikxfomxmedlxsulh.supabase.co/storage/v1/object/public/creatives/signage/viewer.html';
+const wrapForScreen = (url: string) => VIEWER + '?img=' + encodeURIComponent(url);
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
@@ -164,7 +171,7 @@ Deno.serve(async (req) => {
         if (!/^https:\/\//.test(it.url)) throw new Error('Item URLs must be https');
         const a = await gql(
           'mutation($p:AssetInput!){ saveAsset(payload:$p){ _id } }',
-          { p: { originalFileName: it.name || name, webLink: it.url,
+          { p: { originalFileName: it.name || name, webLink: wrapForScreen(it.url),
                  webType: 'website', fileType: 'web', type: 'web' } },
           secret);
         const id = a?.saveAsset?._id;
@@ -370,7 +377,7 @@ Deno.serve(async (req) => {
           if (!/^https:\/\//.test(it.url)) throw new Error('Item URLs must be https');
           const a = await gql(
             'mutation($p:AssetInput!){ saveAsset(payload:$p){ _id } }',
-            { p: { originalFileName: it.name, webLink: it.url,
+            { p: { originalFileName: it.name, webLink: wrapForScreen(it.url),
                    webType: 'website', fileType: 'web', type: 'web' } }, secret);
           if (!a?.saveAsset?._id) throw new Error('No asset id for "' + it.name + '"');
           ids.push(a.saveAsset._id);

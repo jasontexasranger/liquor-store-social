@@ -3695,6 +3695,193 @@ function toDataUrl(src) {
     .catch(() => src);   // fall back and let the canvas try
 }
 
+// ─────────────────────────────────────────────
+// SIGNAGE PUSH
+// ─────────────────────────────────────────────
+// The month's creatives become an OptiSigns playlist, named the way the
+// playlists in that account are already named by hand — "BROTHERS LRS -
+// OCT 24" — and optionally put straight onto the store's mapped screens.
+const signagePlaylistName = (storeName, period) => {
+  const [y, m] = String(period).split('-').map(Number);
+  const mon = new Date(y, m-1, 1).toLocaleString('en', { month:'short' }).toUpperCase();
+  return storeName.split(' ')[0].toUpperCase() + ' LRS - ' + mon + ' ' + String(y).slice(2);
+};
+
+function SignagePushModal({ storeId, storeName, period, onClose }) {
+  const dragPanel = useDragPanel();
+  const toast = useToast();
+  const { creatives } = useCreatives();
+  const [screens,  setScreens]  = useState(null);   // null = loading
+  const [mapped,   setMapped]   = useState([]);
+  const [pickScr,  setPickScr]  = useState([]);
+  const [picked,   setPicked]   = useState(null);   // creative ids; null = all
+  const [name,     setName]     = useState(signagePlaylistName(storeName, period));
+  const [duration, setDuration] = useState(8);
+  const [busy,     setBusy]     = useState(false);
+  const [done,     setDone]     = useState(null);
+
+  // This month's creatives for this store. Screens are 16:9, so those lead;
+  // squares still work — OptiSigns letterboxes them.
+  const monthCreatives = creatives
+    .filter(c => c.store_id === storeId && String(c.period) === String(period))
+    .sort((a,b) => (a.aspect === '16:9' ? -1 : 1) - (b.aspect === '16:9' ? -1 : 1));
+
+  useEffect(function() {
+    let alive = true;
+    Promise.all([
+      callEdge('optisigns', 'listScreens', { storeId }),
+      getSB().from('meta_accounts').select('optisigns_screen_ids').eq('store_id', storeId).maybeSingle(),
+    ]).then(function([scr, acct]) {
+      if (!alive) return;
+      const ids = (acct.data && acct.data.optisigns_screen_ids) || [];
+      setScreens(scr.screens || []);
+      setMapped(ids);
+      setPickScr(ids);   // mapped screens ticked by default
+    }).catch(function(e){ if (alive) { setScreens([]); toast.error(e.message); } });
+    return function(){ alive = false; };
+  }, [storeId]);
+
+  const isOn = id => picked === null ? true : picked.has(id);
+  const toggle = id => setPicked(function(prev) {
+    const next = new Set(prev === null ? monthCreatives.map(c=>c.id) : prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const chosen = monthCreatives.filter(c => isOn(c.id));
+
+  const push = async function() {
+    if (!chosen.length) { toast.error('Pick at least one image'); return; }
+    setBusy(true);
+    try {
+      const r = await callEdge('optisigns', 'pushPlaylist', {
+        storeId, name,
+        items: chosen.map(c => ({ url: c.public_url, name: c.name, duration: Number(duration) || 8 })),
+        screenIds: pickScr,
+      });
+      setDone(r);
+      toast.success('Playlist "' + r.name + '" created with ' + r.items + ' items'
+        + (r.assigned.length ? ' and put on ' + r.assigned.length + ' screen' + (r.assigned.length===1?'':'s') : ''));
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(false); }
+  };
+
+  const mappedScreens = (screens || []).filter(s => mapped.includes(s._id));
+
+  return (
+    <Portal>
+    <div className="fixed inset-0 z-[210] flex items-center justify-center p-6"
+         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}}
+         onClick={busy ? undefined : onClose}>
+      <div className="hud hud-brk w-full max-w-2xl max-h-[88vh] overflow-auto p-6"
+           style={dragPanel.style} onClick={e=>e.stopPropagation()}>
+        <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-4">
+          <span className="ttl">Send to signage</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          {!busy && <button onClick={onClose} style={{color:'var(--txt2)'}}><Icon name="close"/></button>}
+        </div>
+
+        {done ? (
+          <div>
+            <p className="text-sm mb-2" style={{color:'var(--txt)'}}>
+              "{done.name}" is on OptiSigns with {done.items} item{done.items===1?'':'s'}.
+            </p>
+            {done.assigned.length > 0 && (
+              <p className="text-xs mb-2" style={{color:'var(--grn)'}}>
+                Now playing on {done.assigned.length} screen{done.assigned.length===1?'':'s'}.
+              </p>
+            )}
+            {done.failedAssign.length > 0 && (
+              <div className="p-2.5 mb-3" style={{border:'1px solid var(--amb)'}}>
+                {done.failedAssign.map((f,i)=><p key={i} className="text-xs" style={{color:'var(--amb)'}}>{f}</p>)}
+              </div>
+            )}
+            {done.assigned.length === 0 && (
+              <p className="lbl mb-3">No screens were changed — assign it in OptiSigns when ready.</p>
+            )}
+            <div className="flex justify-end"><Button size="sm" onClick={onClose}>Done</Button></div>
+          </div>
+        ) : (
+          <div>
+            <p className="lbl mb-4">{storeName} · {monthLabel(period)}</p>
+
+            {monthCreatives.length === 0 ? (
+              <p className="text-xs py-6 text-center" style={{color:'var(--amb)'}}>
+                No creatives for {monthLabel(period)} yet — generate them first.
+              </p>
+            ) : (
+              <React.Fragment>
+                <div className="grid grid-cols-2 gap-3 mb-4">
+                  <div>
+                    <Label>Playlist name</Label>
+                    <Input value={name} onChange={e=>setName(e.target.value)} className="text-xs"/>
+                  </div>
+                  <div>
+                    <Label>Seconds per image</Label>
+                    <Input type="number" min="3" max="60" value={duration}
+                           onChange={e=>setDuration(e.target.value)} className="text-xs"/>
+                  </div>
+                </div>
+
+                <Label>Images · {chosen.length} of {monthCreatives.length}</Label>
+                <div className="grid grid-cols-4 sm:grid-cols-6 gap-2 mb-4"
+                     style={{maxHeight:'190px', overflowY:'auto'}}>
+                  {monthCreatives.map(function(c) {
+                    const on = isOn(c.id);
+                    return (
+                      <button key={c.id} onClick={()=>toggle(c.id)} className="relative"
+                        style={{outline: on ? '2px solid var(--cy)' : '1px solid var(--line)',
+                                opacity: on ? 1 : 0.45}}>
+                        <img src={c.public_url} alt={c.name} className="w-full object-cover"
+                             style={{aspectRatio:'1'}}/>
+                        {c.aspect === '16:9' &&
+                          <span className="lbl absolute bottom-0 left-0 px-1"
+                                style={{background:'rgba(2,5,11,.85)', color:'var(--cy)'}}>16:9</span>}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <Label>Put it on screens now</Label>
+                {screens === null ? <p className="lbl mb-3">Loading screens…</p>
+                 : mappedScreens.length === 0 ? (
+                  <p className="text-xs mb-3" style={{color:'var(--amb)'}}>
+                    No screens are mapped to this store yet — set that under
+                    Settings → Store locations. The playlist will still be created.
+                  </p>
+                ) : (
+                  <div className="mb-3">
+                    {mappedScreens.map(function(sc) {
+                      const on = pickScr.includes(sc._id);
+                      return (
+                        <label key={sc._id} className="flex items-center gap-2 py-1 cursor-pointer">
+                          <input type="checkbox" checked={on}
+                                 onChange={()=>setPickScr(prev => on ? prev.filter(x=>x!==sc._id) : prev.concat(sc._id))}/>
+                          <span className="text-xs" style={{color:'var(--txt2)'}}>{sc.deviceName}</span>
+                        </label>
+                      );
+                    })}
+                    <p className="lbl mt-1">
+                      Unticked screens keep whatever they're playing.
+                    </p>
+                  </div>
+                )}
+
+                <div className="flex gap-2 justify-end">
+                  <Button size="sm" variant="outline" onClick={onClose}>Cancel</Button>
+                  <Button size="sm" onClick={push} loading={busy} disabled={!chosen.length}>
+                    <Icon name="up"/> Push {chosen.length} to OptiSigns
+                  </Button>
+                </div>
+              </React.Fragment>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+    </Portal>
+  );
+}
+
 function FeatureCreativeBatch({ storeId, storeName, period, rows, products, campaigns, onClose, onDone }) {
   const dragPanel = useDragPanel();
   const toast = useToast();
@@ -4576,6 +4763,7 @@ function FeaturesPage({ isAdmin, myStores }) {
   const [showCsv, setShowCsv] = useState(false);
   const [showBatch, setShowBatch] = useState(false);
   const [showPlan,  setShowPlan]  = useState(false);
+  const [showSign,  setShowSign]  = useState(false);
   const [view, setView] = useState('month');   // month | dashboard
   const [mode, setMode] = useState('plan');   // plan | sales
 
@@ -4728,6 +4916,9 @@ function FeaturesPage({ isAdmin, myStores }) {
           <Button size="sm" variant="outline" onClick={()=>setShowPlan(true)} disabled={rows.length===0}>
             <Icon name="cal"/> Plan posts
           </Button>
+          <Button size="sm" variant="outline" onClick={()=>setShowSign(true)}>
+            <Icon name="grid"/> Send to signage
+          </Button>
           <Button size="sm" onClick={addBlank}><Icon name="tag"/> Add row</Button>
           {periodRow && periodRow.status !== 'closed' && (
             <Button size="sm" variant="secondary"
@@ -4852,6 +5043,14 @@ function FeaturesPage({ isAdmin, myStores }) {
           period={period} rows={rows} products={products}
           campaigns={campaigns.filter(c=>!c.archived && (!c.store_id || c.store_id===storeId))}
           onClose={()=>setShowBatch(false)} onDone={reload}/>
+      )}
+
+      {showSign && (
+        <SignagePushModal
+          storeId={storeId}
+          storeName={(myStores.find(s=>s.id===storeId)||{}).name || ''}
+          period={period}
+          onClose={()=>setShowSign(false)}/>
       )}
 
       {showPlan && (
@@ -6137,6 +6336,9 @@ const TEMPLATE_SIZES = [
   { label:'4:5 Portrait', w:1080, h:1350,  desc:'IG Feed Portrait' },
   { label:'9:16 Story',   w:1080, h:1920,  desc:'Stories & Reels' },
   { label:'16:9 Banner',  w:1200, h:628,   desc:'FB Cover / Banner' },
+  // A real television, for OptiSigns. The 1200×628 above is Facebook's link
+  // ratio wearing a misleading name; it stays because templates reference it.
+  { label:'16:9 Screen',  w:1920, h:1080,  desc:'Digital signage / TV' },
 ];
 
 function useBrandTemplates(storeId) {
@@ -10727,6 +10929,101 @@ function parseLatLng(text) {
   return { lat, lng };
 }
 
+// Which OptiSigns screens belong to each store. Fetched per store so
+// Cobblestone's separate account lists its own screens once its key exists.
+function SignageScreensSection() {
+  const toast = useToast();
+  const [open,    setOpen]    = useState(null);   // storeId being edited
+  const [screens, setScreens] = useState([]);
+  const [ticked,  setTicked]  = useState([]);
+  const [saved,   setSaved]   = useState({});     // storeId -> screen ids
+  const [busy,    setBusy]    = useState(null);
+
+  useEffect(function() {
+    const sb = getSB(); if (!sb) return;
+    sb.from('meta_accounts').select('store_id, optisigns_screen_ids')
+      .then(function(res) {
+        const m = {};
+        (res.data || []).forEach(r => { m[r.store_id] = r.optisigns_screen_ids || []; });
+        setSaved(m);
+      });
+  }, []);
+
+  const openStore = async function(st) {
+    setOpen(st.id); setScreens(null); setTicked(saved[st.id] || []);
+    try {
+      const r = await callEdge('optisigns', 'listScreens', { storeId: st.id });
+      setScreens(r.screens || []);
+    } catch(e) { setScreens([]); toast.error(e.message); }
+  };
+
+  const save = async function(storeId) {
+    setBusy(storeId);
+    try {
+      await callEdge('optisigns', 'saveScreens', { storeId, screenIds: ticked });
+      setSaved(prev => Object.assign({}, prev, { [storeId]: ticked }));
+      setOpen(null);
+      toast.success('Screens saved');
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(null); }
+  };
+
+  return (
+    <Card>
+      <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-1 uppercase tracking-wide">
+        <Icon name="grid"/> Signage screens
+      </h3>
+      <p className="lbl mb-4">
+        Which OptiSigns screens each store's pushes go to. The account carries
+        screens for other businesses too, so nothing is guessed from names.
+      </p>
+
+      {STORES.map(function(st) {
+        const ids = saved[st.id] || [];
+        return (
+          <div key={st.id} className="p-3 mb-2" style={{border:'1px solid var(--line)'}}>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-xs font-semibold" style={{color:'var(--txt)'}}>{st.name}</span>
+              <span className="lbl">
+                {ids.length ? ids.length + ' screen' + (ids.length===1?'':'s') + ' mapped' : 'No screens mapped'}
+              </span>
+              <span className="flex-1"/>
+              <Button size="sm" variant="outline"
+                      onClick={()=>{ open === st.id ? setOpen(null) : openStore(st); }}>
+                {open === st.id ? 'Cancel' : 'Choose screens'}
+              </Button>
+            </div>
+
+            {open === st.id && (
+              <div className="mt-3 pt-3" style={{borderTop:'1px solid var(--line)'}}>
+                {screens === null ? <p className="lbl">Loading screens from OptiSigns…</p>
+                 : screens.length === 0 ? <p className="lbl">No screens found on this account.</p>
+                 : (
+                  <React.Fragment>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 mb-3">
+                      {screens.map(function(sc) {
+                        const on = ticked.includes(sc._id);
+                        return (
+                          <label key={sc._id} className="flex items-center gap-2 py-1 cursor-pointer">
+                            <input type="checkbox" checked={on}
+                                   onChange={()=>setTicked(prev => on ? prev.filter(x=>x!==sc._id) : prev.concat(sc._id))}/>
+                            <span className="text-xs" style={{color:'var(--txt2)'}}>{sc.deviceName}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                    <Button size="sm" onClick={()=>save(st.id)} loading={busy===st.id}>Save</Button>
+                  </React.Fragment>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </Card>
+  );
+}
+
 function StoreLocationsSection() {
   const toast = useToast();
   const { rows, loading, save } = useStoreLocations();
@@ -10833,6 +11130,7 @@ function SettingsPage({ settings, onSave, currentUserId }) {
     <div className="space-y-4 max-w-2xl">
       <UserAccountsSection currentUserId={currentUserId}/>
       <StoreLocationsSection/>
+      <SignageScreensSection/>
       <Card>
         <h2 className="text-base font-bold text-gray-900 dark:text-white mb-1"><Icon name="lock"/> Credentials</h2>
         <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">

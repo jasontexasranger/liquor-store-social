@@ -3737,6 +3737,12 @@ function signageTypeLabel(it) {
 
 function SignagePage() {
   const toast = useToast();
+  // Which OptiSigns account the console is looking at. Stores whose key
+  // secret differs from the default are separate accounts — Cobblestone —
+  // and every call below carries the chosen account's storeId so the edge
+  // function picks the matching key.
+  const [accounts, setAccounts] = useState([{ label:'Sueño', storeId: undefined }]);
+  const [account,  setAccount]  = useState(undefined);   // storeId or undefined
   const [screens,   setScreens]   = useState(null);
   const [playlists, setPlaylists] = useState(null);
   const [open,      setOpen]      = useState(null);   // playlist id being edited
@@ -3746,17 +3752,32 @@ function SignagePage() {
   const [showAdd,   setShowAdd]   = useState(false);
   const [newName,   setNewName]   = useState('');
 
+  useEffect(function() {
+    const sb = getSB(); if (!sb) return;
+    sb.from('meta_accounts').select('store_id, optisigns_key_secret')
+      .then(function(res) {
+        const extra = (res.data || [])
+          .filter(r => r.optisigns_key_secret && r.optisigns_key_secret !== 'OPTISIGNS_API_KEY')
+          .map(r => ({
+            label: (STORES.find(s=>s.id===r.store_id)||{name:r.store_id}).name.split(' ')[0],
+            storeId: r.store_id,
+          }));
+        setAccounts([{ label:'Sueño', storeId: undefined }].concat(extra));
+      });
+  }, []);
+
   const load = useCallback(async function() {
+    setScreens(null); setPlaylists(null);
     try {
       const [s, p] = await Promise.all([
-        callEdge('optisigns', 'listScreens', {}),
-        callEdge('optisigns', 'listPlaylists', {}),
+        callEdge('optisigns', 'listScreens', { storeId: account }),
+        callEdge('optisigns', 'listPlaylists', { storeId: account }),
       ]);
       setScreens(s.screens || []);
       setPlaylists((p.playlists || []).sort((a,b)=>a.name.localeCompare(b.name)));
     } catch(e) { setScreens([]); setPlaylists([]); toast.error(e.message); }
-  }, []);
-  useEffect(function(){ load(); }, [load]);
+  }, [account]);
+  useEffect(function(){ setOpen(null); setItems(null); load(); }, [load]);
 
   const plName = id => (playlists || []).find(p => p._id === id)?.name || '—';
 
@@ -3764,13 +3785,13 @@ function SignagePage() {
     if (open === id) { setOpen(null); setItems(null); return; }
     setOpen(id); setItems(null); setDurDraft({});
     try {
-      const r = await callEdge('optisigns', 'playlistItems', { playlistId: id });
+      const r = await callEdge('optisigns', 'playlistItems', { playlistId: id, storeId: account });
       setItems(r.playlist.assets || []);
     } catch(e) { setItems([]); toast.error(e.message); }
   };
 
   const refreshItems = async function(id) {
-    const r = await callEdge('optisigns', 'playlistItems', { playlistId: id });
+    const r = await callEdge('optisigns', 'playlistItems', { playlistId: id, storeId: account });
     setItems(r.playlist.assets || []);
     await load();
   };
@@ -3786,32 +3807,32 @@ function SignagePage() {
     if (!playlistId) return;
     const scr = screens.find(x => x._id === screenId);
     if (!confirm('Put "' + plName(playlistId) + '" on ' + (scr?.deviceName || 'this screen') + ' now?')) return;
-    await callEdge('optisigns', 'assignScreen', { screenId, playlistId });
+    await callEdge('optisigns', 'assignScreen', { screenId, playlistId, storeId: account });
     toast.success((scr?.deviceName || 'Screen') + ' is now playing ' + plName(playlistId));
     await load();
   });
 
   const removeAt = (pos) => act('rm-' + pos, async function() {
-    await callEdge('optisigns', 'removeItems', { playlistId: open, pos: [pos] });
+    await callEdge('optisigns', 'removeItems', { playlistId: open, pos: [pos], storeId: account });
     await refreshItems(open);
   });
 
   const move = (from, to) => act('mv-' + from, async function() {
     if (to < 0 || to >= items.length) return;
-    await callEdge('optisigns', 'moveItems', { playlistId: open, froms: [from], to });
+    await callEdge('optisigns', 'moveItems', { playlistId: open, froms: [from], to, storeId: account });
     await refreshItems(open);
   });
 
   const commitDur = (pos) => act('dur-' + pos, async function() {
     const v = Number(durDraft[pos]);
     if (!(v >= 1 && v <= 300)) { toast.error('Seconds must be between 1 and 300'); return; }
-    await callEdge('optisigns', 'setDurations', { playlistId: open, updates: [{ pos, duration: v }] });
+    await callEdge('optisigns', 'setDurations', { playlistId: open, updates: [{ pos, duration: v }], storeId: account });
     await refreshItems(open);
   });
 
   const createList = () => act('create', async function() {
     if (!newName.trim()) { toast.error('Give the playlist a name'); return; }
-    await callEdge('optisigns', 'createPlaylist', { name: newName.trim() });
+    await callEdge('optisigns', 'createPlaylist', { name: newName.trim(), storeId: account });
     setNewName('');
     toast.success('Playlist created');
     await load();
@@ -3825,6 +3846,20 @@ function SignagePage() {
         <div className="flex items-center gap-3 mb-4 flex-wrap">
           <span className="ttl">Screens</span>
           <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          {accounts.length > 1 && (
+            <div className="flex" style={{border:'1px solid var(--line)'}}>
+              {accounts.map(function(a) {
+                const on = account === a.storeId;
+                return (
+                  <button key={a.label} onClick={()=>setAccount(a.storeId)}
+                    className="px-3 py-1.5 text-xs uppercase tracking-[.14em]"
+                    style={{ background:on?'var(--cy-glow)':'transparent', color:on?'var(--cy)':'var(--txt2)' }}>
+                    {a.label}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <Button size="sm" variant="secondary" onClick={load}>Refresh</Button>
         </div>
 
@@ -3913,7 +3948,7 @@ function SignagePage() {
                         return;
                       }
                       await act('del-' + pl._id, async function() {
-                        await callEdge('optisigns', 'deletePlaylist', { playlistId: pl._id });
+                        await callEdge('optisigns', 'deletePlaylist', { playlistId: pl._id, storeId: account });
                         toast.success('"' + pl.name + '" deleted');
                         if (open === pl._id) { setOpen(null); setItems(null); }
                         await load();
@@ -4001,7 +4036,7 @@ function SignagePage() {
                       onPickMany={function(chosen){
                         act('add', async function() {
                           await callEdge('optisigns', 'addCreatives', {
-                            playlistId: open,
+                            playlistId: open, storeId: account,
                             items: chosen.map(c => ({ url: c.public_url, name: c.name })),
                           });
                           toast.success(chosen.length + ' added');

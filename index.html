@@ -1150,14 +1150,23 @@ async function renderFieldTemplate(tpl, fields, values, productDataUrl, onStep) 
     text = String(text);
 
     // The field draws its own prefix, so a value that already carries it would
-    // print twice — "$$2.75". Typing the dollar sign into a price box is the
-    // natural thing to do, so strip it here rather than expecting every caller
-    // and every person to remember.
+    // print twice. Two cases, because templates differ in where they put the
+    // words: a prefix of "$" against a value of "$2.75", and a prefix of
+    // "SAVE $" against a value of "$12.50" — the second slipped through when
+    // only whole-prefix matches were stripped, and printed "SAVE $$12.50".
+    // The rule now: drop the whole prefix if the value repeats it, otherwise
+    // drop a leading currency symbol whenever the prefix already ends in one.
     const pre = String(f.prefix || '').trim();
     if (pre) {
       const bare = text.trim();
       if (bare.length > pre.length && bare.slice(0, pre.length) === pre) {
         text = bare.slice(pre.length).trim();
+      } else {
+        const CURRENCY = ['$', '\u20ac', '\u00a3'];
+        const tail = pre.slice(-1);
+        if (CURRENCY.includes(tail) && bare.length > 1 && bare[0] === tail) {
+          text = bare.slice(1).trim();
+        }
       }
     }
 

@@ -3765,6 +3765,86 @@ function signageTypeLabel(it) {
   return (f.split('.').pop() || it.type || 'FILE').toUpperCase().slice(0, 5);
 }
 
+// The same preview OptiSigns shows when you select a screen: not a camera on
+// the TV (no API for that — verified), but the screen's actual content
+// playing at its actual pace. For items we pushed it is pixel-identical,
+// because the TV loads the very same images through the same letterbox page.
+// Hand-uploaded files sit in OptiSigns' private storage, so they show as
+// typed tiles for however many seconds they occupy.
+function ScreenPreviewModal({ screen, playlistId, playlistName, account, onClose }) {
+  const toast = useToast();
+  const [items, setItems] = useState(null);
+  const [idx,   setIdx]   = useState(0);
+
+  useEffect(function() {
+    let alive = true;
+    if (!playlistId) { setItems([]); return; }
+    callEdge('optisigns', 'playlistItems', { playlistId, storeId: account })
+      .then(function(r){ if (alive) setItems(r.playlist.assets || []); })
+      .catch(function(e){ if (alive) { setItems([]); toast.error(e.message); } });
+    return function(){ alive = false; };
+  }, [playlistId]);
+
+  // Advance at each item's own duration, like the player does.
+  useEffect(function() {
+    if (!items || !items.length) return;
+    const cur = items[idx % items.length];
+    const t = setTimeout(function(){ setIdx(i => (i + 1) % items.length); },
+                         Math.max(1, Number(cur.duration) || 7) * 1000);
+    return function(){ clearTimeout(t); };
+  }, [items, idx]);
+
+  const portrait = /portrait/i.test(screen.orientation || '');
+  const boxW = portrait ? 304 : 640, boxH = portrait ? 540 : 360;
+  const cur = items && items.length ? items[idx % items.length] : null;
+  const url = cur ? signagePreviewUrl(cur) : null;
+
+  return (
+    <Portal>
+    <div className="fixed inset-0 z-[220] flex items-center justify-center p-6"
+         style={{background:'rgba(2,5,11,.9)', backdropFilter:'blur(4px)'}} onClick={onClose}>
+      <div className="hud hud-brk p-5" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center gap-3 mb-3">
+          <span className="ttl">{screen.deviceName}</span>
+          <span className="lbl">{playlistName || 'nothing assigned'}</span>
+          <span className="flex-1"/>
+          <button onClick={onClose} style={{color:'var(--txt2)'}}><Icon name="close"/></button>
+        </div>
+        <div className="flex items-center justify-center"
+             style={{width: boxW+'px', height: boxH+'px', background:'#000',
+                     border:'1px solid var(--line)'}}>
+          {!playlistId ? (
+            <p className="lbl px-6 text-center">This screen has no playlist right now.</p>
+          ) : items === null ? (
+            <p className="lbl">Loading…</p>
+          ) : !items.length ? (
+            <p className="lbl">The playlist is empty.</p>
+          ) : url ? (
+            <img src={url} alt="" style={{maxWidth:'100%', maxHeight:'100%', objectFit:'contain'}}/>
+          ) : (
+            <div className="flex flex-col items-center gap-2">
+              <Icon name={signageTypeLabel(cur)==='VIDEO' ? 'play' : 'file'} size={26}
+                    style={{color:'var(--cy-dim)'}}/>
+              <span className="lbl">{cur.filename}</span>
+              <span className="lbl" style={{color:'var(--txt3)'}}>
+                {signageTypeLabel(cur)} — stored inside OptiSigns, preview there
+              </span>
+            </div>
+          )}
+        </div>
+        {items && items.length > 0 && (
+          <div className="flex items-center gap-2 mt-3">
+            <span className="lbl">{(idx % items.length) + 1} / {items.length}</span>
+            <span className="lbl truncate flex-1">{cur && cur.filename}</span>
+            <span className="lbl">{cur ? (Number(cur.duration) || 7) + 's' : ''}</span>
+          </div>
+        )}
+      </div>
+    </div>
+    </Portal>
+  );
+}
+
 function SignagePage() {
   const toast = useToast();
   // Which OptiSigns account the console is looking at. Stores whose key
@@ -3946,6 +4026,23 @@ function SignagePage() {
     ? (screens || []).filter(s => ((brandMap[brand] || {}).screenIds || []).includes(s._id))
     : (screens || []);
 
+  const [preview, setPreview] = useState(null);   // screen being previewed
+
+  // What a screen is actually showing right now: its playlist directly, or —
+  // when it follows a schedule — the schedule entry whose dates cover today.
+  const playlistOnScreen = function(sc) {
+    if ((sc.currentType || '').toLowerCase() === 'playlist') return sc.currentPlaylistId || null;
+    if ((sc.currentType || '').toLowerCase() === 'schedule') {
+      const s = (schedules || []).find(x => x._id === sc.currentScheduleId);
+      const today = isoDay(new Date());
+      const hit = s && s.items.find(it =>
+        it.playlistId && it.startDate && it.startDate <= today &&
+        (!it.endDate || it.endDate >= today));
+      return hit ? hit.playlistId : null;
+    }
+    return null;
+  };
+
   return (
     <div className="space-y-4">
       <Card>
@@ -3999,12 +4096,20 @@ function SignagePage() {
                         <span className="lbl block">{sc.orientation}</span>
                       </td>
                       <td className="text-xs" style={{padding:'7px 8px', color:'var(--cy)'}}>
-                        {sc.currentType === 'playlist' ? plName(sc.currentPlaylistId)
-                         : (sc.currentType || '').toLowerCase() === 'schedule'
-                           ? ((schedules||[]).find(x=>x._id===sc.currentScheduleId)||{}).name || 'schedule'
-                         : sc.currentType || '—'}
-                        {(sc.currentType || '').toLowerCase() === 'schedule' &&
-                          <span className="lbl block" style={{color:'var(--txt3)'}}>on a schedule</span>}
+                        <span className="flex items-center gap-2">
+                          <span>
+                            {sc.currentType === 'playlist' ? plName(sc.currentPlaylistId)
+                             : (sc.currentType || '').toLowerCase() === 'schedule'
+                               ? ((schedules||[]).find(x=>x._id===sc.currentScheduleId)||{}).name || 'schedule'
+                             : sc.currentType || '—'}
+                            {(sc.currentType || '').toLowerCase() === 'schedule' &&
+                              <span className="lbl block" style={{color:'var(--txt3)'}}>on a schedule</span>}
+                          </span>
+                          <button onClick={()=>setPreview(sc)} title="Preview this screen"
+                                  style={{color:'var(--txt3)'}} aria-label={'Preview ' + sc.deviceName}>
+                            <Icon name="eye" size={13}/>
+                          </button>
+                        </span>
                       </td>
                       <td style={{padding:'7px 8px'}}>
                         {/* The dropdown resets to placeholder after each change;
@@ -4246,6 +4351,18 @@ function SignagePage() {
           screens are still deleted in the OptiSigns dashboard only.
         </p>
       </Card>
+
+      {preview && (
+        <ScreenPreviewModal
+          screen={preview}
+          playlistId={playlistOnScreen(preview)}
+          playlistName={(function(){
+            const id = playlistOnScreen(preview);
+            return id ? plName(id) : null;
+          })()}
+          account={account}
+          onClose={()=>setPreview(null)}/>
+      )}
     </div>
   );
 }

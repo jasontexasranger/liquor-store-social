@@ -11,9 +11,17 @@
   to     = "/index.html"
   status = 200
 
-# Security headers
+# Security headers.
+#
+# Scoped to the app document rather than "/*": OptiSigns embeds
+# /signage-viewer.html in an iframe, and a blanket X-Frame-Options: DENY plus
+# frame-ancestors 'none' made every screen show "refused to connect". The app
+# is a single page served at "/" (navigation is client-side state, not URL
+# routes), so scoping to "/" and "/index.html" protects the same thing while
+# leaving the viewer frameable. Netlify can't un-set a header per-path — it
+# merges duplicates — so exclusion by scope is the only clean mechanism.
 [[headers]]
-  for = "/*"
+  for = "/"
 
   [headers.values]
     X-Frame-Options        = "DENY"
@@ -22,3 +30,24 @@
     Permissions-Policy     = "geolocation=(), camera=(), microphone=()"
     # Allow connections to Meta Graph API, Anthropic, OpenAI, and Supabase
     Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; connect-src 'self' https://graph.facebook.com https://api.anthropic.com https://api.openai.com https://*.supabase.co; img-src 'self' data: blob: https://*.fbcdn.net https://oaidalleapiprodscus.blob.core.windows.net https://*.supabase.co; font-src 'self' data:; frame-ancestors 'none';"
+
+[[headers]]
+  for = "/index.html"
+
+  [headers.values]
+    X-Frame-Options        = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy        = "strict-origin-when-cross-origin"
+    Permissions-Policy     = "geolocation=(), camera=(), microphone=()"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://unpkg.com https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com; connect-src 'self' https://graph.facebook.com https://api.anthropic.com https://api.openai.com https://*.supabase.co; img-src 'self' data: blob: https://*.fbcdn.net https://oaidalleapiprodscus.blob.core.windows.net https://*.supabase.co; font-src 'self' data:; frame-ancestors 'none';"
+
+# The signage viewer must be embeddable by OptiSigns players and previews. It
+# displays only images from our own storage (enforced in its script), so being
+# frameable exposes nothing.
+[[headers]]
+  for = "/signage-viewer.html"
+
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy        = "no-referrer"
+    Content-Security-Policy = "default-src 'none'; img-src https://yyveikxfomxmedlxsulh.supabase.co; style-src 'unsafe-inline'; script-src 'unsafe-inline'"

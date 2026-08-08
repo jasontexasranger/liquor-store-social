@@ -263,6 +263,100 @@ Deno.serve(async (req) => {
       return Response.json({ image_url: publicUrl, bytes: bytes.byteLength }, { headers: corsHeaders });
     }
 
+    // ── syncPrices ──────────────────────────────────────────────────────────
+    // Pull the LDB's published price list into bcl_products. The catalogue API
+    // is asked where the latest file lives rather than hardcoding a URL that
+    // changes every publication.
+    if (action === 'syncPrices') {
+      await limit('bcl_sync', 3);
+
+      const pkg = await fetch(
+        'https://catalogue.data.gov.bc.ca/api/3/action/package_show?id=bc-liquor-store-product-price-list-historical-prices',
+        { headers: { 'Accept': 'application/json', 'User-Agent': UA_SEARCH }, signal: timeout(15_000) },
+      ).then(r => r.json());
+
+      const res = pkg?.result?.resources?.[0];
+      if (!res?.url) throw new Error('Could not find the price list in the BC Data Catalogue');
+
+      // "BC_Liquor_Store_Product_Price_List_April_2026" → "April 2026"
+      const m = /price_list_([a-z]+)_(\d{4})/i.exec(res.url) || /_([A-Za-z]+)_(\d{4})$/.exec(res.name ?? '');
+      const label = m ? (m[1][0].toUpperCase() + m[1].slice(1).toLowerCase() + ' ' + m[2]) : (res.name ?? 'unknown');
+
+      const csv = await fetch(res.url, {
+        headers: { 'User-Agent': UA_SEARCH }, signal: timeout(60_000),
+      }).then(r => { if (!r.ok) throw new Error('Price list download failed (' + r.status + ')'); return r.text(); });
+
+      // A real CSV parse, not split(','): product names can contain commas
+      // inside quotes, and one bad row would shift every column after it.
+      const parseCsv = (text: string): string[][] => {
+        const rows: string[][] = [];
+        let row: string[] = [], field = '', inQ = false;
+        for (let i = 0; i < text.length; i++) {
+          const ch = text[i];
+          if (inQ) {
+            if (ch === '"') { if (text[i+1] === '"') { field += '"'; i++; } else inQ = false; }
+            else field += ch;
+          } else if (ch === '"') inQ = true;
+          else if (ch === ',') { row.push(field); field = ''; }
+          else if (ch === '\n' || ch === '\r') {
+            if (field !== '' || row.length) { row.push(field); rows.push(row); row = []; field = ''; }
+            if (ch === '\r' && text[i+1] === '\n') i++;
+          } else field += ch;
+        }
+        if (field !== '' || row.length) { row.push(field); rows.push(row); }
+        return rows;
+      };
+
+      const all = parseCsv(csv);
+      const header = all[0].map(h => h.trim());
+      const col = (name: string) => header.indexOf(name);
+      const iSku = col('PRODUCT_SKU_NO'), iName = col('PRODUCT_LONG_NAME');
+      if (iSku === -1 || iName === -1) {
+        throw new Error('The price list layout has changed — header: ' + header.join(','));
+      }
+      const num = (v: string) => { const n = Number(v); return Number.isFinite(n) ? n : null; };
+
+      const rows = all.slice(1)
+        .filter(r => r[iSku]?.trim() && r[iName]?.trim())
+        .map(r => ({
+          sku: r[iSku].trim(),
+          name: r[iName].trim(),
+          category: r[col('ITEM_CATEGORY_NAME')]?.trim() || null,
+          subcategory: r[col('ITEM_SUBCATEGORY_NAME')]?.trim() || null,
+          class: r[col('ITEM_CLASS_NAME')]?.trim() || null,
+          country: r[col('PRODUCT_COUNTRY_ORIGIN_NAME')]?.trim() || null,
+          upc: r[col('PRODUCT_BASE_UPC_NO')]?.trim() || null,
+          litres: num(r[col('PRODUCT_LITRES_PER_CONTAINER')]),
+          containers: num(r[col('PRD_CONTAINER_PER_SELL_UNIT')]),
+          alcohol_pct: num(r[col('PRODUCT_ALCOHOL_PERCENT')]),
+          price: num(r[col('PRODUCT_PRICE')]),
+          list_label: label,
+          updated_at: new Date().toISOString(),
+        }));
+
+      // The same SKU can appear more than once; last one wins, and upserting
+      // a batch containing a duplicate key is an error rather than a merge.
+      const bySku = new Map<string, (typeof rows)[number]>();
+      for (const row of rows) bySku.set(row.sku, row);
+      const unique = [...bySku.values()];
+
+      for (let i = 0; i < unique.length; i += 1000) {
+        const { error } = await sb.from('bcl_products')
+          .upsert(unique.slice(i, i + 1000), { onConflict: 'sku' });
+        if (error) throw new Error('Import failed at row ' + i + ': ' + error.message);
+      }
+
+      await sb.from('audit_log').insert({
+        user_id: user.id,
+        action: 'sync_bcl_prices',
+        entity_type: 'bcl_products',
+        changed_fields: ['price'],
+        safe_metadata: { list: label, products: unique.length },
+      });
+
+      return Response.json({ imported: unique.length, list: label }, { headers: corsHeaders });
+    }
+
     throw new Error(`Unknown action: ${action}`);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

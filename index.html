@@ -1773,6 +1773,184 @@ const RECIPE_BLANK = {
   store_id:null, product_id:null, feature_id:null,
 };
 
+// ─────────────────────────────────────────────
+// BCL PRICE CHECK
+// ─────────────────────────────────────────────
+// The LDB's published list, held locally: instant search across ~8,000
+// products with no traffic on anyone's site. The list runs a few months
+// behind, so every price is labelled with the list it came from, and a live
+// check fetches today's number for the product in front of you.
+
+function bclUnitLabel(row) {
+  const parts = [];
+  if (row.containers && row.containers > 1) parts.push(row.containers + ' ×');
+  if (row.litres) parts.push((row.litres < 1 ? Math.round(row.litres*1000) + ' ml' : row.litres + ' L'));
+  return parts.join(' ');
+}
+
+function PriceCheckPage({ isAdmin }) {
+  const toast = useToast();
+  const [q,       setQ]       = useState('');
+  const [rows,    setRows]    = useState([]);
+  const [count,   setCount]   = useState(null);   // total in the table
+  const [label,   setLabel]   = useState('');
+  const [busy,    setBusy]    = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [live,    setLive]    = useState({});     // sku -> { price, at } | { error }
+
+  // How fresh is the list, and is there anything in it at all?
+  const loadMeta = useCallback(async function() {
+    const sb = getSB(); if (!sb) return;
+    const { count: n } = await sb.from('bcl_products').select('sku', { count:'exact', head:true });
+    setCount(n ?? 0);
+    if (n) {
+      const { data } = await sb.from('bcl_products').select('list_label').limit(1);
+      if (data && data[0]) setLabel(data[0].list_label || '');
+    }
+  }, []);
+  useEffect(function(){ loadMeta(); }, [loadMeta]);
+
+  // Search-as-you-type against the local table. Debounced so half-typed words
+  // don't stack queries.
+  useEffect(function() {
+    const term = q.trim();
+    if (term.length < 2) { setRows([]); return; }
+    let alive = true;
+    const t = setTimeout(async function() {
+      setBusy(true);
+      const sb = getSB();
+      const { data } = await sb.from('bcl_products')
+        .select('*')
+        .or('name.ilike.%' + term.replace(/[%,()]/g, '') + '%,sku.eq.' + term.replace(/[^0-9]/g, '').padStart(1,'0'))
+        .order('name')
+        .limit(40);
+      if (alive) { setRows(data || []); setBusy(false); }
+    }, 250);
+    return function(){ alive = false; clearTimeout(t); };
+  }, [q]);
+
+  const checkLive = async function(sku) {
+    setLive(prev => Object.assign({}, prev, { [sku]: { loading:true } }));
+    try {
+      // The existing catalogue search, by SKU — same guarded endpoint the
+      // product import uses, one request per press.
+      const r = await callEdge('bcliquor', 'search', { query: sku });
+      const hit = (r.products || []).find(p => p.sku === sku);
+      if (!hit) throw new Error('Not in the live catalogue — may be delisted');
+      setLive(prev => Object.assign({}, prev, { [sku]: {
+        price: hit.current_price, regular: hit.regular_price,
+        at: new Date().toLocaleTimeString(undefined, { hour:'numeric', minute:'2-digit' }),
+      }}));
+    } catch(e) {
+      setLive(prev => Object.assign({}, prev, { [sku]: { error: e.message } }));
+    }
+  };
+
+  const sync = async function() {
+    setSyncing(true);
+    try {
+      const r = await callEdge('bcliquor', 'syncPrices', {});
+      toast.success(r.imported + ' products imported from the ' + r.list + ' list');
+      await loadMeta();
+    } catch(e) { toast.error(e.message); }
+    finally { setSyncing(false); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <div className="flex items-center gap-3 mb-1 flex-wrap">
+          <span className="ttl">BCL Price Check</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          {label && <span className="lbl">{label} list · {count} products</span>}
+          {isAdmin && (
+            <Button size="sm" variant="outline" onClick={sync} loading={syncing}>
+              <Icon name="refresh"/> Update list
+            </Button>
+          )}
+        </div>
+        <p className="lbl mb-4">
+          BC Liquor Stores' published prices, for comparison. The list is updated
+          a few times a year — use the live check when it matters today.
+        </p>
+
+        {count === 0 && (
+          <div className="text-center py-10">
+            <Icon name="search" size={34} style={{color:'var(--cy-dim)'}}/>
+            <p className="lbl mt-3">No price list loaded yet</p>
+            {isAdmin
+              ? <Button size="sm" className="mt-3" onClick={sync} loading={syncing}>Import the current list</Button>
+              : <p className="text-xs mt-2" style={{color:'var(--txt2)'}}>Ask an admin to import it under this screen.</p>}
+          </div>
+        )}
+
+        {count > 0 && (
+          <React.Fragment>
+            <Input value={q} onChange={e=>setQ(e.target.value)} className="max-w-md"
+                   placeholder="Search by product name or SKU…"/>
+
+            {busy && <p className="lbl mt-3">Searching…</p>}
+            {!busy && q.trim().length >= 2 && rows.length === 0 && (
+              <p className="lbl mt-3">Nothing matches "{q.trim()}".</p>
+            )}
+
+            {rows.length > 0 && (
+              <div className="overflow-x-auto mt-4">
+                <table style={{width:'100%', minWidth:'680px', borderCollapse:'collapse'}}>
+                  <thead>
+                    <tr style={{borderBottom:'1px solid var(--line2)'}}>
+                      {['Product','Size','Category','BCL price','Live'].map(h=>(
+                        <th key={h} className="lbl" style={{textAlign:'left', padding:'0 8px 8px'}}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map(function(r) {
+                      const lv = live[r.sku];
+                      return (
+                        <tr key={r.sku} style={{borderBottom:'1px solid rgba(56,224,240,.07)'}}>
+                          <td style={{padding:'7px 8px'}}>
+                            <p className="text-xs" style={{color:'var(--txt)'}}>{r.name}</p>
+                            <p className="lbl">SKU {r.sku}{r.country ? ' · ' + r.country : ''}</p>
+                          </td>
+                          <td className="text-xs" style={{padding:'7px 8px', color:'var(--txt2)', whiteSpace:'nowrap'}}>
+                            {bclUnitLabel(r)}
+                          </td>
+                          <td className="text-xs" style={{padding:'7px 8px', color:'var(--txt2)'}}>
+                            {r.subcategory || r.category || ''}
+                          </td>
+                          <td className="mono text-sm" style={{padding:'7px 8px', color:'var(--cy)', whiteSpace:'nowrap'}}>
+                            {r.price != null ? money(r.price) : '—'}
+                            <span className="lbl block">{r.list_label}</span>
+                          </td>
+                          <td style={{padding:'7px 8px', whiteSpace:'nowrap'}}>
+                            {lv && lv.loading ? <span className="lbl">…</span>
+                             : lv && lv.error ? <span className="text-xs" title={lv.error} style={{color:'var(--amb)'}}>{lv.error.length > 24 ? 'Unavailable' : lv.error}</span>
+                             : lv ? (
+                               <span className="mono text-sm" style={{color: lv.price !== lv.regular ? 'var(--grn)' : 'var(--txt)'}}>
+                                 {money(lv.price)}
+                                 {lv.regular != null && lv.regular !== lv.price &&
+                                   <span className="lbl"> reg {money(lv.regular)}</span>}
+                                 <span className="lbl block">as of {lv.at}</span>
+                               </span>
+                             ) : (
+                               <Button size="sm" variant="ghost" onClick={()=>checkLive(r.sku)}>Check</Button>
+                             )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </React.Fragment>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 function RecipesPage({ isAdmin, myStores }) {
   const toast = useToast();
   const [storeId, setStoreId] = useState((myStores[0]||{}).id || '');
@@ -4223,6 +4401,66 @@ function PostPlanBuilder({ storeId, storeName, period, rows, products, onClose, 
   );
 }
 
+// BCL reference prices for the features on screen. Matched by the linked
+// product's SKU when it was imported from BCL, else by exact name — feature
+// names pasted from the sheet are usually the BCL name verbatim, and a fuzzy
+// match that guessed wrong would print a wrong comparison, which is worse
+// than a dash.
+function useBclPrices(rows, products) {
+  const [map, setMap] = useState({});   // feature id -> bcl row
+
+  useEffect(function() {
+    const sb = getSB(); if (!sb || !rows.length) { setMap({}); return; }
+    let alive = true;
+
+    const bySku = {}, byName = {};
+    rows.forEach(function(r) {
+      const prod = products.find(p => p.id === r.product_id);
+      if (prod && prod.bcliquor_sku) bySku[r.id] = prod.bcliquor_sku;
+      else if (r.name) byName[r.id] = r.name.trim().toUpperCase();
+    });
+
+    const skus  = [...new Set(Object.values(bySku))];
+    const names = [...new Set(Object.values(byName))];
+
+    Promise.all([
+      skus.length  ? sb.from('bcl_products').select('*').in('sku', skus)   : Promise.resolve({ data: [] }),
+      names.length ? sb.from('bcl_products').select('*').in('name', names) : Promise.resolve({ data: [] }),
+    ]).then(function(res) {
+      if (!alive) return;
+      const skuHit = {}, nameHit = {};
+      (res[0].data || []).forEach(b => { skuHit[b.sku] = b; });
+      (res[1].data || []).forEach(b => { nameHit[b.name] = b; });
+      const next = {};
+      rows.forEach(function(r) {
+        if (bySku[r.id] && skuHit[bySku[r.id]]) next[r.id] = skuHit[bySku[r.id]];
+        else if (byName[r.id] && nameHit[byName[r.id]]) next[r.id] = nameHit[byName[r.id]];
+      });
+      setMap(next);
+    });
+    return function(){ alive = false; };
+  }, [rows, products]);
+
+  return map;
+}
+
+function BclCell({ feature, bcl }) {
+  if (!bcl || bcl.price == null) return <span className="lbl">—</span>;
+  const ours = feature.sale_price != null ? Number(feature.sale_price) : null;
+  const diff = ours != null ? ours - Number(bcl.price) : null;
+  return (
+    <span className="mono text-xs whitespace-nowrap"
+          title={bcl.name + ' · ' + bcl.list_label + ' list'}>
+      <span style={{color:'var(--txt2)'}}>{money(bcl.price)}</span>
+      {diff != null && (
+        <span className="block" style={{color: diff < 0 ? 'var(--grn)' : diff > 0 ? 'var(--amb)' : 'var(--txt3)'}}>
+          {diff === 0 ? 'match' : (diff < 0 ? money(Math.abs(diff)) + ' under' : money(diff) + ' over')}
+        </span>
+      )}
+    </span>
+  );
+}
+
 function FeaturesPage({ isAdmin, myStores }) {
   const toast = useToast();
   const [storeId, setStoreId] = useState((myStores[0]||{}).id || '');
@@ -4238,6 +4476,7 @@ function FeaturesPage({ isAdmin, myStores }) {
     useFeaturePeriod(storeId, period);
   const { images: products, load: reloadProducts } = useBrandImageLibrary();
   const { campaigns } = useCampaigns();
+  const bclMap = useBclPrices(rows, products);
 
   const stats = featureStats(rows);
   const shiftMonth = n => {
@@ -4378,7 +4617,7 @@ function FeaturesPage({ isAdmin, myStores }) {
                   {['','Name','Size','Reg','Sale','Save'].map(h=>(
                     <th key={h} className="lbl" style={{textAlign:'left', padding:'0 5px 8px'}}>{h}</th>
                   ))}
-                  {mode==='plan' && ['Campaign','Notes',''].map(h=>(
+                  {mode==='plan' && ['BCL','Campaign','Notes',''].map(h=>(
                     <th key={h} className="lbl" style={{textAlign:'left', padding:'0 5px 8px'}}>{h}</th>
                   ))}
                   {mode==='sales' && ['Qty sold','Revenue','Notes',''].map(h=>(
@@ -4403,6 +4642,9 @@ function FeaturesPage({ isAdmin, myStores }) {
 
                       {mode==='plan' && (
                         <React.Fragment>
+                          <td style={{padding:'2px 5px', width:'86px'}}>
+                            <BclCell feature={r} bcl={bclMap[r.id]}/>
+                          </td>
                           <td style={{padding:'2px 5px', width:'130px'}}>
                             <Select value={r.campaign_id || ''} className="text-xs"
                                     onChange={e=>patch(r.id,{campaign_id:e.target.value || null})}
@@ -9995,6 +10237,7 @@ const ASSIGNABLE_SECTIONS = [
   { id:'features',  label:'Features' },
   { id:'creatives', label:'Creatives' },
   { id:'recipes',   label:'Recipes' },
+  { id:'prices',    label:'Price Check' },
   // Off by default for everyone who isn't an admin. Ads spends money, so the
   // edge function checks this same grant server-side rather than trusting the
   // menu; Products is chain-wide, so a change there affects every store.
@@ -12666,6 +12909,7 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
     { id:'features', icon:'tag', label:'Features' },
     { id:'creatives', icon:'image', label:'Creatives' },
     { id:'recipes',   icon:'spark', label:'Recipes' },
+    { id:'prices',    icon:'search', label:'Price Check' },
     ...(granted('products') ? [{ id:'products', icon:'package', label:'Products' }] : []),
     ...(granted('ads')      ? [{ id:'ads',      icon:'mega',    label:'Ads' }] : []),
     ...(isAdmin ? [
@@ -12762,6 +13006,7 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
                                              myStores={isAdmin ? STORES : STORES.filter(st=>userStoreIds.includes(st.id))}/>}
         {page==='features'               && <FeaturesPage isAdmin={isAdmin}
                                              myStores={isAdmin ? STORES : STORES.filter(st=>userStoreIds.includes(st.id))}/>}
+        {page==='prices'                 && <PriceCheckPage isAdmin={isAdmin}/>}
         {page==='recipes'                && <RecipesPage isAdmin={isAdmin}
                                              myStores={isAdmin ? STORES : STORES.filter(st=>userStoreIds.includes(st.id))}/>}
         {page==='products' && granted('products') && <ProductLibrary/>}

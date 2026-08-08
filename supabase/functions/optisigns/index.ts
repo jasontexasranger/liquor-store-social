@@ -96,7 +96,7 @@ Deno.serve(async (req) => {
           playlists(query: {}) {
             page { edges { node {
               _id name color
-              assets { _id assetId duration }
+              assets { _id filename duration type }
             } } }
           }
         }`);

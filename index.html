@@ -1976,7 +1976,15 @@ function PriceCheckPage({ isAdmin }) {
                     return (
                       <tr key={r.sku} style={{borderBottom:'1px solid rgba(56,224,240,.07)'}}>
                         <td style={{padding:'7px 8px'}}>
-                          <p className="text-xs" style={{color:'var(--txt)'}}>{r.name}</p>
+                          {/* Straight to that SKU's page on their site — new
+                              tab, so the search and filters aren't lost. */}
+                          <a href={'https://www.bcliquorstores.com/product/' + encodeURIComponent(r.sku)}
+                             target="_blank" rel="noopener noreferrer"
+                             className="text-xs hover:underline inline-flex items-center gap-1"
+                             style={{color:'var(--txt)'}}>
+                            {r.name}
+                            <Icon name="up" size={10} style={{color:'var(--cy-dim)', transform:'rotate(45deg)'}}/>
+                          </a>
                           <p className="lbl">SKU {r.sku}{r.country ? ' · ' + r.country : ''}</p>
                         </td>
                         <td className="text-xs" style={{padding:'7px 8px', color:'var(--txt2)', whiteSpace:'nowrap'}}>

@@ -3782,6 +3782,8 @@ function SignagePage() {
   const [showAdd,   setShowAdd]   = useState(false);
   const [newName,   setNewName]   = useState('');
   const [schedules, setSchedules] = useState(null);
+  const [runDates,  setRunDates]  = useState({});     // asset_id -> row, for the open playlist
+  const [rdDraft,   setRdDraft]   = useState({});     // asset_id -> {so, eo} being edited
 
   useEffect(function() {
     const sb = getSB(); if (!sb) return;
@@ -3800,6 +3802,10 @@ function SignagePage() {
   const load = useCallback(async function() {
     setScreens(null); setPlaylists(null); setSchedules(null);
     try {
+      // Opportunistic sweep: expired items come off (and due items go back
+      // on) the live playlists whenever anyone opens this page, so the daily
+      // cron is a backstop rather than the only enforcement.
+      try { await callEdge('optisigns', 'sweepSignage', { storeId: account }); } catch(e) {}
       const [s, p, sc] = await Promise.all([
         callEdge('optisigns', 'listScreens', { storeId: account }),
         callEdge('optisigns', 'listPlaylists', { storeId: account }),
@@ -3816,11 +3822,23 @@ function SignagePage() {
 
   const plName = id => (playlists || []).find(p => p._id === id)?.name || '—';
 
+  const loadRunDates = async function(id) {
+    try {
+      const r = await callEdge('optisigns', 'itemDates', { playlistId: id, storeId: account });
+      const map = {};
+      (r.dates || []).forEach(d => { map[d.asset_id] = d; });
+      setRunDates(map);
+    } catch(e) { setRunDates({}); }
+  };
+
   const openPlaylist = async function(id) {
     if (open === id) { setOpen(null); setItems(null); return; }
-    setOpen(id); setItems(null); setDurDraft({});
+    setOpen(id); setItems(null); setDurDraft({}); setRunDates({}); setRdDraft({});
     try {
-      const r = await callEdge('optisigns', 'playlistItems', { playlistId: id, storeId: account });
+      const [r] = await Promise.all([
+        callEdge('optisigns', 'playlistItems', { playlistId: id, storeId: account }),
+        loadRunDates(id),
+      ]);
       setItems(r.playlist.assets || []);
     } catch(e) { setItems([]); toast.error(e.message); }
   };
@@ -3828,7 +3846,33 @@ function SignagePage() {
   const refreshItems = async function(id) {
     const r = await callEdge('optisigns', 'playlistItems', { playlistId: id, storeId: account });
     setItems(r.playlist.assets || []);
+    await loadRunDates(id);
     await load();
+  };
+
+  // Commit one item's run window. Applies on the spot: give a live item a
+  // future start date and it leaves the playlist immediately, coming back on
+  // that date.
+  const commitRunDates = function(assetId, filename, so, eo) {
+    if (!so && !eo) return;
+    act('rd-' + assetId, async function() {
+      const r = await callEdge('optisigns', 'setItemDates', {
+        playlistId: open, storeId: account, assetId, filename,
+        startsOn: so || null, endsOn: eo || null,
+      });
+      setRdDraft(prev => { const n = Object.assign({}, prev); delete n[assetId]; return n; });
+      toast.success(r.removed ? 'Saved — off the playlist until its start date' : 'Run dates saved');
+      await refreshItems(open);
+    });
+  };
+
+  const clearRunDates = function(assetId) {
+    act('rd-' + assetId, async function() {
+      await callEdge('optisigns', 'clearItemDates', { playlistId: open, storeId: account, assetId });
+      setRdDraft(prev => { const n = Object.assign({}, prev); delete n[assetId]; return n; });
+      toast.success('Dates cleared — always plays');
+      await refreshItems(open);
+    });
   };
 
   const act = async function(label, fn) {
@@ -4098,6 +4142,46 @@ function SignagePage() {
                         <span className="text-xs flex-1 truncate" style={{color:'var(--txt2)'}}
                               title={it.filename}>{it.filename}</span>
 
+                        {(function() {
+                          const row = runDates[it._id];
+                          const d = rdDraft[it._id] || {};
+                          const so = d.so !== undefined ? d.so : (row ? row.starts_on || '' : '');
+                          const eo = d.eo !== undefined ? d.eo : (row ? row.ends_on || '' : '');
+                          const dirty = d.so !== undefined || d.eo !== undefined;
+                          return (
+                            <span className="flex items-center gap-1 flex-none"
+                                  title="Run dates — the item is only in the rotation between these days">
+                              <Input type="date" className="text-xs"
+                                     style={{width:'118px', padding:'3px 4px',
+                                             opacity: so || row ? 1 : 0.55}}
+                                     value={so}
+                                     onChange={e=>setRdDraft(prev=>Object.assign({}, prev,
+                                       {[it._id]: Object.assign({}, prev[it._id], {so: e.target.value})}))}/>
+                              <span className="lbl">–</span>
+                              <Input type="date" className="text-xs"
+                                     style={{width:'118px', padding:'3px 4px',
+                                             opacity: eo || row ? 1 : 0.55}}
+                                     value={eo}
+                                     onChange={e=>setRdDraft(prev=>Object.assign({}, prev,
+                                       {[it._id]: Object.assign({}, prev[it._id], {eo: e.target.value})}))}/>
+                              {dirty && (so || eo) && (
+                                <Button size="sm" variant="ghost" disabled={!!busy}
+                                        onClick={()=>commitRunDates(it._id, it.filename, so, eo)}
+                                        aria-label="Save run dates" title="Save run dates">
+                                  <Icon name="check" size={11} style={{color:'var(--grn)'}}/>
+                                </Button>
+                              )}
+                              {row && !dirty && (
+                                <Button size="sm" variant="ghost" disabled={!!busy}
+                                        onClick={()=>clearRunDates(it._id)}
+                                        aria-label="Clear run dates" title="Clear dates — always plays">
+                                  <Icon name="close" size={10} style={{color:'var(--txt3)'}}/>
+                                </Button>
+                              )}
+                            </span>
+                          );
+                        })()}
+
                         <span className="flex items-center gap-1 flex-none">
                           <Input type="number" min="1" max="300" className="text-xs"
                                  style={{width:'58px', padding:'3px 6px'}}
@@ -4123,6 +4207,36 @@ function SignagePage() {
                       </div>
                     );
                   })}
+
+                  {(function() {
+                    const present = new Set((items || []).map(x => x._id));
+                    const waiting = Object.values(runDates)
+                      .filter(r => r.state === 'pending' && !present.has(r.asset_id));
+                    if (!waiting.length) return null;
+                    return (
+                      <div className="mt-2 p-2" style={{border:'1px dashed var(--line)'}}>
+                        <p className="lbl mb-1">Waiting to join this playlist</p>
+                        {waiting.map(function(r) {
+                          return (
+                            <div key={r.asset_id} className="flex items-center gap-3 py-1">
+                              <Icon name="clock" size={11} style={{color:'var(--amb)'}}/>
+                              <span className="text-xs flex-1 truncate" style={{color:'var(--txt2)'}}>
+                                {r.filename || r.asset_id}
+                              </span>
+                              <span className="lbl" style={{color:'var(--amb)'}}>
+                                returns {fmtDay(r.starts_on)}{r.ends_on ? ' · until ' + fmtDay(r.ends_on) : ''}
+                              </span>
+                              <Button size="sm" variant="ghost" disabled={!!busy}
+                                      onClick={()=>clearRunDates(r.asset_id)}
+                                      title="Clear dates and put it back now">
+                                <Icon name="close" size={10} style={{color:'var(--txt3)'}}/>
+                              </Button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
 
                   <div className="flex gap-2 mt-3">
                     <Button size="sm" variant="outline" onClick={()=>setShowAdd(true)}>

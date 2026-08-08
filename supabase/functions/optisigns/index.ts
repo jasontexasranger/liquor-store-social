@@ -78,18 +78,6 @@ Deno.serve(async (req) => {
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
     );
 
-    const auth = req.headers.get('Authorization');
-    if (!auth) throw new Error('Missing Authorization header');
-    const { data: { user }, error } = await sb.auth.getUser(auth.replace('Bearer ', ''));
-    if (error || !user) throw new Error('Invalid or expired session');
-
-    const { data: role } = await sb
-      .from('user_roles').select('role, sections').eq('user_id', user.id).maybeSingle();
-    const ADMIN_EMAILS = [
-      'jasontexasranger@gmail.com', 'jason@vwdevelopments.com', 'tim@vwdevelopments.com',
-    ];
-    const isAdmin = role?.role === 'admin' || ADMIN_EMAILS.includes((user.email ?? '').toLowerCase());
-
     const body = await req.json() as {
       action: string; query?: string; variables?: Record<string, unknown>;
       storeId?: string; name?: string;
@@ -153,6 +141,114 @@ Deno.serve(async (req) => {
         .select('optisigns_key_secret').eq('store_id', storeId).maybeSingle();
       return data?.optisigns_key_secret ?? undefined;
     };
+
+    // ── Per-item run-date sweep ─────────────────────────────────────────────
+    // OptiSigns playlist items can't carry dates, so signage_item_dates does,
+    // and this enforces them: remove items whose window has closed, re-add
+    // items whose window has opened. Runs on Signage page load, right after
+    // any date edit, and daily by cron.
+    type ItemDateRow = {
+      id: string; store_id: string | null; playlist_id: string; asset_id: string;
+      filename: string | null; starts_on: string | null; ends_on: string | null; state: string;
+    };
+
+    const sweepPlaylist = async (storeId: string | null, playlistId: string, rows: ItemDateRow[]) => {
+      const secret = await keyFor(storeId ?? undefined);
+      const today = todayISO();
+      const d = await gql(
+        'query($q:QueryPlaylistInput!){ playlists(query:$q){ page { edges { node { _id assets { _id } } } } } }',
+        { q: { _id: playlistId } }, secret);
+      const node = (d?.playlists?.page?.edges ?? [])
+        .map((e: { node: { _id: string; assets?: Array<{ _id: string }> } }) => e.node)
+        .find((p: { _id: string }) => p._id === playlistId);
+      if (!node) {
+        // Playlist is gone; its date rows go with it.
+        await sb.from('signage_item_dates').delete().eq('playlist_id', playlistId);
+        return { removed: 0, added: 0 };
+      }
+      const assets = node.assets ?? [];
+      const removePos: number[] = [];
+      let added = 0;
+      for (const r of rows) {
+        const within = (!r.starts_on || r.starts_on <= today) && (!r.ends_on || today <= r.ends_on);
+        const idx = assets.findIndex((a: { _id: string }) => a._id === r.asset_id);
+        if (within) {
+          if (idx >= 0) {
+            if (r.state !== 'active') {
+              await sb.from('signage_item_dates')
+                .update({ state: 'active', updated_at: new Date().toISOString() }).eq('id', r.id);
+            }
+          } else if (r.state === 'pending') {
+            // Its window opened — back into the playlist, at the end.
+            await gql(
+              'mutation($id:String!,$p:AddPlaylistItemsInput!){ addPlaylistItems(_id:$id, payload:$p){ _id } }',
+              { id: playlistId, p: { ids: [r.asset_id], pos: assets.length, type: 'ASSET' } }, secret);
+            await sb.from('signage_item_dates')
+              .update({ state: 'active', updated_at: new Date().toISOString() }).eq('id', r.id);
+            added++;
+          } else {
+            // Someone took it out by hand — a hand edit wins over the dates.
+            await sb.from('signage_item_dates').delete().eq('id', r.id);
+          }
+        } else {
+          if (idx >= 0) removePos.push(idx);
+          if (r.ends_on && r.ends_on < today) {
+            // Fully over — the row has done its job.
+            await sb.from('signage_item_dates').delete().eq('id', r.id);
+          } else if (r.state !== 'pending') {
+            await sb.from('signage_item_dates')
+              .update({ state: 'pending', updated_at: new Date().toISOString() }).eq('id', r.id);
+          }
+        }
+      }
+      if (removePos.length) {
+        await gql(
+          'mutation($id:String!,$p:RemovePlaylistItemsInput!){ removePlaylistItems(_id:$id, payload:$p){ _id } }',
+          { id: playlistId, p: { pos: removePos } }, secret);
+      }
+      return { removed: removePos.length, added };
+    };
+
+    const sweepAll = async () => {
+      const { data: rows } = await sb.from('signage_item_dates').select('*');
+      const groups = new Map<string, ItemDateRow[]>();
+      for (const r of (rows ?? []) as ItemDateRow[]) {
+        const k = (r.store_id ?? '') + '|' + r.playlist_id;
+        if (!groups.has(k)) groups.set(k, []);
+        groups.get(k)!.push(r);
+      }
+      let removed = 0, added = 0;
+      for (const [, rs] of groups) {
+        try {
+          const res = await sweepPlaylist(rs[0].store_id, rs[0].playlist_id, rs);
+          removed += res.removed; added += res.added;
+        } catch (_e) { /* one broken playlist must not stop the rest */ }
+      }
+      return { swept: groups.size, removed, added };
+    };
+
+    // The daily cron calls with a dedicated low-stakes secret instead of a
+    // user session — it can sweep and nothing else. Set CRON_SECRET in the
+    // function secrets and use the same value in the cron job's header.
+    if (body.action === 'sweepSignage') {
+      const cronSecret = Deno.env.get('CRON_SECRET');
+      if (cronSecret && req.headers.get('x-cron-secret') === cronSecret) {
+        return Response.json(await sweepAll(), { headers: corsHeaders });
+      }
+      // No valid cron secret — falls through to the signed-in admin path.
+    }
+
+    const auth = req.headers.get('Authorization');
+    if (!auth) throw new Error('Missing Authorization header');
+    const { data: { user }, error } = await sb.auth.getUser(auth.replace('Bearer ', ''));
+    if (error || !user) throw new Error('Invalid or expired session');
+
+    const { data: role } = await sb
+      .from('user_roles').select('role, sections').eq('user_id', user.id).maybeSingle();
+    const ADMIN_EMAILS = [
+      'jasontexasranger@gmail.com', 'jason@vwdevelopments.com', 'tim@vwdevelopments.com',
+    ];
+    const isAdmin = role?.role === 'admin' || ADMIN_EMAILS.includes((user.email ?? '').toLowerCase());
 
     // ── listScreens ─────────────────────────────────────────────────────────
     if (body.action === 'listScreens') {
@@ -415,7 +511,9 @@ Deno.serve(async (req) => {
     // every screen on the account, including businesses outside the stores.
     if (['assignScreen','playlistItems','removeItems','moveItems','setDurations',
          'renamePlaylist','addCreatives','createPlaylist','deletePlaylist',
-         'listSchedules','removeScheduleEntry','assignScreenSchedule'].includes(body.action)) {
+         'listSchedules','removeScheduleEntry','assignScreenSchedule',
+         'setScheduleEntryDates','itemDates','setItemDates','clearItemDates',
+         'sweepSignage'].includes(body.action)) {
       if (!isAdmin) throw new Error('Admin only');
       const secret = await keyFor(body.storeId);
       const b = body as unknown as {
@@ -424,7 +522,131 @@ Deno.serve(async (req) => {
         updates?: Array<{ pos: number; duration: number }>;
         items?: Array<{ url: string; name: string; duration?: number }>;
         scheduleId?: string; itemId?: string;
+        startDate?: string; endDate?: string;
+        assetId?: string; filename?: string;
+        startsOn?: string | null; endsOn?: string | null;
       };
+
+      // ── itemDates: the run-date rows for one playlist.
+      if (b.action === 'itemDates') {
+        if (!b.playlistId) throw new Error('playlistId required');
+        const { data } = await sb.from('signage_item_dates')
+          .select('*').eq('playlist_id', b.playlistId);
+        return Response.json({ dates: data ?? [] }, { headers: corsHeaders });
+      }
+
+      // ── setItemDates: give one playlist item a run window, then apply it
+      // immediately — outside its window it comes off the live playlist on
+      // the spot, not at the next daily sweep.
+      if (b.action === 'setItemDates') {
+        if (!b.playlistId || !b.assetId) throw new Error('playlistId and assetId required');
+        const so = b.startsOn || null, eo = b.endsOn || null;
+        if (!so && !eo) throw new Error('Set a start date, an end date, or both');
+        if ((so && !DATE_RE.test(so)) || (eo && !DATE_RE.test(eo))) {
+          throw new Error('Dates must be YYYY-MM-DD');
+        }
+        if (so && eo && eo < so) throw new Error('The end date is before the start date');
+
+        const { data: prev } = await sb.from('signage_item_dates')
+          .select('state').eq('playlist_id', b.playlistId).eq('asset_id', b.assetId).maybeSingle();
+        const { error: upErr } = await sb.from('signage_item_dates').upsert({
+          store_id: b.storeId ?? null,
+          playlist_id: b.playlistId,
+          asset_id: b.assetId,
+          filename: b.filename ?? null,
+          starts_on: so, ends_on: eo,
+          state: prev?.state ?? 'active',
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'playlist_id,asset_id' });
+        if (upErr) throw new Error(upErr.message || JSON.stringify(upErr));
+
+        const { data: rows } = await sb.from('signage_item_dates')
+          .select('*').eq('playlist_id', b.playlistId);
+        const res = await sweepPlaylist(b.storeId ?? null, b.playlistId, (rows ?? []) as ItemDateRow[]);
+
+        await sb.from('audit_log').insert({
+          user_id: user.id,
+          action: 'set_signage_item_dates',
+          entity_type: 'optisigns',
+          changed_fields: ['item_dates'],
+          safe_metadata: { playlistId: b.playlistId, assetId: b.assetId, startsOn: so, endsOn: eo },
+        });
+        return Response.json({ ok: true, ...res }, { headers: corsHeaders });
+      }
+
+      // ── clearItemDates: back to "always plays". If the sweep had taken the
+      // item off the playlist, clearing the dates puts it straight back.
+      if (b.action === 'clearItemDates') {
+        if (!b.playlistId || !b.assetId) throw new Error('playlistId and assetId required');
+        const { data: row } = await sb.from('signage_item_dates')
+          .select('*').eq('playlist_id', b.playlistId).eq('asset_id', b.assetId).maybeSingle();
+        if (row) {
+          if (row.state === 'pending') {
+            const secret = await keyFor(b.storeId);
+            const d = await gql(
+              'query($q:QueryPlaylistInput!){ playlists(query:$q){ page { edges { node { _id assets { _id } } } } } }',
+              { q: { _id: b.playlistId } }, secret);
+            const node = (d?.playlists?.page?.edges ?? [])
+              .map((e: { node: { _id: string; assets?: Array<{ _id: string }> } }) => e.node)
+              .find((p: { _id: string }) => p._id === b.playlistId);
+            const assets = node?.assets ?? [];
+            if (!assets.some((a: { _id: string }) => a._id === b.assetId)) {
+              await gql(
+                'mutation($id:String!,$p:AddPlaylistItemsInput!){ addPlaylistItems(_id:$id, payload:$p){ _id } }',
+                { id: b.playlistId, p: { ids: [b.assetId], pos: assets.length, type: 'ASSET' } }, secret);
+            }
+          }
+          await sb.from('signage_item_dates').delete().eq('id', row.id);
+        }
+        return Response.json({ ok: true }, { headers: corsHeaders });
+      }
+
+      // ── sweepSignage: the same sweep the cron runs, from the console.
+      if (b.action === 'sweepSignage') {
+        return Response.json(await sweepAll(), { headers: corsHeaders });
+      }
+
+      // ── setScheduleEntryDates: change when a playlist runs. updateScheduleItem
+      // returned stale data when probed, so the reliable path is remove + add.
+      // With no itemId it adds the playlist to the schedule fresh — how an
+      // unscheduled playlist gets dates from the console.
+      if (b.action === 'setScheduleEntryDates') {
+        if (!b.scheduleId || !b.playlistId) throw new Error('scheduleId and playlistId required');
+        if (!b.startDate || !DATE_RE.test(b.startDate) || !b.endDate || !DATE_RE.test(b.endDate)) {
+          throw new Error('Dates must be YYYY-MM-DD');
+        }
+        if (b.endDate < b.startDate) throw new Error('The end date is before the start date');
+
+        if (b.itemId) {
+          await gql(
+            'mutation($p:RemoveScheduleItemInput!){ removeScheduleItem(payload:$p, scope:ALL) }',
+            { p: { _id: b.itemId } }, secret);
+        }
+        try {
+          await gql(
+            'mutation($p:AddScheduleItemInput!){ addScheduleItem(force:false, payload:$p){ _id } }',
+            { p: { scheduleId: b.scheduleId, type: 'PLAYLIST', playlistId: b.playlistId,
+                   range: { startDate: b.startDate + 'T00:00:00.000Z',
+                            endDate: b.startDate + 'T23:59:00.000Z' },
+                   repeatObject: { rrule: dailyRule(b.startDate, b.endDate), repeat: 'daily' } } },
+            secret);
+        } catch (e) {
+          const m = e instanceof Error ? e.message : String(e);
+          throw new Error(/overlap/i.test(m)
+            ? 'Those dates overlap another run on this schedule — adjust the other entry first.'
+              + (b.itemId ? ' The old entry was already removed, so set fresh dates to put it back.' : '')
+            : m);
+        }
+        await sb.from('audit_log').insert({
+          user_id: user.id,
+          action: 'set_schedule_entry_dates',
+          entity_type: 'optisigns',
+          changed_fields: ['schedule'],
+          safe_metadata: { scheduleId: b.scheduleId, playlistId: b.playlistId,
+                           startDate: b.startDate, endDate: b.endDate },
+        });
+        return Response.json({ ok: true }, { headers: corsHeaders });
+      }
 
       // ── listSchedules: every schedule with its upcoming entries, playlist
       // names resolved so the console can show "SEP 26 · 1 Sep – 30 Sep".

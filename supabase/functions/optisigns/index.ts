@@ -24,8 +24,13 @@ const corsHeaders = {
 };
 
 function apiKey(): string {
-  const k = Deno.env.get('OPTISIGNS_API_KEY');
-  if (!k) throw new Error('OPTISIGNS_API_KEY is not configured in the Edge Function secrets');
+  const raw = Deno.env.get('OPTISIGNS_API_KEY');
+  if (!raw) throw new Error('OPTISIGNS_API_KEY is not configured in the Edge Function secrets');
+  // Keys arrive by clipboard, and clipboards smuggle newlines and zero-width
+  // characters that are invisible in a terminal but illegal in an HTTP header
+  // — the "not a valid ByteString" failure. Keep only printable ASCII.
+  const k = raw.replace(/[^\x21-\x7E]/g, '');
+  if (!k) throw new Error('OPTISIGNS_API_KEY is empty after removing invalid characters');
   return k;
 }
 

@@ -4444,20 +4444,40 @@ function useBclPrices(rows, products) {
   return map;
 }
 
-function BclCell({ feature, bcl }) {
-  if (!bcl || bcl.price == null) return <span className="lbl">—</span>;
+// Reference price from the monthly list, upgraded to today's live price once
+// one has been fetched. Clicking re-checks. Green/amber shows how the feature
+// price sits against whichever BCL figure is showing.
+function BclCell({ feature, bcl, live, onCheck }) {
+  const price = live && live.price != null ? live.price
+              : bcl && bcl.price != null ? bcl.price : null;
+
+  if (live && live.loading) return <span className="lbl">checking…</span>;
+  if (price == null) {
+    return (
+      <button onClick={onCheck} className="lbl hover:underline"
+              title={live && live.error ? live.error : 'Check the live BCL price'}>
+        {live && live.error ? 'n/a' : '—'}
+      </button>
+    );
+  }
+
   const ours = feature.sale_price != null ? Number(feature.sale_price) : null;
-  const diff = ours != null ? ours - Number(bcl.price) : null;
+  const diff = ours != null ? ours - Number(price) : null;
+  const src  = live && live.price != null ? 'live ' + live.at : (bcl ? bcl.list_label : '');
+
   return (
-    <span className="mono text-xs whitespace-nowrap"
-          title={bcl.name + ' · ' + bcl.list_label + ' list'}>
-      <span style={{color:'var(--txt2)'}}>{money(bcl.price)}</span>
+    <button onClick={onCheck} className="mono text-xs whitespace-nowrap text-left"
+            title={(bcl ? bcl.name + ' · ' : '') + src + ' — click to check the live price'}>
+      <span style={{color: live && live.price != null ? 'var(--cy)' : 'var(--txt2)'}}>
+        {money(price)}
+      </span>
       {diff != null && (
         <span className="block" style={{color: diff < 0 ? 'var(--grn)' : diff > 0 ? 'var(--amb)' : 'var(--txt3)'}}>
           {diff === 0 ? 'match' : (diff < 0 ? money(Math.abs(diff)) + ' under' : money(diff) + ' over')}
         </span>
       )}
-    </span>
+      <span className="lbl block">{src}</span>
+    </button>
   );
 }
 
@@ -4478,13 +4498,57 @@ function FeaturesPage({ isAdmin, myStores }) {
   const { campaigns } = useCampaigns();
   const bclMap = useBclPrices(rows, products);
 
+  // Live BCL prices, fetched from the public catalogue as rows are worked on.
+  // One request per name commit — typing doesn't fire anything until the field
+  // is left — and results are kept for the session so re-renders cost nothing.
+  const [liveMap, setLiveMap] = useState({});
+  const liveInflight = useRef({});
+
+  const checkLive = useCallback(async function(row) {
+    if (!row || liveInflight.current[row.id]) return;
+    const prod = products.find(p => p.id === row.product_id);
+    const term = (prod && prod.bcliquor_sku) || (row.name || '').trim();
+    if (term.length < 3) return;
+
+    liveInflight.current[row.id] = true;
+    setLiveMap(prev => Object.assign({}, prev, { [row.id]: { loading:true } }));
+    try {
+      const r = await callEdge('bcliquor', 'search', { query: term });
+      const list = r.products || [];
+      // Exact SKU beats everything; else exact name; else give up rather than
+      // show a confident price for the wrong bottle.
+      const hit = (prod && prod.bcliquor_sku && list.find(p => p.sku === prod.bcliquor_sku))
+               || list.find(p => p.name.trim().toUpperCase() === (row.name || '').trim().toUpperCase())
+               || (list.length === 1 ? list[0] : null);
+      if (!hit) throw new Error('No exact match in the live catalogue');
+      setLiveMap(prev => Object.assign({}, prev, { [row.id]: {
+        price: hit.current_price, regular: hit.regular_price,
+        at: new Date().toLocaleTimeString(undefined, { hour:'numeric', minute:'2-digit' }),
+      }}));
+    } catch(e) {
+      setLiveMap(prev => Object.assign({}, prev, { [row.id]: { error: e.message } }));
+    } finally {
+      delete liveInflight.current[row.id];
+    }
+  }, [products]);
+
   const stats = featureStats(rows);
   const shiftMonth = n => {
     const [y,m] = period.split('-').map(Number);
     setPeriod(monthKey(new Date(y, m-1+n, 1)));
   };
 
-  const patch = async (id, p) => { try { await updateRow(id, p); } catch(e){ toast.error(e.message); } };
+  const patch = async (id, p) => {
+    try {
+      await updateRow(id, p);
+      // A new name or a newly linked product is the moment the manager wants
+      // the comparison, so fetch it then rather than making them ask.
+      if (('name' in p && p.name) || ('product_id' in p && p.product_id)) {
+        const row = rows.find(r => r.id === id);
+        checkLive(Object.assign({}, row, p));
+      }
+    } catch(e){ toast.error(e.message); }
+  };
 
   const addBlank = async () => {
     try { await addRows([{ ...FEATURE_BLANK, name:'New feature' }]); }
@@ -4643,7 +4707,8 @@ function FeaturesPage({ isAdmin, myStores }) {
                       {mode==='plan' && (
                         <React.Fragment>
                           <td style={{padding:'2px 5px', width:'86px'}}>
-                            <BclCell feature={r} bcl={bclMap[r.id]}/>
+                            <BclCell feature={r} bcl={bclMap[r.id]} live={liveMap[r.id]}
+                                     onCheck={()=>checkLive(r)}/>
                           </td>
                           <td style={{padding:'2px 5px', width:'130px'}}>
                             <Select value={r.campaign_id || ''} className="text-xs"

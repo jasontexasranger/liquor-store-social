@@ -4027,6 +4027,23 @@ function SignagePage() {
     : (screens || []);
 
   const [preview, setPreview] = useState(null);   // screen being previewed
+  const [plBrand, setPlBrand] = useState('all');  // playlist tag filter
+
+  // Recognized tags are the store slugs plus 'global'; anything else is left
+  // alone (OptiSigns users can tag things for their own reasons).
+  const KNOWN_TAGS = STORES.map(s=>s.id).concat(['global']);
+  const plTag = pl => ((pl.tags || []).find(t => KNOWN_TAGS.includes(t))) || '';
+  const shownPlaylists = (playlists || []).filter(pl =>
+    plBrand === 'all' ? true : plTag(pl) === plBrand);
+
+  const setTag = (pl, tag) => act('tag-' + pl._id, async function() {
+    await callEdge('optisigns', 'setPlaylistTags', {
+      playlistId: pl._id, storeId: account,
+      tags: tag ? [tag] : [],
+    });
+    toast.success(tag ? 'Tagged ' + tag : 'Tag cleared');
+    await load();
+  });
 
   // What a screen is actually showing right now: its playlist directly, or —
   // when it follows a schedule — the schedule entry whose dates cover today.
@@ -4142,7 +4159,12 @@ function SignagePage() {
           <Button size="sm" onClick={createList} loading={busy==='create'}>Create</Button>
         </div>
 
-        {playlists === null ? <p className="lbl text-center py-8">Loading…</p> : playlists.map(function(pl) {
+        <div className="mb-4">
+          <StorePicker compact value={plBrand} onChange={setPlBrand} allLabel="All"
+                       extra={[{value:'global', label:'Global', title:'Playlists tagged global'}]}/>
+        </div>
+
+        {playlists === null ? <p className="lbl text-center py-8">Loading…</p> : shownPlaylists.map(function(pl) {
           const playing = screensPlaying(pl._id);
           const isOpen = open === pl._id;
           return (
@@ -4160,6 +4182,17 @@ function SignagePage() {
                   <span className="flex-1"/>
                   <Icon name={isOpen ? 'up' : 'down'} size={12} style={{color:'var(--txt3)'}}/>
                 </button>
+                <Select value={plTag(pl)} className="w-auto text-xs flex-none"
+                        disabled={busy === 'tag-' + pl._id}
+                        onClick={e=>e.stopPropagation()}
+                        onChange={e=>setTag(pl, e.target.value)}
+                        title="Brand tag — filters this list and shows in OptiSigns">
+                  <option value="">no tag</option>
+                  <option value="global">Global</option>
+                  {STORES.map(s=>(
+                    <option key={s.id} value={s.id}>{s.name.split(' ')[0]}</option>
+                  ))}
+                </Select>
                 {/* Live playlists get no delete button at all — the server
                     refuses anyway, but not offering it is clearer. */}
                 {playing.length === 0 && (
@@ -4432,6 +4465,7 @@ function SignagePushModal({ storeId, storeName, period, periodRow, onClose }) {
         storeId, name,
         items: chosen.map(c => ({ url: c.public_url, name: c.name, duration: Number(duration) || 8 })),
         screenIds: pickScr,
+        tag: storeId,
         schedule: when === 'dates'
           ? { name: signageScheduleName(storeName), startDate: schedFrom, endDate: schedTo }
           : undefined,

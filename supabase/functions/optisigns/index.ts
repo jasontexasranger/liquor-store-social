@@ -86,7 +86,13 @@ Deno.serve(async (req) => {
       // When present, the push is dated: the playlist goes into the store's
       // schedule and plays only between these days (inclusive, YYYY-MM-DD).
       schedule?: { name: string; startDate: string; endDate: string };
+      // Brand tag ('brothers', 'global', …) stamped onto the pushed playlist
+      // so it can be filtered here and in the OptiSigns dashboard alike.
+      tag?: string;
     };
+
+    // Tags are lowercase slugs; anything else is someone probing.
+    const TAG_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
     // ── Schedule helpers ────────────────────────────────────────────────────
     // OptiSigns stores schedule times as floating local wall-clock with a Z
@@ -274,7 +280,7 @@ Deno.serve(async (req) => {
         query {
           playlists(query: {}) {
             page { edges { node {
-              _id name color
+              _id name color tags
               assets { _id filename duration type }
             } } }
           }
@@ -332,6 +338,19 @@ Deno.serve(async (req) => {
         { p: { name: name.trim() } }, secret);
       const playlistId = pl?.savePlaylist?._id;
       if (!playlistId) throw new Error('OptiSigns did not return a playlist id');
+
+      // Brand tag, best-effort: a key without the Tags scope must not sink
+      // the push — the playlist matters more than its label.
+      let tagged = false;
+      if (body.tag && TAG_RE.test(body.tag)) {
+        try {
+          await gql(
+            'mutation($p:UpdateObjectTagsInput!){ updateObjectTags(payload:$p) }',
+            { p: { ids: [playlistId], type: 'PLAYLIST', mutation: 'ADD', tags: [body.tag] } },
+            secret);
+          tagged = true;
+        } catch (_e) { /* likely API_SCOPE_OFF — Tags not enabled on this key */ }
+      }
 
       await gql(
         'mutation($id:String!,$p:AddPlaylistItemsInput!){ addPlaylistItems(_id:$id, payload:$p){ _id } }',
@@ -486,7 +505,7 @@ Deno.serve(async (req) => {
         playlistId, name: name.trim(), items: assetIds.length,
         assigned, failedAssign,
         scheduleId, scheduled: sched ? { name: sched.name, startDate: sched.startDate, endDate: sched.endDate } : null,
-        bridged: !!bridged,
+        bridged: !!bridged, tagged,
       }, { headers: corsHeaders });
     }
 
@@ -513,7 +532,7 @@ Deno.serve(async (req) => {
          'renamePlaylist','addCreatives','createPlaylist','deletePlaylist',
          'listSchedules','removeScheduleEntry','assignScreenSchedule',
          'setScheduleEntryDates','itemDates','setItemDates','clearItemDates',
-         'sweepSignage'].includes(body.action)) {
+         'sweepSignage','setPlaylistTags'].includes(body.action)) {
       if (!isAdmin) throw new Error('Admin only');
       const secret = await keyFor(body.storeId);
       const b = body as unknown as {
@@ -525,7 +544,30 @@ Deno.serve(async (req) => {
         startDate?: string; endDate?: string;
         assetId?: string; filename?: string;
         startsOn?: string | null; endsOn?: string | null;
+        tags?: string[];
       };
+
+      // ── setPlaylistTags: replace a playlist's tags ('brothers', 'global',
+      // …). Empty array clears them. SET/CLEAR verified live; requires the
+      // Tags scope on the account's API key.
+      if (b.action === 'setPlaylistTags') {
+        if (!b.playlistId) throw new Error('playlistId required');
+        const tags = (b.tags ?? []).filter(t => TAG_RE.test(t));
+        try {
+          await gql(
+            'mutation($p:UpdateObjectTagsInput!){ updateObjectTags(payload:$p) }',
+            { p: tags.length
+                ? { ids: [b.playlistId], type: 'PLAYLIST', mutation: 'SET', tags }
+                : { ids: [b.playlistId], type: 'PLAYLIST', mutation: 'CLEAR', tags: [] } },
+            secret);
+        } catch (e) {
+          const m = e instanceof Error ? e.message : String(e);
+          throw new Error(/API_SCOPE_OFF/.test(m)
+            ? 'This account\'s API key does not have the Tags permission yet — enable Tags on the key in OptiSigns (Settings → API Keys), then try again.'
+            : m);
+        }
+        return Response.json({ ok: true, tags }, { headers: corsHeaders });
+      }
 
       // ── itemDates: the run-date rows for one playlist.
       if (b.action === 'itemDates') {

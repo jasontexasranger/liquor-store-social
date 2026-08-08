@@ -11,8 +11,9 @@
 //
 // Required secrets: OPTISIGNS_API_KEY, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY.
 //
-// The API key's scopes are Create+Edit only — no Delete. Nothing here can
-// remove a screen, asset, playlist or schedule, by construction.
+// The API key needs Create+Edit; Playlists additionally needs Delete for the
+// admin cleanup of old monthly playlists. Screens, assets and schedules
+// remain undeletable from here regardless of key scopes.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
@@ -255,7 +256,7 @@ Deno.serve(async (req) => {
     // Direct management of what the screens play. Admin-gated: these reach
     // every screen on the account, including businesses outside the stores.
     if (['assignScreen','playlistItems','removeItems','moveItems','setDurations',
-         'renamePlaylist','addCreatives','createPlaylist'].includes(body.action)) {
+         'renamePlaylist','addCreatives','createPlaylist','deletePlaylist'].includes(body.action)) {
       if (!isAdmin) throw new Error('Admin only');
       const secret = await keyFor(body.storeId);
       const b = body as unknown as {
@@ -326,6 +327,40 @@ Deno.serve(async (req) => {
           'mutation($p:PlaylistInput!){ savePlaylist(payload:$p){ _id name } }',
           { p: { name: b.name.trim() } }, secret);
         return Response.json({ playlist: d?.savePlaylist ?? null }, { headers: corsHeaders });
+      }
+
+      if (b.action === 'deletePlaylist') {
+        if (!b.playlistId) throw new Error('playlistId required');
+
+        // Deleting the playlist a screen is playing blanks that screen, so it
+        // is refused outright rather than confirmed through — reassign the
+        // screen first and then delete.
+        const dv = await gql(
+          'query { devices(query:{}) { page { edges { node { deviceName currentPlaylistId } } } } }',
+          {}, secret);
+        const playing = (dv?.devices?.page?.edges ?? [])
+          .map((e: { node: { deviceName: string; currentPlaylistId: string | null } }) => e.node)
+          .filter((d: { currentPlaylistId: string | null }) => d.currentPlaylistId === b.playlistId)
+          .map((d: { deviceName: string }) => d.deviceName);
+        if (playing.length) {
+          throw new Error(
+            'That playlist is live on ' + playing.join(', ') +
+            ' — put something else on those screens first, then delete it.'
+          );
+        }
+
+        await gql(
+          'mutation($p:DeleteObjectInput!){ deleteObjects(payload:$p) }',
+          { p: { ids: [b.playlistId], type: 'PLAYLIST' } }, secret);
+
+        await sb.from('audit_log').insert({
+          user_id: user.id,
+          action: 'delete_signage_playlist',
+          entity_type: 'optisigns',
+          changed_fields: ['playlist'],
+          safe_metadata: { playlistId: b.playlistId },
+        });
+        return Response.json({ ok: true }, { headers: corsHeaders });
       }
 
       if (b.action === 'addCreatives') {

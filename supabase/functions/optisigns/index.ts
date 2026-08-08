@@ -398,7 +398,7 @@ Deno.serve(async (req) => {
           if (/overlap/i.test(m)) {
             throw new Error(
               'Those dates overlap something already on the "' + sched.name + '" schedule. ' +
-              'Remove the clashing entry from the Signage page first, or adjust the run dates.'
+              'Adjust the run dates, or remove the clashing entry in the OptiSigns dashboard.'
             );
           }
           throw e;

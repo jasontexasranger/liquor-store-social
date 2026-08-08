@@ -4029,66 +4029,6 @@ function SignagePage() {
       </Card>
 
       <Card>
-        <div className="flex items-center gap-3 mb-4">
-          <span className="ttl">Scheduled runs</span>
-          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
-        </div>
-        {schedules === null ? <p className="lbl text-center py-6">Loading…</p>
-         : schedules.length === 0 ? (
-          <p className="lbl py-2">
-            No schedules yet. Push a month with "Run on set dates" and one is created for the store.
-          </p>
-        ) : schedules.map(function(s) {
-          return (
-            <div key={s._id} className="mb-2" style={{border:'1px solid var(--line)'}}>
-              <div className="flex items-center gap-3 p-3">
-                <span className="text-xs font-semibold" style={{color:'var(--txt)'}}>{s.name}</span>
-                <span className="lbl">{s.items.length} run{s.items.length===1?'':'s'}</span>
-              </div>
-              {s.items.length > 0 && (
-                <div className="px-3 pb-2">
-                  {s.items
-                    .slice()
-                    .sort((a,b)=>String(a.startDate).localeCompare(String(b.startDate)))
-                    .map(function(it) {
-                    const past = it.endDate && it.endDate < isoDay(new Date());
-                    const live = !past && it.startDate <= isoDay(new Date());
-                    return (
-                      <div key={it._id} className="flex items-center gap-3 py-1.5"
-                           style={{borderTop:'1px solid rgba(56,224,240,.07)'}}>
-                        <span className="text-xs" style={{color: past ? 'var(--txt3)' : 'var(--txt)'}}>
-                          {it.playlistName}
-                        </span>
-                        <span className="lbl">{fmtDay(it.startDate)} – {fmtDay(it.endDate)}</span>
-                        {live && <span className="lbl" style={{color:'var(--grn)'}}>live now</span>}
-                        {past && <span className="lbl">ended</span>}
-                        <span className="flex-1"/>
-                        <button
-                          disabled={busy === 'schrm-' + it._id}
-                          onClick={function(){
-                            if (!confirm('Take "' + it.playlistName + '" (' + fmtDay(it.startDate) + ' – '
-                                + fmtDay(it.endDate) + ') off this schedule?'
-                                + (live ? '\n\nIt is live right now — screens on this schedule stop showing it immediately.' : ''))) return;
-                            act('schrm-' + it._id, async function() {
-                              await callEdge('optisigns', 'removeScheduleEntry', { itemId: it._id, storeId: account });
-                              toast.success('Removed from the schedule');
-                              await load();
-                            });
-                          }}
-                          style={{color:'var(--red)'}} title="Remove this run">
-                          <Icon name="close" size={12}/>
-                        </button>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </Card>
-
-      <Card>
         <div className="flex items-center gap-3 mb-4 flex-wrap">
           <span className="ttl">Playlists</span>
           <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>

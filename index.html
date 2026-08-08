@@ -4150,7 +4150,11 @@ function FeatureCreativeBatch({ storeId, storeName, period, rows, products, camp
   const [done,     setDone]     = useState(null);
   const [progress, setProgress] = useState({ n:0, total:0, label:'' });
 
-  const priceAds = templates.filter(t => t.kind === 'price_ad');
+  const allPriceAds = templates.filter(t => t.kind === 'price_ad');
+  // Which templates this run uses. All on by default — unticking is for the
+  // month you only need the screen size, or only the social sizes.
+  const [tplOff, setTplOff] = useState({});
+  const priceAds = allPriceAds.filter(t => !tplOff[t.id]);
 
   const prodOf = id => products.find(p => p.id === id) || null;
 
@@ -4258,7 +4262,7 @@ function FeatureCreativeBatch({ storeId, storeName, period, rows, products, camp
           {storeName} · {monthLabel(period)}
         </p>
 
-        {priceAds.length === 0 ? (
+        {allPriceAds.length === 0 ? (
           <div className="text-center py-10">
             <Icon name="image" size={34} style={{color:'var(--cy-dim)'}}/>
             <p className="lbl mt-3">No price ad templates for this store</p>
@@ -4305,15 +4309,28 @@ function FeatureCreativeBatch({ storeId, storeName, period, rows, products, camp
           </div>
         ) : (
           <div>
-            <div className="flex flex-wrap gap-2 items-center mb-4">
-              <span className="lbl">Templates</span>
-              {priceAds.map(function(t) {
-                return (
-                  <Badge key={t.id} color="blue">
-                    {t.name} · {nearestAspect(t.canvas_w, t.canvas_h)}
-                  </Badge>
-                );
-              })}
+            <div className="mb-4">
+              <Label>Sizes to generate</Label>
+              <div className="flex flex-wrap gap-2">
+                {allPriceAds.map(function(t) {
+                  const on = !tplOff[t.id];
+                  return (
+                    <button key={t.id}
+                      onClick={()=>setTplOff(prev=>Object.assign({}, prev, {[t.id]: on}))}
+                      className="px-2.5 py-1.5 text-xs"
+                      style={{ border:'1px solid ' + (on ? 'var(--cy)' : 'var(--line)'),
+                               background: on ? 'var(--cy-glow)' : 'transparent',
+                               color: on ? 'var(--cy)' : 'var(--txt3)' }}>
+                      {t.name} · {nearestAspect(t.canvas_w, t.canvas_h)}
+                    </button>
+                  );
+                })}
+              </div>
+              {priceAds.length === 0 && allPriceAds.length > 0 && (
+                <p className="text-xs mt-2" style={{color:'var(--amb)'}}>
+                  Every size is unticked — nothing will be generated.
+                </p>
+              )}
             </div>
 
             <div className="mb-4">

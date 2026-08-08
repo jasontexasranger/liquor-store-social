@@ -1,0 +1,33 @@
+<!doctype html>
+<!-- Letterbox viewer for OptiSigns screens.
+
+     Players render a bare image URL at natural size, which crops a 1080-wide
+     ad to its top-left corner on a TV. Signage pushes point here instead,
+     with the image in ?img=; it renders fitted on black at any screen ratio.
+
+     Only images from our own Supabase storage are accepted, so the parameter
+     cannot be used to frame arbitrary pages on the store's screens.
+
+     Served by Netlify as a real file — the SPA rewrite in netlify.toml does
+     not shadow files that exist on disk. -->
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Signage</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  img { width: 100vw; height: 100vh; object-fit: contain; display: block; }
+</style>
+</head>
+<body>
+<img id="i" alt="">
+<script>
+  var u = new URLSearchParams(location.search).get('img') || '';
+  if (/^https:\/\/yyveikxfomxmedlxsulh\.supabase\.co\/storage\//.test(u)) {
+    document.getElementById('i').src = u;
+  }
+</script>
+</body>
+</html>

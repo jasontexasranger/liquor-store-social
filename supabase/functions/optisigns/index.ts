@@ -23,7 +23,10 @@ const GQL = 'https://graphql-gateway.optisigns.com/graphql';
 // on a 1080p screen shows zoomed and cropped to its top-left corner. Every
 // image is wrapped in this tiny hosted page, which letterboxes it to the
 // viewport. The page only accepts images from our own storage.
-const VIEWER = 'https://yyveikxfomxmedlxsulh.supabase.co/storage/v1/object/public/creatives/signage/viewer.html';
+// Hosted on the app's own Netlify site: storage served the first attempt as
+// text/plain and the screens displayed the page's source code. Netlify always
+// serves .html as HTML, and the file lives in the repo where it's versioned.
+const VIEWER = 'https://lrs.thesuenocompany.com/signage-viewer.html';
 const wrapForScreen = (url: string) => VIEWER + '?img=' + encodeURIComponent(url);
 
 const corsHeaders = {

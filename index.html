@@ -5200,6 +5200,40 @@ function StorePicksCard({ storeId, storeName, canEdit }) {
   );
 }
 
+// A small labelled dropdown for toolbars that would otherwise sprawl.
+function ToolMenu({ label, icon, items }) {
+  const [open, setOpen] = useState(false);
+  const usable = items.filter(Boolean);
+  if (!usable.length) return null;
+  return (
+    <div className="relative inline-block">
+      <Button size="sm" variant="outline" onClick={()=>setOpen(v=>!v)}>
+        <Icon name={icon}/> {label} <Icon name="down" size={9} style={{opacity:.6}}/>
+      </Button>
+      {open && (
+        <React.Fragment>
+          <div className="fixed inset-0 z-[120]" onClick={()=>setOpen(false)}/>
+          <div className="absolute right-0 top-full mt-1 z-[130] min-w-[190px] py-1"
+               style={{background:'var(--bg2, #0a121f)', border:'1px solid var(--line)',
+                       boxShadow:'0 10px 30px rgba(0,0,0,.5)'}}>
+            {usable.map(function(it, i) {
+              if (it.divider) return <div key={i} className="my-1" style={{borderTop:'1px solid var(--line)'}}/>;
+              return (
+                <button key={i} disabled={it.disabled}
+                  onClick={()=>{ setOpen(false); it.onClick(); }}
+                  className="w-full text-left px-3 py-2 text-xs flex items-center gap-2"
+                  style={{color: it.danger ? 'var(--amb)' : 'var(--txt2)', opacity: it.disabled ? 0.4 : 1}}>
+                  <Icon name={it.icon} size={13}/>{it.label}
+                </button>
+              );
+            })}
+          </div>
+        </React.Fragment>
+      )}
+    </div>
+  );
+}
+
 // The website's own corner of the app: store picks now, whatever else the
 // sites need later. Deliberately not on the Features page — picks have no
 // month; they're "what we want on the site right now".
@@ -6787,14 +6821,14 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
           ) : (
             <span className="lbl">Defaults to the whole of {monthLabel(period)}.</span>
           )}
+          <span className="flex-1"/>
+          <div className="flex gap-4" style={{maxWidth:'380px', flex:'1 1 260px'}}>
+            <ReadinessBar label="Data completeness" pct={stats.data}/>
+            <ReadinessBar label="Sales entered" pct={stats.sales}/>
+          </div>
         </div>
 
-        <div className="flex gap-4 flex-wrap mb-4">
-          <ReadinessBar label="Data completeness" pct={stats.data}/>
-          <ReadinessBar label="Sales entered" pct={stats.sales}/>
-        </div>
-
-        <div className="flex gap-2 flex-wrap">
+        <div className="flex gap-2 flex-wrap items-center">
           <div className="flex" style={{border:'1px solid var(--line)'}}>
             {[['plan','Plan'],['sales','Sales figures']].map(function(m){
               const on = mode===m[0];
@@ -6810,34 +6844,25 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
           <span className="flex-1"/>
           {canEdit && (
             <React.Fragment>
-              <Button size="sm" variant="outline" onClick={()=>setShowCsv(v=>!v)}>
-                <Icon name="folder"/> Import CSV
-              </Button>
-              <Button size="sm" variant="outline" onClick={()=>setShowPaste(v=>!v)}>
-                <Icon name="down"/> Paste from Excel
-              </Button>
-              <Button size="sm" variant="outline" onClick={()=>setShowBatch(true)} disabled={rows.length===0}>
-                <Icon name="image"/> Generate creatives
-              </Button>
-              <Button size="sm" variant="outline" onClick={()=>setShowPlan(true)} disabled={rows.length===0}>
-                <Icon name="cal"/> Plan posts
-              </Button>
-              <Button size="sm" variant="outline" onClick={()=>setShowSign(true)}>
-                <Icon name="grid"/> Send to signage
-              </Button>
-              <Button size="sm" variant="outline" onClick={()=>setShowCocktails(true)} disabled={rows.length===0}>
-                <Icon name="cocktail"/> Monthly cocktails
-              </Button>
-              <Button size="sm" variant="outline" onClick={()=>setShowWeb(true)} disabled={rows.length===0}>
-                <Icon name="globe"/> Push to website
-              </Button>
               <Button size="sm" onClick={addBlank}><Icon name="tag"/> Add row</Button>
-              {periodRow && periodRow.status !== 'closed' && (
-                <Button size="sm" variant="secondary"
-                  onClick={()=>setStatus(periodRow.status==='draft'?'active':'closed')}>
-                  {periodRow.status==='draft' ? 'Mark active' : 'Close month'}
-                </Button>
-              )}
+              <ToolMenu label="Import" icon="folder" items={[
+                { label:'Import CSV',       icon:'folder', onClick:()=>setShowCsv(v=>!v) },
+                { label:'Paste from Excel', icon:'down',   onClick:()=>setShowPaste(v=>!v) },
+              ]}/>
+              <ToolMenu label="Create & send" icon="rocket" items={[
+                { label:'Generate creatives', icon:'image',    onClick:()=>setShowBatch(true), disabled: rows.length===0 },
+                { label:'Plan posts',         icon:'cal',      onClick:()=>setShowPlan(true),  disabled: rows.length===0 },
+                { label:'Monthly cocktails',  icon:'cocktail', onClick:()=>setShowCocktails(true), disabled: rows.length===0 },
+                { label:'Send to signage',    icon:'grid',     onClick:()=>setShowSign(true) },
+                { label:'Push to website',    icon:'globe',    onClick:()=>setShowWeb(true), disabled: rows.length===0 },
+                (periodRow && periodRow.status !== 'closed') ? { divider:true } : null,
+                (periodRow && periodRow.status !== 'closed') ? {
+                  label: periodRow.status==='draft' ? 'Mark month active' : 'Close the month',
+                  icon: periodRow.status==='draft' ? 'check' : 'lock',
+                  danger: periodRow.status!=='draft',
+                  onClick: ()=>setStatus(periodRow.status==='draft'?'active':'closed'),
+                } : null,
+              ]}/>
             </React.Fragment>
           )}
         </div>

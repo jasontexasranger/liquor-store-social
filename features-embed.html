@@ -24,8 +24,11 @@
   .hdr { text-align: center; margin: 8px 0 4px; }
   .hdr h2 { font-size: 26px; letter-spacing: .02em; }
   .hdr p  { color: var(--mut); font-size: 14px; margin-top: 4px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-          gap: 14px; margin-top: 18px; }
+  /* One row, up to five cards; more than fits rotates through automatically.
+     The block's height is always exactly one card row. */
+  .grid { overflow: hidden; margin-top: 18px; }
+  .track { display: flex; gap: 14px; transition: transform .6s ease; align-items: stretch; }
+  .track .card { flex: 0 0 210px; }
   /* Uniform cards: the photo box is always square, the name always gets two
      lines of room, the size line one, and the price sits at the same height
      on every card — nothing shifts with content length. Oversized images
@@ -141,7 +144,7 @@
       }
 
       var h = '<div class="hdr"><h2>' + esc(d.title || 'Monthly Features') + '</h2>'
-        + (d.dates ? '<p>' + esc(d.dates) + '</p>' : '') + '</div><div class="grid">';
+        + (d.dates ? '<p>' + esc(d.dates) + '</p>' : '') + '</div><div class="grid"><div class="track">';
       items.forEach(function (it) {
         // The saving leads; a percentage joins it when it reads bigger than
         // the dollars do (everything here is under $100, so it usually does).
@@ -196,15 +199,49 @@
 
         h += '<div class="card"><div class="flip">' + front + back + '</div></div>';
       });
-      h += '</div><p class="ft">' + esc(d.footnote || 'Prices exclude tax & deposit — while supplies last.') + '</p>';
+      h += '</div></div><p class="ft">' + esc(d.footnote || 'Prices exclude tax & deposit — while supplies last.') + '</p>';
       app.innerHTML = h;
       // One listener flips any card whose trigger (front line or back ✕) is
       // clicked. The back face is absolutely positioned over the front, so
-      // the grid never reflows — the card just turns over.
+      // the row never reflows — the card just turns over.
       app.addEventListener('click', function (e) {
         var t = e.target.closest('[data-flip]');
         if (t) { var c = t.closest('.card'); if (c) c.classList.toggle('on'); }
       });
+
+      // Carousel: fit as many cards as the width allows (never more than 5),
+      // and if there are more items than fit, rotate one card every few
+      // seconds — pausing while someone hovers or has a recipe open.
+      (function () {
+        var wrap = app.querySelector('.grid');
+        var track = app.querySelector('.track');
+        var cards = [].slice.call(track.children);
+        var idx = 0, step = 0, maxIdx = 0, hover = false;
+        function layout() {
+          var W = wrap.clientWidth;
+          var vis = Math.max(1, Math.min(5, Math.floor((W + 14) / 224)));
+          var cw = Math.floor((W - 14 * (vis - 1)) / vis);
+          cards.forEach(function (c) { c.style.flex = '0 0 ' + cw + 'px'; });
+          step = cw + 14;
+          maxIdx = Math.max(0, cards.length - vis);
+          if (idx > maxIdx) idx = maxIdx;
+          apply();
+        }
+        function apply() { track.style.transform = 'translateX(-' + (idx * step) + 'px)'; }
+        wrap.addEventListener('mouseenter', function(){ hover = true; });
+        wrap.addEventListener('mouseleave', function(){ hover = false; });
+        window.addEventListener('resize', function(){ layout(); window.__reportHeight(); });
+        if (cards.length) {
+          layout();
+          setInterval(function () {
+            if (hover || maxIdx === 0) return;
+            if (track.querySelector('.card.on')) return;   // recipe open — hold still
+            idx = idx >= maxIdx ? 0 : idx + 1;
+            apply();
+          }, 4500);
+        }
+      })();
+
       window.__reportHeight();
       setTimeout(window.__reportHeight, 600);
     })

@@ -5064,8 +5064,9 @@ function StorePicksCard({ storeId, storeName, canEdit }) {
     '<iframe id="lrs-picks-' + storeId + '" src="https://lrs.thesuenocompany.com/features-embed.html?store=' + storeId + '&view=picks"'
     + ' style="width:100%;border:0;height:0" scrolling="no" loading="lazy" title="Store picks"></iframe>\n'
     + '<script>window.addEventListener("message",function(e){'
-    + 'if(e.origin==="https://lrs.thesuenocompany.com"&&e.data&&e.data.lrsFeaturesHeight){'
-    + 'document.getElementById("lrs-picks-' + storeId + '").style.height=e.data.lrsFeaturesHeight+"px";}});<\/script>';
+    + 'var f=document.getElementById("lrs-picks-' + storeId + '");'
+    + 'if(f&&e.source===f.contentWindow&&e.origin==="https://lrs.thesuenocompany.com"&&e.data&&e.data.lrsFeaturesHeight!=null){'
+    + 'f.style.height=e.data.lrsFeaturesHeight+"px";}});<\/script>';
 
   const candidates = products
     .filter(p => (p.image_url || p.data))
@@ -5447,12 +5448,15 @@ function WebsitePushModal({ storeId, storeName, period, periodRow, rows, product
   const embedUrl = 'https://lrs.thesuenocompany.com/features-embed.html?store=' + encodeURIComponent(storeId);
   // The frame sizes itself: the embedded page reports its height and this
   // snippet's listener applies it — the whole grid shows, no scrollbar.
+  // The e.source check matters when a page carries two of our blocks
+  // (features + picks): without it each listener obeys the other's height.
   const iframeCode =
     '<iframe id="lrs-features-' + storeId + '" src="' + embedUrl + '"'
     + ' style="width:100%;border:0;height:600px" scrolling="no" loading="lazy" title="Monthly features"></iframe>\n'
     + '<script>window.addEventListener("message",function(e){'
-    + 'if(e.origin==="https://lrs.thesuenocompany.com"&&e.data&&e.data.lrsFeaturesHeight){'
-    + 'document.getElementById("lrs-features-' + storeId + '").style.height=e.data.lrsFeaturesHeight+"px";}});<\/script>';
+    + 'var f=document.getElementById("lrs-features-' + storeId + '");'
+    + 'if(f&&e.source===f.contentWindow&&e.origin==="https://lrs.thesuenocompany.com"&&e.data&&e.data.lrsFeaturesHeight!=null){'
+    + 'f.style.height=e.data.lrsFeaturesHeight+"px";}});<\/script>';
 
   const htmlBlock = function() {
     const money = n => '$' + Number(n).toFixed(2);

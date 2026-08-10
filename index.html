@@ -15812,28 +15812,46 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
   // other holds the tokens and the user list.
   const granted = id => effIsAdmin || (effSections ? effSections.indexOf(id) !== -1 : false);
 
-  const nav = [
-    { id:'home',  icon:'star', label:'Home' },
-    { id:'shelf', icon:'tag', label:'Shelf Talkers' },
-    { id:'posts', icon:'note', label:'Social' },
-    { id:'features', icon:'tag', label:'Features' },
-    { id:'creatives', icon:'image', label:'Creatives' },
-    { id:'recipes',   icon:'spark', label:'Recipes' },
-    { id:'website',   icon:'globe', label:'Website' },
-    { id:'prices',    icon:'search', label:'Price Check' },
-    ...(granted('signage')  ? [{ id:'signage',  icon:'grid',    label:'Signage' }] : []),
-    ...(granted('products') ? [{ id:'products', icon:'package', label:'Products' }] : []),
-    ...(granted('ads')      ? [{ id:'ads',      icon:'mega',    label:'Ads' }] : []),
-    ...(effIsAdmin ? [
-      { id:'brand',    icon:'palette', label:'Brand' },
-      { id:'settings', icon:'gear', label:'Settings' },
-    ] : []),
-  ]
   // A per-user list narrows what the role already allows; it can never widen
-  // it, so a store user cannot be handed Ads by ticking a box. Settings is
-  // always kept, or an admin could lock themselves out of the screen that
-  // undoes it.
-  .filter(t => !effSections || t.id === 'settings' || t.id === 'home' || effSections.includes(t.id));
+  // it. Settings is always kept, or an admin could lock themselves out of the
+  // screen that undoes it; Home is always kept because it self-filters.
+  const navAllowed = id =>
+    (!effSections || id === 'settings' || id === 'home' || effSections.includes(id));
+
+  // The nav, grouped: the three everyday destinations stay top-level, the
+  // rest fold into small menus so the bar reads instead of sprawling.
+  const NAV_ITEMS = {
+    home:      { id:'home',      icon:'star',    label:'Home' },
+    posts:     { id:'posts',     icon:'note',    label:'Social' },
+    features:  { id:'features',  icon:'tag',     label:'Features' },
+    shelf:     { id:'shelf',     icon:'print',   label:'Shelf Talkers' },
+    creatives: { id:'creatives', icon:'image',   label:'Creatives' },
+    recipes:   { id:'recipes',   icon:'cocktail',label:'Recipes' },
+    website:   { id:'website',   icon:'globe',   label:'Website' },
+    signage:   { id:'signage',   icon:'grid',    label:'Signage' },
+    ads:       { id:'ads',       icon:'mega',    label:'Ads' },
+    prices:    { id:'prices',    icon:'search',  label:'Price Check' },
+    products:  { id:'products',  icon:'package', label:'Products' },
+    brand:     { id:'brand',     icon:'palette', label:'Brand' },
+    settings:  { id:'settings',  icon:'gear',    label:'Settings' },
+  };
+  const pick = ids => ids.map(i => NAV_ITEMS[i]).filter(t =>
+    navAllowed(t.id)
+    && (['signage','products','ads'].includes(t.id) ? granted(t.id) : true)
+    && (['brand','settings'].includes(t.id) ? effIsAdmin : true));
+
+  const navGroups = [
+    { kind:'link',  item: NAV_ITEMS.home },
+    ...pick(['posts','features']).map(item => ({ kind:'link', item })),
+    { kind:'menu', id:'create',  icon:'palette', label:'Create',  items: pick(['shelf','creatives','recipes']) },
+    { kind:'menu', id:'publish', icon:'globe',   label:'Publish', items: pick(['website','signage','ads']) },
+    { kind:'menu', id:'catalog', icon:'package', label:'Catalogue', items: pick(['prices','products']) },
+    { kind:'menu', id:'admin',   icon:'gear',    label:'Admin',   items: pick(['brand','settings']) },
+  ].filter(g => g.kind === 'link' || g.items.length > 0);
+  const [openMenu, setOpenMenu] = useState(null);
+
+  // Everything reachable, flat — for the "am I still allowed here" fallback.
+  const nav = navGroups.flatMap(g => g.kind === 'link' ? [g.item] : g.items);
 
   // If the section you were on is no longer permitted — access changed, or a
   // stale link — land somewhere real rather than rendering a blank shell.
@@ -15862,11 +15880,41 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
             </div>
           </div>
           <div className="flex items-center gap-1">
-            {nav.map(n=>(
-              <button key={n.id} onClick={()=>setPage(n.id)} className={`px-3 py-2 rounded-xl text-sm font-semibold transition-all ${page===n.id?'bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300':'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-gray-200'}`}>
-                <Icon name={n.icon} size={15} className="mr-2"/><span className="hidden sm:inline">{n.label}</span>
-              </button>
-            ))}
+            {navGroups.map(function(g) {
+              if (g.kind === 'link') {
+                const n = g.item;
+                return (
+                  <button key={n.id} onClick={()=>{ setOpenMenu(null); setPage(n.id); }}
+                    className={`px-3 py-2 rounded-xl text-sm font-semibold transition-all ${page===n.id?'bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300':'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-gray-200'}`}>
+                    <Icon name={n.icon} size={15} className="mr-2"/><span className="hidden sm:inline">{n.label}</span>
+                  </button>
+                );
+              }
+              const active = g.items.some(t => t.id === page);
+              return (
+                <div key={g.id} className="relative">
+                  <button onClick={()=>setOpenMenu(openMenu === g.id ? null : g.id)}
+                    className={`px-3 py-2 rounded-xl text-sm font-semibold transition-all ${active?'bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300':'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 hover:text-gray-900 dark:hover:text-gray-200'}`}>
+                    <Icon name={g.icon} size={15} className="mr-2"/>
+                    <span className="hidden sm:inline">{active ? (g.items.find(t=>t.id===page)||{}).label : g.label}</span>
+                    <Icon name="down" size={10} className="ml-1.5" style={{opacity:.6}}/>
+                  </button>
+                  {openMenu === g.id && (
+                    <React.Fragment>
+                      <div className="fixed inset-0 z-40" onClick={()=>setOpenMenu(null)}/>
+                      <div className="absolute left-0 top-full mt-1 w-48 bg-white dark:bg-gray-800 rounded-xl shadow-xl border border-gray-100 dark:border-gray-700 z-50 overflow-hidden">
+                        {g.items.map(t=>(
+                          <button key={t.id} onClick={()=>{ setOpenMenu(null); setPage(t.id); }}
+                            className={`w-full text-left px-3 py-2.5 text-sm font-medium flex items-center gap-2 ${page===t.id?'text-indigo-600 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900/30':'text-gray-600 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700'}`}>
+                            <Icon name={t.icon} size={14}/>{t.label}
+                          </button>
+                        ))}
+                      </div>
+                    </React.Fragment>
+                  )}
+                </div>
+              );
+            })}
             
             {/* User menu */}
             <div className="relative ml-1">

@@ -11930,6 +11930,19 @@ function UserAccountsSection({ currentUserId }) {
                     <span className="text-xs text-gray-400 dark:text-gray-500">Last login: {fmtLastSeen(u.last_sign_in_at)}</span>
                   </div>
                   <div className="flex items-center gap-2">
+                    {onViewAs && (
+                      <button
+                        onClick={()=>onViewAs({
+                          email: u.email,
+                          role: u.role,
+                          sections: u.sections || null,
+                          storeIds: u.store_ids || [],
+                        })}
+                        title="See the app the way this user sees it — their menus and stores. Actions still run as you."
+                        className="text-xs text-amber-600 hover:text-amber-800 dark:text-amber-400 font-semibold">
+                        <Icon name="eye"/> View as
+                      </button>
+                    )}
                     {u.role === 'store' && (
                       <button onClick={()=>{ if(editStoresId===u.user_id){ setEditStoresId(null); } else { openEditStores(u); } }} className="text-xs text-green-600 hover:text-green-800 dark:text-green-400 font-semibold">
                         {editStoresId===u.user_id ? 'Cancel' : <React.Fragment><Icon name="store"/> Stores</React.Fragment>}
@@ -12216,7 +12229,7 @@ function StoreLocationsSection() {
   );
 }
 
-function SettingsPage({ settings, onSave, currentUserId }) {
+function SettingsPage({ settings, onSave, currentUserId, onViewAs }) {
   const toast = useToast();
   const [form,   setForm]   = useState({ ...settings, tokens:{ ...settings.tokens } });
   const [saving, setSaving] = useState(false);
@@ -14714,10 +14727,20 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
   // Store assignments for non-hardcoded non-admin users (loaded above in combined effect)
   const [userStoreIds, setUserStoreIds] = useState([]);
 
+  // "View as": an admin borrowing another user's nav, sections and stores to
+  // see what they see. Purely a lens — every server call still runs as the
+  // real signed-in admin, so this previews navigation, not permissions.
+  const [viewAs, setViewAs] = useState(null);   // {email, role, sections, storeIds}
+  const effIsAdmin  = viewAs ? viewAs.role === 'admin' : isAdmin;
+  const effSections = viewAs
+    ? ((viewAs.sections && viewAs.sections.length) ? viewAs.sections : null)
+    : allowedSections;
+  const effStoreIds = viewAs ? (viewAs.storeIds || []) : userStoreIds;
+
   // Products and Ads can be handed to a non-admin explicitly. Brand and
   // Settings stay admin-only: one changes how every store's artwork looks, the
   // other holds the tokens and the user list.
-  const granted = id => isAdmin || (allowedSections ? allowedSections.indexOf(id) !== -1 : false);
+  const granted = id => effIsAdmin || (effSections ? effSections.indexOf(id) !== -1 : false);
 
   const nav = [
     { id:'shelf', icon:'tag', label:'Shelf Talkers' },
@@ -14729,7 +14752,7 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
     ...(granted('signage')  ? [{ id:'signage',  icon:'grid',    label:'Signage' }] : []),
     ...(granted('products') ? [{ id:'products', icon:'package', label:'Products' }] : []),
     ...(granted('ads')      ? [{ id:'ads',      icon:'mega',    label:'Ads' }] : []),
-    ...(isAdmin ? [
+    ...(effIsAdmin ? [
       { id:'brand',    icon:'palette', label:'Brand' },
       { id:'settings', icon:'gear', label:'Settings' },
     ] : []),
@@ -14738,14 +14761,14 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
   // it, so a store user cannot be handed Ads by ticking a box. Settings is
   // always kept, or an admin could lock themselves out of the screen that
   // undoes it.
-  .filter(t => !allowedSections || t.id === 'settings' || allowedSections.includes(t.id));
+  .filter(t => !effSections || t.id === 'settings' || effSections.includes(t.id));
 
   // If the section you were on is no longer permitted — access changed, or a
   // stale link — land somewhere real rather than rendering a blank shell.
   useEffect(function() {
     if (!nav.length) return;
     if (!nav.some(t => t.id === page)) setPage(nav[0].id);
-  }, [allowedSections, isAdmin, page]);
+  }, [allowedSections, isAdmin, viewAs, page]);
 
   if (!settingsLoaded) return (
     <div className="min-h-screen flex items-center justify-center bg-gray-100 dark:bg-gray-900">
@@ -14816,21 +14839,37 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
         </div>
       )}
 
+      {viewAs && (
+        <div className="sticky z-40 flex items-center gap-3 px-4 py-2"
+             style={{top:'56px', background:'rgba(255,176,32,.12)', borderBottom:'1px solid var(--amb)'}}>
+          <Icon name="eye" size={13} style={{color:'var(--amb)'}}/>
+          <span className="text-xs" style={{color:'var(--amb)'}}>
+            Viewing as {viewAs.email} — menus and stores match their access. Actions still run as you.
+          </span>
+          <span className="flex-1"/>
+          <button onClick={()=>setViewAs(null)} className="text-xs font-semibold px-2 py-1"
+                  style={{border:'1px solid var(--amb)', color:'var(--amb)'}}>
+            Exit view
+          </button>
+        </div>
+      )}
+
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
-        {page==='posts'                  && <PostsPage       settings={settings} userStoreIds={isAdmin ? [] : userStoreIds} isAdmin={isAdmin}/>}
-        {page==='shelf'                  && <ShelfTalkerPage isAdmin={isAdmin} userStoreIds={isAdmin ? [] : userStoreIds} userId={user ? user.id : null}/>}
-        {page==='creatives'              && <CreativeLibrary isAdmin={isAdmin}
-                                             myStores={isAdmin ? STORES : STORES.filter(st=>userStoreIds.includes(st.id))}/>}
-        {page==='features'               && <FeaturesPage isAdmin={isAdmin}
-                                             myStores={isAdmin ? STORES : STORES.filter(st=>userStoreIds.includes(st.id))}/>}
-        {page==='prices'                 && <PriceCheckPage isAdmin={isAdmin}/>}
+        {page==='posts'                  && <PostsPage       settings={settings} userStoreIds={effIsAdmin ? [] : effStoreIds} isAdmin={effIsAdmin}/>}
+        {page==='shelf'                  && <ShelfTalkerPage isAdmin={effIsAdmin} userStoreIds={effIsAdmin ? [] : effStoreIds} userId={user ? user.id : null}/>}
+        {page==='creatives'              && <CreativeLibrary isAdmin={effIsAdmin}
+                                             myStores={effIsAdmin ? STORES : STORES.filter(st=>effStoreIds.includes(st.id))}/>}
+        {page==='features'               && <FeaturesPage isAdmin={effIsAdmin}
+                                             myStores={effIsAdmin ? STORES : STORES.filter(st=>effStoreIds.includes(st.id))}/>}
+        {page==='prices'                 && <PriceCheckPage isAdmin={effIsAdmin}/>}
         {page==='signage' && granted('signage') && <SignagePage/>}
-        {page==='recipes'                && <RecipesPage isAdmin={isAdmin}
-                                             myStores={isAdmin ? STORES : STORES.filter(st=>userStoreIds.includes(st.id))}/>}
+        {page==='recipes'                && <RecipesPage isAdmin={effIsAdmin}
+                                             myStores={effIsAdmin ? STORES : STORES.filter(st=>effStoreIds.includes(st.id))}/>}
         {page==='products' && granted('products') && <ProductLibrary/>}
         {page==='ads'      && granted('ads')      && <AdsPage settings={settings}/>}
-        {page==='brand'    && isAdmin    && <BrandPage        settings={settings}/>}
-        {page==='settings' && isAdmin    && <SettingsPage     settings={settings} onSave={saveSettings} currentUserId={user ? user.id : null}/>}
+        {page==='brand'    && effIsAdmin && <BrandPage        settings={settings}/>}
+        {page==='settings' && effIsAdmin && <SettingsPage     settings={settings} onSave={saveSettings} currentUserId={user ? user.id : null}
+                                             onViewAs={isAdmin ? setViewAs : null}/>}
       </main>
       <footer className="text-center py-3 text-xs text-gray-300 dark:text-gray-600">
         Liquor Store Social · Supabase · Graph API v25.0 · {user && user.email ? user.email : ''}

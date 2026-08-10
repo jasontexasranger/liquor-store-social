@@ -54,6 +54,17 @@
   .save small { display: block; font-size: 10px; font-weight: 700; opacity: .92; }
   .ft { text-align: center; color: var(--mut); font-size: 11px; margin: 16px 0 4px; }
   .empty { text-align: center; color: var(--mut); padding: 40px 0; }
+  /* Cocktail idea, tucked under the price on cards that have one. */
+  .rx { border-top: 1px dashed #e5e5e5; margin-top: 2px; }
+  .rx summary { list-style: none; cursor: pointer; padding: 7px 0 8px;
+                font-size: 12px; font-weight: 600; color: var(--accent); }
+  .rx summary::-webkit-details-marker { display: none; }
+  .rx summary::before { content: '🍸 '; }
+  .rx .body { font-size: 12px; color: var(--ink); padding-bottom: 10px; }
+  .rx .body em { color: var(--mut); display: block; margin-bottom: 6px; }
+  .rx ul { margin: 0 0 6px 16px; padding: 0; }
+  .rx ol { margin: 0 0 0 16px; padding: 0; }
+  .rx li { margin-bottom: 2px; }
 </style>
 </head>
 <body>
@@ -129,7 +140,23 @@
           + (it.sale != null ? '<span class="sale">' + money(it.sale) + '</span>' : '')
           + (it.reg != null && it.sale != null && Number(it.reg) > Number(it.sale)
               ? '<span class="reg">was <s>' + money(it.reg) + '</s></span>' : '')
-          + '</span></div></div>';
+          + '</span>';
+        if (it.recipe && it.recipe.name) {
+          var rx = it.recipe;
+          h += '<details class="rx"><summary>Cocktail idea: ' + esc(rx.name) + '</summary>'
+            + '<div class="body">'
+            + (rx.blurb ? '<em>' + esc(rx.blurb) + '</em>' : '')
+            + '<ul>' + (rx.ingredients || []).map(function (i) {
+                return '<li>' + esc((i.amount ? i.amount + ' ' : '') + i.item) + '</li>';
+              }).join('') + '</ul>'
+            + '<ol>' + (rx.method || []).map(function (s) {
+                return '<li>' + esc(s) + '</li>';
+              }).join('') + '</ol>'
+            + (rx.glass ? '<em style="margin-top:6px">Serve in a ' + esc(rx.glass)
+                + (rx.garnish ? ' · ' + esc(rx.garnish) : '') + '</em>' : '')
+            + '</div></details>';
+        }
+        h += '</div></div>';
       });
       h += '</div><p class="ft">' + esc(d.footnote || 'Prices exclude tax & deposit — while supplies last.') + '</p>';
       app.innerHTML = h;

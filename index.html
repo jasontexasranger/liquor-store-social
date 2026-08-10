@@ -1783,6 +1783,52 @@ const RECIPE_BLANK = {
   store_id:null, product_id:null, feature_id:null,
 };
 
+// Which products deserve a cocktail. Spirits always; wine sometimes (spritz
+// and sangria territory — offered, never presumed); beer, cider, RTDs and
+// mixers never — nobody shakes a cocktail out of a White Claw.
+const RECIPE_SPIRIT_CATS = ['whisky','vodka','gin','rum','tequila','brandy','liqueurs'];
+const RECIPE_WINE_CATS   = ['red-wine','white-wine','rose-sparkling'];
+const recipeEligibility = cat =>
+  RECIPE_SPIRIT_CATS.includes(cat) ? 'spirit'
+  : RECIPE_WINE_CATS.includes(cat) ? 'wine'
+  : null;
+
+// The one recipe prompt, shared by the single-recipe editor and the monthly
+// batch — same rules everywhere: ounces, full glass names, product first,
+// Canadian spelling, no hashtags.
+function cocktailRecipePrompt(base, label, kind) {
+  return (
+    'Invent one easy ' + (kind === 'wine' ? 'wine cocktail (spritz, sangria or similar)' : 'cocktail')
+    + ' built around ' + base + ', for a liquor store in British Columbia.\n' +
+    'It must be genuinely simple: at most 5 ingredients, no infusions, no syrups that need making, ' +
+    'no equipment beyond a shaker or a spoon.\n\n' +
+    'Reply with JSON only, no code fence, in exactly this shape:\n' +
+    '{"name":"","blurb":"","glass":"","garnish":"",' +
+    '"ingredients":[{"amount":"","item":""}],"method":[""]}\n\n' +
+    'Measures in fluid ounces, written like "1.5 oz" — never millilitres, never centilitres. ' +
+    'Countable things stay counts ("2 dashes", "1 lime wedge").\n' +
+    'The first ingredient must be exactly "' + label + '" — name the product itself, ' +
+    'not a generic spirit, and give it a measure. Every other ingredient should be ' +
+    'something an ordinary kitchen already has.\n' +
+    'Canadian English spelling throughout (colour, flavour, favourite, litre, centre).\n' +
+    'glass: name the vessel in full, like "highball glass" or "copper mug", not just "highball". ' +
+    'name: the drink name, 1 to 3 words. ' +
+    'blurb: one sentence on what it tastes like. method: 2 to 4 short steps, ' +
+    'referring to the product by name in the first step. ' +
+    'No hashtags, no emoji, no brand claims beyond the product name.'
+  );
+}
+
+// The model is told to lead with the product; when it drifts, the product is
+// put back at the top with a sane pour.
+function recipeProductFirst(list, label) {
+  const rows = (list || []).filter(i => i && (i.item || i.amount));
+  const idx = rows.findIndex(i => (i.item || '').toUpperCase().includes(label.toUpperCase().slice(0, 12)));
+  if (idx > 0) { const [hit] = rows.splice(idx, 1); rows.unshift(hit); }
+  if (idx === -1) rows.unshift({ amount:'1.5 oz', item: label });
+  return rows.length ? rows : [{ amount:'1.5 oz', item: label }];
+}
+
 // ─────────────────────────────────────────────
 // BCL PRICE CHECK
 // ─────────────────────────────────────────────
@@ -4890,6 +4936,133 @@ function SignagePushModal({ storeId, storeName, period, periodRow, onClose }) {
 }
 
 // ─────────────────────────────────────────────
+// MONTHLY COCKTAILS
+// ─────────────────────────────────────────────
+// One easy cocktail per featured spirit (wine on request), written by the
+// same engine as the recipe editor and saved to the recipe library linked to
+// the feature — where the website push and the social recipe cards both find
+// them. No photos here: those cost money and belong to the social flow.
+function FeatureCocktailBatch({ storeId, period, rows, products, onClose, onDone }) {
+  const dragPanel = useDragPanel();
+  const toast = useToast();
+  const { recipes, save } = useRecipes();
+  const [picked,  setPicked]  = useState(null);   // null until computed below
+  const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState('');
+
+  const prodOf = id => products.find(p => p.id === id) || null;
+  const candidates = rows
+    .map(function(r) {
+      const prod = prodOf(r.product_id);
+      const kind = prod ? recipeEligibility(prod.category) : null;
+      const existing = recipes.find(x => x.feature_id === r.id);
+      return kind ? { r, prod, kind, existing } : null;
+    })
+    .filter(Boolean);
+
+  // Spirits pre-ticked, wine offered unticked, existing recipes unticked —
+  // re-running the month must not overwrite anyone's edited recipe.
+  const effPicked = picked !== null ? picked
+    : new Set(candidates.filter(c => c.kind === 'spirit' && !c.existing).map(c => c.r.id));
+  const toggle = id => setPicked(function(prev) {
+    const next = new Set(prev === null ? effPicked : prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
+  const run = async function() {
+    const todo = candidates.filter(c => effPicked.has(c.r.id));
+    if (!todo.length) { toast.error('Nothing ticked'); return; }
+    setRunning(true);
+    let made = 0, failed = 0;
+    try {
+      for (const c of todo) {
+        const label = c.r.name || c.prod.product_name;
+        const base = label + (c.prod.size ? ' (' + c.prod.size + ')' : '');
+        setProgress(label + '… (' + (made + failed + 1) + '/' + todo.length + ')');
+        try {
+          const resp = await callEdge('meta-social', 'aiWrite',
+            { prompt: cocktailRecipePrompt(base, label, c.kind), maxTokens: 700 });
+          const raw = (resp.text || '').replace(/^```(?:json)?/i, '').replace(/```$/,'').trim();
+          const p = JSON.parse(raw);
+          await save({
+            ...RECIPE_BLANK,
+            store_id: null,
+            product_id: c.prod.id,
+            feature_id: c.r.id,
+            name: p.name || label + ' cocktail',
+            blurb: p.blurb || '', glass: p.glass || '', garnish: p.garnish || '',
+            ingredients: recipeProductFirst(
+              (p.ingredients || []).map(i => ({ amount: toOunces(i.amount || ''), item: i.item || '' })),
+              label),
+            method: Array.isArray(p.method) && p.method.length ? p.method : [''],
+          });
+          made++;
+        } catch (e) { failed++; }
+      }
+      toast.success(made + ' cocktail' + (made===1?'':'s') + ' saved to the recipe library'
+        + (failed ? ' · ' + failed + ' failed (run again for those)' : ''));
+      onDone && onDone();
+      onClose();
+    } finally { setRunning(false); setProgress(''); }
+  };
+
+  return (
+    <Portal>
+    <div className="fixed inset-0 z-[210] flex items-center justify-center p-6"
+         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}}
+         onClick={running ? undefined : onClose}>
+      <div className="hud hud-brk w-full max-w-lg max-h-[88vh] overflow-auto p-6"
+           style={dragPanel.style} onClick={e=>e.stopPropagation()}>
+        <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-4">
+          <span className="ttl">Monthly cocktails</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          {!running && <button onClick={onClose} style={{color:'var(--txt2)'}}><Icon name="close"/></button>}
+        </div>
+
+        {candidates.length === 0 ? (
+          <p className="lbl py-6 text-center">
+            No cocktail-worthy features this month — spirits (and the odd wine) qualify; beer and RTDs don't.
+          </p>
+        ) : (
+          <React.Fragment>
+            <p className="lbl mb-3">
+              One easy cocktail per ticked feature, saved to the recipe library and
+              available to the website push. Spirits are pre-ticked; wine is offered;
+              features that already have a recipe stay untouched unless ticked.
+            </p>
+            <div className="mb-4" style={{maxHeight:'260px', overflowY:'auto', border:'1px solid var(--line)'}}>
+              {candidates.map(function(c) {
+                const on = effPicked.has(c.r.id);
+                return (
+                  <label key={c.r.id} className="flex items-center gap-3 px-3 py-1.5 cursor-pointer"
+                         style={{borderBottom:'1px solid rgba(56,224,240,.06)'}}>
+                    <input type="checkbox" checked={on} onChange={()=>toggle(c.r.id)}/>
+                    <Icon name={c.kind === 'wine' ? 'wine' : 'cocktail'} size={13}
+                          style={{color: c.kind === 'wine' ? 'var(--amb)' : 'var(--cy)'}}/>
+                    <span className="text-xs flex-1 truncate" style={{color:'var(--txt)'}}>{c.r.name}</span>
+                    {c.existing && <span className="lbl" style={{color:'var(--grn)'}}>has "{c.existing.name}"</span>}
+                    {c.kind === 'wine' && !c.existing && <span className="lbl">wine — optional</span>}
+                  </label>
+                );
+              })}
+            </div>
+            <div className="flex items-center gap-3 justify-end">
+              {progress && <span className="lbl">{progress}</span>}
+              <Button size="sm" variant="outline" onClick={onClose} disabled={running}>Cancel</Button>
+              <Button size="sm" onClick={run} loading={running} disabled={!effPicked.size}>
+                <Icon name="cocktail"/> Write {effPicked.size} recipe{effPicked.size===1?'':'s'}
+              </Button>
+            </div>
+          </React.Fragment>
+        )}
+      </div>
+    </div>
+    </Portal>
+  );
+}
+
+// ─────────────────────────────────────────────
 // WEBSITE PUSH
 // ─────────────────────────────────────────────
 // The month's features, published to the store's website. Two shapes from
@@ -4902,8 +5075,16 @@ function WebsitePushModal({ storeId, storeName, period, periodRow, rows, product
   const dragPanel = useDragPanel();
   const toast = useToast();
   const { profile: brand } = useBrandProfile(storeId);
+  const { recipes } = useRecipes();
   const [busy, setBusy] = useState(false);
   const [published, setPublished] = useState(false);
+
+  // A cocktail under a spirit's card reframes the bottle from a price into an
+  // occasion. Recipes ride along when the feature has one — tickable, on by
+  // default, because someone made that recipe deliberately.
+  const recipeFor = r => recipes.find(x => x.feature_id === r.id) || null;
+  const [recOn, setRecOn] = useState({});
+  const recActive = r => recOn[r.id] !== undefined ? recOn[r.id] : true;
 
   const runR = periodRange(period, periodRow);
   const dates = 'Prices run ' + rangeLabel(runR);
@@ -4979,6 +5160,8 @@ function WebsitePushModal({ storeId, storeName, period, periodRow, rows, product
       secondary: (brand && brand.secondary_color) || '#c4a35a',
     },
     items: eligible.map(function(x) {
+      const rec = recipeFor(x.r);
+      const withRec = rec && recActive(x.r) && rec.name;
       return {
         name: x.r.name, size: x.r.size || '',
         reg: x.r.reg_price != null ? Number(x.r.reg_price) : null,
@@ -4986,6 +5169,12 @@ function WebsitePushModal({ storeId, storeName, period, periodRow, rows, product
         savings: x.r.savings != null ? Number(x.r.savings) : null,
         image: x.image,
         placeholder: x.placeholder || undefined,
+        recipe: withRec ? {
+          name: rec.name, blurb: rec.blurb || '', glass: rec.glass || '',
+          garnish: rec.garnish || '',
+          ingredients: (rec.ingredients || []).filter(i => i.item),
+          method: (rec.method || []).filter(Boolean),
+        } : undefined,
       };
     }),
   });
@@ -5031,7 +5220,18 @@ function WebsitePushModal({ storeId, storeName, period, periodRow, rows, product
         + (it.sale != null ? '<span style="color:#b42a2a;font-size:24px;font-weight:800">' + money(it.sale) + '</span> ' : '')
         + (it.reg != null && it.sale != null && it.reg > it.sale
             ? '<span style="color:#757575;font-size:13px">was <s>' + money(it.reg) + '</s></span>' : '')
-        + '</div></div></div>';
+        + '</div>'
+        + (it.recipe && it.recipe.name
+          ? '<details style="border-top:1px dashed #e5e5e5;margin-top:2px">'
+            + '<summary style="cursor:pointer;padding:7px 0 8px;font-size:12px;font-weight:600;color:#b42a2a">🍸 Cocktail idea: ' + esc(it.recipe.name) + '</summary>'
+            + '<div style="font-size:12px;padding-bottom:10px">'
+            + (it.recipe.blurb ? '<em style="color:#757575;display:block;margin-bottom:6px">' + esc(it.recipe.blurb) + '</em>' : '')
+            + '<ul style="margin:0 0 6px 16px;padding:0">' + (it.recipe.ingredients||[]).map(i=>'<li>' + esc((i.amount?i.amount+' ':'')+i.item) + '</li>').join('') + '</ul>'
+            + '<ol style="margin:0 0 0 16px;padding:0">' + (it.recipe.method||[]).map(s=>'<li>' + esc(s) + '</li>').join('') + '</ol>'
+            + (it.recipe.glass ? '<em style="color:#757575;display:block;margin-top:6px">Serve in a ' + esc(it.recipe.glass) + (it.recipe.garnish ? ' · ' + esc(it.recipe.garnish) : '') + '</em>' : '')
+            + '</div></details>'
+          : '')
+        + '</div></div>';
     });
     h += '</div><p style="text-align:center;color:#757575;font-size:11px;margin:16px 0 4px">' + esc(d.footnote) + '</p></div>';
     return h;
@@ -5105,6 +5305,15 @@ function WebsitePushModal({ storeId, storeName, period, periodRow, rows, product
                   {x.r.name}
                   {x.placeholder && <span className="lbl ml-2" style={{color:'var(--amb)'}}>branded card</span>}
                 </span>
+                {recipeFor(x.r) && (
+                  <label className="flex items-center gap-1 flex-none cursor-pointer"
+                         title={'Include the cocktail "' + recipeFor(x.r).name + '" under this card'}
+                         onClick={e=>e.stopPropagation()}>
+                    <input type="checkbox" checked={recActive(x.r)}
+                           onChange={()=>setRecOn(prev=>Object.assign({}, prev, {[x.r.id]: !recActive(x.r)}))}/>
+                    <Icon name="cocktail" size={12} style={{color:'var(--cy)'}}/>
+                  </label>
+                )}
                 <span className="mono text-xs" style={{color:'var(--cy)'}}>
                   {x.r.sale_price != null ? money(x.r.sale_price) : ''}
                 </span>
@@ -6082,6 +6291,7 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
   const [showPlan,  setShowPlan]  = useState(false);
   const [showSign,  setShowSign]  = useState(false);
   const [showWeb,   setShowWeb]   = useState(false);
+  const [showCocktails, setShowCocktails] = useState(false);
   const [view, setView] = useState('month');   // month | dashboard
   const [mode, setMode] = useState('plan');   // plan | sales
 
@@ -6302,6 +6512,9 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
               <Button size="sm" variant="outline" onClick={()=>setShowSign(true)}>
                 <Icon name="grid"/> Send to signage
               </Button>
+              <Button size="sm" variant="outline" onClick={()=>setShowCocktails(true)} disabled={rows.length===0}>
+                <Icon name="cocktail"/> Monthly cocktails
+              </Button>
               <Button size="sm" variant="outline" onClick={()=>setShowWeb(true)} disabled={rows.length===0}>
                 <Icon name="globe"/> Push to website
               </Button>
@@ -6459,6 +6672,12 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
           storeName={(myStores.find(s=>s.id===storeId)||{}).name || ''}
           period={period} periodRow={periodRow} rows={rows} products={products}
           onClose={()=>setShowWeb(false)}/>
+      )}
+
+      {showCocktails && (
+        <FeatureCocktailBatch
+          storeId={storeId} period={period} rows={rows} products={products}
+          onClose={()=>setShowCocktails(false)} onDone={reload}/>
       )}
 
       {showPlan && (

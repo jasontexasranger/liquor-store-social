@@ -4901,7 +4901,6 @@ function SignagePushModal({ storeId, storeName, period, periodRow, onClose }) {
 function WebsitePushModal({ storeId, storeName, period, periodRow, rows, products, onClose }) {
   const dragPanel = useDragPanel();
   const toast = useToast();
-  const { creatives } = useCreatives();
   const [busy, setBusy] = useState(false);
   const [published, setPublished] = useState(false);
 
@@ -4909,18 +4908,37 @@ function WebsitePushModal({ storeId, storeName, period, periodRow, rows, product
   const dates = 'Prices run ' + rangeLabel(runR);
   const prodOf = id => products.find(p => p.id === id) || null;
 
-  // Public URL for each row: the product's hosted photo first, else the
-  // feature's generated creative. Base64-only photos can't go on a website.
+  // Every card is a plain product shot — mixing bottle photos with price-ad
+  // graphics looked patchy, and the graphics repeat the price the card
+  // already shows. Products whose photo lives only in the database get a
+  // hosted copy uploaded at publish time (and the library keeps it, so it's
+  // once per product, ever).
   const imageFor = function(r) {
     const prod = prodOf(r.product_id);
-    if (prod && prod.image_url) return prod.image_url;
-    const cr = creatives.find(c => c.feature_id === r.id && c.public_url);
-    return cr ? cr.public_url : null;
+    if (!prod) return null;
+    if (prod.image_url) return { src: prod.image_url, hosted: true, prod };
+    if (prod.data)      return { src: prod.data,      hosted: false, prod };
+    return null;
   };
   const withImage = rows
-    .map(r => ({ r, image: imageFor(r) }))
-    .filter(x => x.image && x.r.name);
+    .map(r => ({ r, img: imageFor(r) }))
+    .filter(x => x.img && x.r.name)
+    .map(x => ({ r: x.r, image: x.img.src, hosted: x.img.hosted, prod: x.img.prod }));
   const excluded = rows.filter(r => r.name && !imageFor(r));
+
+  // Upload a database-only photo and remember the URL on the product.
+  const hostPhoto = async function(prod) {
+    const sb = getSB();
+    const blob = dataUrlToBlob(prod.data);
+    const path = 'website/products/' + prod.id + '.png';
+    const { error } = await sb.storage.from('creatives')
+      .upload(path, blob, { upsert: true, contentType: blob.type || 'image/png', cacheControl: '31536000' });
+    if (error) throw new Error('Could not host the photo for "' + prod.product_name + '": ' + error.message);
+    const url = sb.storage.from('creatives').getPublicUrl(path).data.publicUrl;
+    await sb.from('brand_images').update({ image_url: url }).eq('id', prod.id);
+    prod.image_url = url;
+    return url;
+  };
 
   // Which of those actually go on the site. The choice is stored on the
   // feature row itself (on_website), so it survives closing this dialog and
@@ -4995,6 +5013,11 @@ function WebsitePushModal({ storeId, storeName, period, periodRow, rows, product
     setBusy(true);
     try {
       const sb = getSB();
+      // Host any photos that only exist inside the database first, so the
+      // snapshot carries real URLs for every card.
+      for (const x of eligible) {
+        if (!x.hosted) { x.image = await hostPhoto(x.prod); x.hosted = true; }
+      }
       const blob = new Blob([JSON.stringify(snapshot(), null, 1)], { type:'application/json' });
       const { error } = await sb.storage.from('creatives')
         .upload('website/' + storeId + '.json', blob,

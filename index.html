@@ -5797,9 +5797,14 @@ function BclCell({ feature, bcl, live, onCheck }) {
   );
 }
 
-function FeaturesPage({ isAdmin, myStores }) {
+function FeaturesPage({ isAdmin, myStores, editableIds }) {
   const toast = useToast();
-  const [storeId, setStoreId] = useState((myStores[0]||{}).id || '');
+  // Everyone sees every store's month (managers need to know what the chain
+  // is running); editing is only for your own stores. The database enforces
+  // the same rule, so this mirrors reality rather than inventing it.
+  const [storeId, setStoreId] = useState(
+    (editableIds && editableIds.length ? editableIds[0] : (myStores[0]||{}).id) || '');
+  const canEdit = !editableIds || editableIds.includes(storeId);
   const [period,  setPeriod]  = useState(monthKey(new Date()));
   const [showPaste, setShowPaste] = useState(false);
   const [showCsv, setShowCsv] = useState(false);
@@ -5940,12 +5945,19 @@ function FeaturesPage({ isAdmin, myStores }) {
             </Button>
           </div>
           {periodRow && <Badge color={periodRow.status==='closed'?'gray':periodRow.status==='active'?'green':'yellow'}>{periodRow.status}</Badge>}
+          {!canEdit && <Badge color="yellow">view only</Badge>}
         </div>
+
+        {!canEdit && (
+          <p className="lbl mb-3" style={{color:'var(--amb)'}}>
+            Another store's month — you can read everything, including sales figures, but only your own stores can be edited.
+          </p>
+        )}
 
         {/* When these prices run. Defaults to the calendar month; setting
             dates here travels everywhere the feature goes — post scheduling,
             ad campaign dates, whatever is built next. */}
-        <div className="flex items-center gap-2 mb-4 flex-wrap">
+        <div className="flex items-center gap-2 mb-4 flex-wrap" style={!canEdit ? {display:'none'} : undefined}>
           <span className="lbl">Runs</span>
           <Input type="date" className="w-auto text-xs"
             value={(periodRow && periodRow.starts_on) || monthKey(period).slice(0,8) + '01'}
@@ -6002,27 +6014,31 @@ function FeaturesPage({ isAdmin, myStores }) {
             })}
           </div>
           <span className="flex-1"/>
-          <Button size="sm" variant="outline" onClick={()=>setShowCsv(v=>!v)}>
-            <Icon name="folder"/> Import CSV
-          </Button>
-          <Button size="sm" variant="outline" onClick={()=>setShowPaste(v=>!v)}>
-            <Icon name="down"/> Paste from Excel
-          </Button>
-          <Button size="sm" variant="outline" onClick={()=>setShowBatch(true)} disabled={rows.length===0}>
-            <Icon name="image"/> Generate creatives
-          </Button>
-          <Button size="sm" variant="outline" onClick={()=>setShowPlan(true)} disabled={rows.length===0}>
-            <Icon name="cal"/> Plan posts
-          </Button>
-          <Button size="sm" variant="outline" onClick={()=>setShowSign(true)}>
-            <Icon name="grid"/> Send to signage
-          </Button>
-          <Button size="sm" onClick={addBlank}><Icon name="tag"/> Add row</Button>
-          {periodRow && periodRow.status !== 'closed' && (
-            <Button size="sm" variant="secondary"
-              onClick={()=>setStatus(periodRow.status==='draft'?'active':'closed')}>
-              {periodRow.status==='draft' ? 'Mark active' : 'Close month'}
-            </Button>
+          {canEdit && (
+            <React.Fragment>
+              <Button size="sm" variant="outline" onClick={()=>setShowCsv(v=>!v)}>
+                <Icon name="folder"/> Import CSV
+              </Button>
+              <Button size="sm" variant="outline" onClick={()=>setShowPaste(v=>!v)}>
+                <Icon name="down"/> Paste from Excel
+              </Button>
+              <Button size="sm" variant="outline" onClick={()=>setShowBatch(true)} disabled={rows.length===0}>
+                <Icon name="image"/> Generate creatives
+              </Button>
+              <Button size="sm" variant="outline" onClick={()=>setShowPlan(true)} disabled={rows.length===0}>
+                <Icon name="cal"/> Plan posts
+              </Button>
+              <Button size="sm" variant="outline" onClick={()=>setShowSign(true)}>
+                <Icon name="grid"/> Send to signage
+              </Button>
+              <Button size="sm" onClick={addBlank}><Icon name="tag"/> Add row</Button>
+              {periodRow && periodRow.status !== 'closed' && (
+                <Button size="sm" variant="secondary"
+                  onClick={()=>setStatus(periodRow.status==='draft'?'active':'closed')}>
+                  {periodRow.status==='draft' ? 'Mark active' : 'Close month'}
+                </Button>
+              )}
+            </React.Fragment>
           )}
         </div>
       </Card>
@@ -6051,6 +6067,11 @@ function FeaturesPage({ isAdmin, myStores }) {
           </div>
         ) : (
           <div className="overflow-x-auto">
+            {/* A disabled fieldset switches off every input and button inside
+                it at once — the cleanest way to make a whole table read-only.
+                The database refuses foreign-store writes anyway; this stops
+                the UI from offering what the server would bounce. */}
+            <fieldset disabled={!canEdit} style={{border:0, padding:0, margin:0, minWidth:0}}>
             <table style={{width:'100%', minWidth:'760px', borderCollapse:'collapse'}}>
               <thead>
                 <tr style={{borderBottom:'1px solid var(--line2)'}}>
@@ -6136,6 +6157,7 @@ function FeaturesPage({ isAdmin, myStores }) {
                 </tfoot>
               )}
             </table>
+            </fieldset>
           </div>
         )}
       </Card>
@@ -14860,7 +14882,8 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
         {page==='creatives'              && <CreativeLibrary isAdmin={effIsAdmin}
                                              myStores={effIsAdmin ? STORES : STORES.filter(st=>effStoreIds.includes(st.id))}/>}
         {page==='features'               && <FeaturesPage isAdmin={effIsAdmin}
-                                             myStores={effIsAdmin ? STORES : STORES.filter(st=>effStoreIds.includes(st.id))}/>}
+                                             myStores={STORES}
+                                             editableIds={effIsAdmin ? null : effStoreIds}/>}
         {page==='prices'                 && <PriceCheckPage isAdmin={effIsAdmin}/>}
         {page==='signage' && granted('signage') && <SignagePage/>}
         {page==='recipes'                && <RecipesPage isAdmin={effIsAdmin}

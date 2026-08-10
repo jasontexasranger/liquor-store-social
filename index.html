@@ -5004,17 +5004,17 @@ function WebsitePushModal({ storeId, storeName, period, periodRow, rows, product
     d.items.forEach(function(it) {
       const pct = (it.savings > 0 && it.reg > 0) ? Math.round(it.savings / it.reg * 100) : 0;
       const ribbon = it.savings > 0
-        ? '<span style="position:absolute;top:10px;right:-1px;background:#b42a2a;color:#fff;font-size:15px;font-weight:800;padding:6px 12px 6px 14px;border-radius:6px 0 0 6px;box-shadow:0 2px 6px rgba(0,0,0,.18);line-height:1.15;text-align:right">SAVE ' + money(it.savings).replace('.00','')
+        ? '<span style="position:absolute;top:10px;right:-1px;z-index:3;background:#b42a2a;color:#fff;font-size:15px;font-weight:800;padding:6px 12px 6px 14px;border-radius:6px 0 0 6px;box-shadow:0 2px 6px rgba(0,0,0,.18);line-height:1.15;text-align:right">SAVE ' + money(it.savings).replace('.00','')
           + (pct >= 10 ? '<small style="display:block;font-size:10px;font-weight:700;opacity:.92">' + pct + '% OFF</small>' : '')
           + '</span>'
         : '';
       const bp = d.brand.primary, bs = d.brand.secondary;
       const photo = it.placeholder
-        ? '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;background:' + bp + ';padding:16px;text-align:center">'
+        ? '<div style="position:absolute;inset:0;z-index:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;background:' + bp + ';padding:16px;text-align:center">'
           + '<span style="color:' + bs + ';font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase">' + esc(d.title.split(' ')[0]) + '</span>'
           + '<span style="color:#fff;font-size:19px;font-weight:800;line-height:1.2">' + esc(it.name) + '</span>'
           + '<span style="color:' + bs + ';font-size:12px;font-style:italic">Too good to wait for a photo</span></div>'
-        : '<img loading="lazy" src="' + esc(it.image) + '" alt="' + esc(it.name) + '" style="position:absolute;inset:0;margin:auto;max-width:88%;max-height:88%;width:auto;height:auto;object-fit:contain">';
+        : '<img loading="lazy" src="' + esc(it.image) + '" alt="' + esc(it.name) + '" style="position:absolute;inset:0;margin:auto;z-index:1;max-width:88%;max-height:88%;width:auto;height:auto;object-fit:contain">';
       h += '<div style="border:1px solid #e5e5e5;border-radius:10px;overflow:hidden;background:#fff">'
         + '<div style="aspect-ratio:1;background:#fafafa;position:relative">' + ribbon + photo + '</div>'
         + '<div style="padding:10px 12px 12px">'

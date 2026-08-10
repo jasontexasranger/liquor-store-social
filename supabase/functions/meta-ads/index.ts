@@ -517,8 +517,9 @@ Deno.serve(async (req) => {
       }
       const token = getSystemToken();
       const data = await gGet(`/${accountId}/campaigns`, {
-        fields: 'name,status,effective_status,objective,daily_budget,'
-          + 'start_time,stop_time,updated_time,insights{spend,impressions,clicks,ctr}',
+        fields: 'name,status,effective_status,objective,daily_budget,lifetime_budget,'
+          + 'start_time,stop_time,updated_time,'
+          + 'insights{spend,impressions,clicks,ctr,cpc,reach,frequency,actions}',
         limit: '100',
       }, token);
 
@@ -535,7 +536,36 @@ Deno.serve(async (req) => {
         recent(c.stop_time) ||
         (!c.stop_time && c.status !== 'ARCHIVED' && recent(c.updated_time))
       );
-      return Response.json({ campaigns }, { headers: corsHeaders });
+      return Response.json({
+        campaigns,
+        // Bare account id so the client can deep-link into Ads Manager.
+        accountId: String(accountId).replace(/^act_/, ''),
+      }, { headers: corsHeaders });
+    }
+
+    // ── campaignDetail ───────────────────────────────────────────────────────
+    // The ads inside a campaign: creative thumbnails and the promoted post's
+    // story id, which is what "view the ad" and "view & reply to comments"
+    // both hang off.
+    if (action === 'campaignDetail') {
+      const { campaignId } = params as { campaignId?: string };
+      if (!campaignId) throw new Error('campaignId required');
+      const token = getSystemToken();
+      const data = await gGet(`/${campaignId}/ads`, {
+        fields: 'id,name,status,adset_id,created_time,'
+          + 'creative{thumbnail_url,effective_object_story_id}',
+        limit: '10',
+      }, token);
+      const ads = (data.data ?? []).map((a: {
+        id: string; name?: string; status?: string; adset_id?: string; created_time?: string;
+        creative?: { thumbnail_url?: string; effective_object_story_id?: string };
+      }) => ({
+        id: a.id, name: a.name ?? '', status: a.status ?? '',
+        adsetId: a.adset_id ?? null, createdTime: a.created_time ?? null,
+        thumbnail: a.creative?.thumbnail_url ?? null,
+        storyId: a.creative?.effective_object_story_id ?? null,
+      }));
+      return Response.json({ ads }, { headers: corsHeaders });
     }
 
     // ── toggleCampaign ───────────────────────────────────────────────────────

@@ -10518,20 +10518,74 @@ function TokenStatusBar() {
 function CampaignDashboard({ settings }) {
   const toast = useToast();
   const [campaigns,  setCampaigns]  = useState([]);
+  const [accountId,  setAccountId]  = useState(null);
   const [loading,    setLoading]    = useState(false);
   const [filter,     setFilter]     = useState('all');
   const [togglingId, setTogglingId] = useState(null);
+  const [details,    setDetails]    = useState({});   // campaign id -> {ads} | 'loading'
+  const [comments,   setComments]   = useState({});   // campaign id -> {list, open} | 'loading'
+  const [replyBusy,  setReplyBusy]  = useState(null);
 
   const [adStore, setAdStore] = useState(STORES[0]?.id || '');
 
   const load = async () => {
     if (!adStore) return;
     setLoading(true);
+    setDetails({}); setComments({});
     try {
       var result = await callEdge('meta-ads', 'listCampaigns', { storeId: adStore });
       setCampaigns(result.campaigns || []);
+      setAccountId(result.accountId || null);
     } catch(e) { setCampaigns([]); toast.error('Failed: ' + e.message); }
     finally    { setLoading(false); }
+  };
+
+  // The ads inside a campaign — creative thumbnails and the promoted post.
+  const loadDetail = async function(campId) {
+    setDetails(prev => Object.assign({}, prev, { [campId]: 'loading' }));
+    try {
+      const r = await callEdge('meta-ads', 'campaignDetail', { campaignId: campId });
+      setDetails(prev => Object.assign({}, prev, { [campId]: { ads: r.ads || [] } }));
+      return r.ads || [];
+    } catch(e) {
+      toast.error(e.message);
+      setDetails(prev => Object.assign({}, prev, { [campId]: { ads: [] } }));
+      return [];
+    }
+  };
+
+  // Comments on the promoted post, read and replied through the same page
+  // tokens the Social inbox uses.
+  const loadComments = async function(camp) {
+    setComments(prev => Object.assign({}, prev, { [camp.id]: 'loading' }));
+    try {
+      let d = details[camp.id];
+      const ads = (d && d !== 'loading' && d.ads) ? d.ads : await loadDetail(camp.id);
+      const withPost = ads.find(a => a.storyId);
+      if (!withPost) throw new Error('This campaign has no promoted post to read comments from');
+      const r = await callEdge('meta-social', 'listComments',
+        { storeId: adStore, postId: withPost.storyId });
+      setComments(prev => Object.assign({}, prev, {
+        [camp.id]: { list: r.comments || [], postId: withPost.storyId, open: true } }));
+    } catch(e) {
+      toast.error(e.message);
+      setComments(prev => { const n = Object.assign({}, prev); delete n[camp.id]; return n; });
+    }
+  };
+
+  const sendReply = async function(campId, commentId, text) {
+    setReplyBusy(commentId);
+    try {
+      await callEdge('meta-social', 'inboxReplyComment',
+        { storeId: adStore, commentId, message: text });
+      toast.success('Reply posted');
+      const c = comments[campId];
+      if (c && c.postId) {
+        const r = await callEdge('meta-social', 'listComments', { storeId: adStore, postId: c.postId });
+        setComments(prev => Object.assign({}, prev, { [campId]: Object.assign({}, c, { list: r.comments || [] }) }));
+      }
+    } catch(e) { toast.error(e.message); }
+    finally { setReplyBusy(null); }
   };
 
   useEffect(function(){ load(); },[adStore]);
@@ -10550,7 +10604,29 @@ function CampaignDashboard({ settings }) {
   const storeOf = function(name) { return STORES.find(function(s) { return (name||'').startsWith('['+s.name+']'); }); };
   const filtered = filter==='all' ? campaigns : campaigns.filter(function(c) { var s=storeOf(c.name); return s && s.id===filter; });
   const insight  = function(c,f) { return c.insights && c.insights.data && c.insights.data[0] ? (c.insights.data[0][f] || null) : null; };
+  // Engagement lives in the insights "actions" list, one row per action type.
+  const engage = function(c, type) {
+    const acts = insight(c, 'actions');
+    const hit = Array.isArray(acts) && acts.find(a => a.action_type === type);
+    return hit ? Number(hit.value) : null;
+  };
   const statusColor = function(s) { return ({ACTIVE:'green',PAUSED:'yellow',DELETED:'red',ARCHIVED:'gray'}[s]||'gray'); };
+  const fmtWhen = iso => iso ? new Date(iso).toLocaleString(undefined,
+    { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : null;
+  const managerLink = campId => accountId
+    ? 'https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=' + accountId
+      + '&selected_campaign_ids=' + campId
+    : null;
+
+  const Chip = function({ value, label }) {
+    if (value === null || value === undefined) return null;
+    return (
+      <div className="px-4 py-2 rounded-xl" style={{background:'rgba(196,163,90,.10)', minWidth:'86px'}}>
+        <p className="text-sm font-bold text-center" style={{color:'var(--txt)'}}>{value}</p>
+        <p className="lbl text-center">{label}</p>
+      </div>
+    );
+  };
 
   return (
     <Card>
@@ -10565,39 +10641,119 @@ function CampaignDashboard({ settings }) {
         </Select>
         <Button variant="secondary" size="sm" onClick={load} loading={loading}>Refresh</Button>
       </div>
-      {!loading&&filtered.length===0 && <div className="text-center py-12 text-gray-400 dark:text-gray-500 text-sm">No campaigns found.</div>}
-      {filtered.length>0 && (
-        <div className="overflow-x-auto -mx-1">
-          <table className="w-full text-sm min-w-[700px]">
-            <thead>
-              <tr className="border-b border-gray-100 dark:border-gray-700">
-                {['Campaign','Store','Status','Budget/day','Spend','Impressions','CTR',''].map(h=>(
-                  <th key={h} className="text-left py-2 px-3 text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wide whitespace-nowrap">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50 dark:divide-gray-700/50">
-              {filtered.map(c => {
-                const s=storeOf(c.name);
-                const displayName=s?c.name.replace(`[${s.name}] `,''):c.name;
-                const spend=insight(c,'spend'), imps=insight(c,'impressions'), ctr=insight(c,'ctr');
-                return (
-                  <tr key={c.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30 transition-colors">
-                    <td className="py-3 px-3"><p className="font-medium text-gray-900 dark:text-gray-100 max-w-[180px] truncate" title={displayName}>{displayName}</p><p className="text-xs text-gray-400 font-mono">{c.id}</p></td>
-                    <td className="py-3 px-3">{s?<Badge color="indigo">{s.name.split(' ')[0]}</Badge>:<span className="text-xs text-gray-400">—</span>}</td>
-                    <td className="py-3 px-3"><Badge color={statusColor(c.status)}>{c.status}</Badge></td>
-                    <td className="py-3 px-3 text-gray-700 dark:text-gray-300">{fmtBudget(c.daily_budget)}</td>
-                    <td className="py-3 px-3 text-gray-700 dark:text-gray-300">{spend!==null?`$${parseFloat(spend).toFixed(2)}`:'—'}</td>
-                    <td className="py-3 px-3 text-gray-700 dark:text-gray-300">{imps!==null?fmtNum(imps):'—'}</td>
-                    <td className="py-3 px-3 text-gray-700 dark:text-gray-300">{ctr!==null?fmtCTR(ctr):'—'}</td>
-                    <td className="py-3 px-3"><Button variant={c.status==='ACTIVE'?'danger':'success'} size="sm" loading={togglingId===c.id} onClick={()=>toggleStatus(c)}>{c.status==='ACTIVE'?'Pause':'Resume'}</Button></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {!loading&&filtered.length===0 && <div className="text-center py-12 text-gray-400 dark:text-gray-500 text-sm">No campaigns running or recently finished.</div>}
+      <div className="space-y-4">
+        {filtered.map(c => {
+          const s=storeOf(c.name);
+          const displayName=s?c.name.replace(`[${s.name}] `,''):c.name;
+          const spend=insight(c,'spend'), imps=insight(c,'impressions'), clicks=insight(c,'clicks'),
+                ctr=insight(c,'ctr'), cpc=insight(c,'cpc'), reach=insight(c,'reach'), freq=insight(c,'frequency');
+          const reactions=engage(c,'post_reaction'), cmts=engage(c,'comment'), shares=engage(c,'post');
+          const det = details[c.id], com = comments[c.id];
+          const link = managerLink(c.id);
+          return (
+            <div key={c.id} className="p-4 rounded-2xl border border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800">
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="font-bold text-gray-900 dark:text-white">{displayName}</p>
+                <Badge color={statusColor(c.status)}>{c.status}</Badge>
+                {c.effective_status && c.effective_status !== c.status &&
+                  <Badge color="gray">{c.effective_status}</Badge>}
+                {s && <Badge color="indigo">{s.name.split(' ')[0]}</Badge>}
+                <span className="flex-1"/>
+                <Button variant={c.status==='ACTIVE'?'danger':'success'} size="sm"
+                        loading={togglingId===c.id} onClick={()=>toggleStatus(c)}>
+                  {c.status==='ACTIVE'?'Pause':'Resume'}
+                </Button>
+                {link && <a href={link} target="_blank" rel="noopener"
+                            className="text-xs font-semibold px-2.5 py-1.5 rounded-lg border border-indigo-200 text-indigo-600 dark:text-indigo-400 dark:border-indigo-800 hover:bg-indigo-50 dark:hover:bg-indigo-900/20">
+                  Ads Manager ↗</a>}
+              </div>
+              <p className="text-xs text-gray-400 mt-1 font-mono">Campaign {c.id}</p>
+              <p className="text-xs text-gray-400 mt-0.5">
+                {[c.updated_time && 'Updated ' + fmtWhen(c.updated_time),
+                  c.start_time && 'Started ' + fmtWhen(c.start_time),
+                  c.stop_time && 'Ended ' + fmtWhen(c.stop_time)].filter(Boolean).join(' · ')}
+              </p>
+
+              <div className="flex gap-2 flex-wrap mt-3">
+                <Chip value={spend!==null ? '$'+parseFloat(spend).toFixed(2) : null} label="SPEND"/>
+                <Chip value={imps!==null ? fmtNum(imps) : null} label="IMPRESSIONS"/>
+                <Chip value={clicks!==null ? fmtNum(clicks) : null} label="CLICKS"/>
+                <Chip value={reach!==null ? fmtNum(reach) : null} label="REACH"/>
+                <Chip value={ctr!==null ? fmtCTR(ctr) : null} label="CTR"/>
+                <Chip value={cpc!==null ? '$'+parseFloat(cpc).toFixed(2) : null} label="CPC"/>
+                <Chip value={freq!==null ? parseFloat(freq).toFixed(1) : null} label="FREQUENCY"/>
+                <Chip value={reactions} label="REACTIONS"/>
+                <Chip value={cmts} label="COMMENTS"/>
+                <Chip value={shares} label="SHARES"/>
+              </div>
+
+              <div className="flex gap-2 flex-wrap mt-3 items-center">
+                {cmts > 0 && !com && (
+                  <button onClick={()=>loadComments(c)}
+                          className="text-xs font-semibold px-3 py-1.5 rounded-full text-white"
+                          style={{background:'#d6336c'}}>
+                    {cmts} comment{cmts===1?'':'s'} — view &amp; reply
+                  </button>
+                )}
+                {com === 'loading' && <span className="text-xs text-gray-400">Loading comments…</span>}
+                {!det && (
+                  <button onClick={()=>loadDetail(c.id)}
+                          className="text-xs font-semibold text-teal-600 dark:text-teal-400 hover:underline">
+                    Load ad preview
+                  </button>
+                )}
+                {det === 'loading' && <span className="text-xs text-gray-400">Loading ads…</span>}
+              </div>
+
+              {det && det !== 'loading' && det.ads.length > 0 && (
+                <div className="flex gap-3 mt-3 flex-wrap">
+                  {det.ads.map(a=>(
+                    <div key={a.id} className="flex items-center gap-2 p-2 rounded-xl border border-gray-100 dark:border-gray-700">
+                      {a.thumbnail
+                        ? <img src={a.thumbnail} alt="" className="w-12 h-12 rounded object-cover"/>
+                        : <span className="w-12 h-12 rounded bg-gray-100 dark:bg-gray-700 flex items-center justify-center text-xs text-gray-400">ad</span>}
+                      <div>
+                        <p className="text-xs font-medium text-gray-700 dark:text-gray-300 max-w-[140px] truncate">{a.name || a.id}</p>
+                        <p className="text-xs text-gray-400">{a.status}</p>
+                        {a.storyId &&
+                          <a className="text-xs text-indigo-500 hover:underline" target="_blank" rel="noopener"
+                             href={'https://www.facebook.com/' + a.storyId}>view post</a>}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {det && det !== 'loading' && det.ads.length > 0 && (
+                <p className="text-xs text-gray-400 mt-2">
+                  Ad Set {det.ads[0].adsetId || '—'} · Ad {det.ads[0].id}
+                  {det.ads[0].createdTime ? ' · Created ' + fmtWhen(det.ads[0].createdTime) : ''}
+                </p>
+              )}
+
+              {com && com !== 'loading' && com.open && (
+                <div className="mt-3 p-3 rounded-xl border border-gray-100 dark:border-gray-700">
+                  <p className="text-xs font-semibold text-gray-500 mb-2">Comments on the promoted post</p>
+                  {com.list.length === 0 && <p className="text-xs text-gray-400">No comments visible.</p>}
+                  {com.list.map(function(k) {
+                    return (
+                      <div key={k.id} className="mb-2">
+                        <p className="text-xs">
+                          <span className="font-semibold text-gray-800 dark:text-gray-200">{(k.from && k.from.name) || 'Someone'}</span>
+                          <span className="text-gray-400 ml-2">{fmtWhen(k.created_time)}</span>
+                        </p>
+                        <p className="text-xs text-gray-600 dark:text-gray-300">{k.message}</p>
+                        <InboxReplyBox busy={replyBusy === k.id} placeholder="Reply as the store…"
+                                       onSend={t=>sendReply(c.id, k.id, t)}/>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </Card>
   );
 }

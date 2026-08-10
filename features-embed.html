@@ -99,15 +99,24 @@
 
   var qs = new URLSearchParams(location.search);
   var store = (qs.get('store') || '').replace(/[^a-z0-9-]/g, '');
+  // ?view=picks shows the manager-curated shelf instead of the monthly
+  // features. Picks self-hide when empty; features show a friendly note.
+  var isPicks = qs.get('view') === 'picks';
   var accent = qs.get('accent');
   if (accent && /^#[0-9a-fA-F]{3,8}$/.test(accent)) {
     document.documentElement.style.setProperty('--accent', accent);
   }
   var app = document.getElementById('app');
+  function hide() {
+    app.innerHTML = '';
+    document.body.style.padding = '0';
+    document.body.style.margin = '0';
+    if (window.__reportHeight) { window.__reportHeight(); setTimeout(window.__reportHeight, 300); }
+  }
   if (!store) { app.innerHTML = '<p class="empty">No store given.</p>'; return; }
 
   var base = 'https://yyveikxfomxmedlxsulh.supabase.co/storage/v1/object/public/creatives/website/';
-  fetch(base + store + '.json?t=' + Math.floor(Date.now() / 300000))
+  fetch(base + store + (isPicks ? '-picks' : '') + '.json?t=' + Math.floor(Date.now() / 300000))
     .then(function (r) { if (!r.ok) throw new Error(); return r.json(); })
     .then(function (d) {
       var money = function (n) { return '$' + Number(n).toFixed(2); };
@@ -124,7 +133,12 @@
       var items = (d.items || []).filter(function (it) { return it.placeholder || okImg(it.image); });
       var bp = (d.brand && /^#[0-9a-fA-F]{3,8}$/.test(d.brand.primary || '')) ? d.brand.primary : '#1e3a5f';
       var bs = (d.brand && /^#[0-9a-fA-F]{3,8}$/.test(d.brand.secondary || '')) ? d.brand.secondary : '#c4a35a';
-      if (!items.length) { app.innerHTML = '<p class="empty">Check back soon for this month’s features.</p>'; return; }
+      if (!items.length) {
+        if (isPicks) { hide(); } else {
+          app.innerHTML = '<p class="empty">Check back soon for this month’s features.</p>';
+        }
+        return;
+      }
 
       var h = '<div class="hdr"><h2>' + esc(d.title || 'Monthly Features') + '</h2>'
         + (d.dates ? '<p>' + esc(d.dates) + '</p>' : '') + '</div><div class="grid">';
@@ -149,7 +163,7 @@
           : '<img loading="lazy" src="' + esc(it.image) + '" alt="' + esc(it.name) + '">';
         var front = '<div class="face front"><div class="ph">' + ribbon + photo + '</div>'
           + '<div class="tx"><span class="nm">' + esc(it.name) + '</span>'
-          + '<span class="sz">' + esc(it.size || '') + '</span>'
+          + '<span class="sz">' + esc([it.size, it.note].filter(Boolean).join(' · ')) + '</span>'
           + '<span class="pr">'
           + (it.sale != null ? '<span class="sale">' + money(it.sale) + '</span>' : '')
           + (it.reg != null && it.sale != null && Number(it.reg) > Number(it.sale)

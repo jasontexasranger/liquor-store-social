@@ -4936,6 +4936,228 @@ function SignagePushModal({ storeId, storeName, period, periodRow, onClose }) {
 }
 
 // ─────────────────────────────────────────────
+// STORE PICKS (WEBSITE)
+// ─────────────────────────────────────────────
+// A manager-curated shelf, separate from the monthly features: pick products,
+// price them or not, and the website block updates itself. An empty list
+// makes the block disappear from the site entirely — no sad empty section.
+function StorePicksCard({ storeId, storeName, canEdit }) {
+  const toast = useToast();
+  const { images: products } = useBrandImageLibrary();
+  const { profile: brand } = useBrandProfile(storeId);
+  const [picks,   setPicks]   = useState(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [q,       setQ]       = useState('');
+  const [draft,   setDraft]   = useState({});   // pick id -> {price, reg, note} being typed
+  const [busy,    setBusy]    = useState(false);
+
+  const prodOf = id => products.find(p => p.id === id) || null;
+
+  const load = useCallback(async function() {
+    const sb = getSB(); if (!sb) return;
+    const { data } = await sb.from('store_picks').select('*')
+      .eq('store_id', storeId).order('sort').order('created_at');
+    setPicks(data || []);
+  }, [storeId]);
+  useEffect(function(){ setPicks(null); setDraft({}); load(); }, [load]);
+
+  // Publish the snapshot the website block reads. Runs after every change —
+  // saving IS publishing here, which is what makes the block feel live.
+  const publish = async function(list) {
+    const sb = getSB();
+    const items = [];
+    for (const pk of list) {
+      const prod = prodOf(pk.product_id);
+      if (!prod) continue;
+      let img = prod.image_url || null;
+      if (!img && prod.data) {
+        // Same hosting rule as the features push: database-only photos get a
+        // public copy once, kept on the product.
+        try {
+          const blob = dataUrlToBlob(prod.data);
+          const path = 'website/products/' + prod.id + '.png';
+          const { error } = await sb.storage.from('creatives')
+            .upload(path, blob, { upsert:true, contentType: blob.type || 'image/png', cacheControl:'31536000' });
+          if (!error) {
+            img = sb.storage.from('creatives').getPublicUrl(path).data.publicUrl;
+            await sb.from('brand_images').update({ image_url: img }).eq('id', prod.id);
+            prod.image_url = img;
+          }
+        } catch(e) { /* placeholder below */ }
+      }
+      const price = pk.price != null ? Number(pk.price) : null;
+      const reg   = pk.reg_price != null ? Number(pk.reg_price) : null;
+      items.push({
+        name: prod.product_name, size: prod.size || '',
+        sale: price, reg,
+        savings: (price != null && reg != null && reg > price) ? Math.round((reg - price) * 100) / 100 : null,
+        note: pk.note || '',
+        image: img, placeholder: img ? undefined : true,
+      });
+    }
+    const snap = {
+      store: storeId,
+      title: storeName.replace(/ Liquor Store.*$/i, '') + ' Picks',
+      updated_at: new Date().toISOString(),
+      brand: {
+        primary: (brand && brand.primary_color) || '#1e3a5f',
+        secondary: (brand && brand.secondary_color) || '#c4a35a',
+      },
+      items,
+    };
+    const blob = new Blob([JSON.stringify(snap, null, 1)], { type:'application/json' });
+    const { error } = await sb.storage.from('creatives')
+      .upload('website/' + storeId + '-picks.json', blob,
+              { upsert:true, contentType:'application/json', cacheControl:'300' });
+    if (error) throw new Error('Saved, but the website copy failed: ' + error.message);
+  };
+
+  const mutate = async function(fn) {
+    setBusy(true);
+    try {
+      await fn();
+      const sb = getSB();
+      const { data } = await sb.from('store_picks').select('*')
+        .eq('store_id', storeId).order('sort').order('created_at');
+      setPicks(data || []);
+      await publish(data || []);
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(false); }
+  };
+
+  const addPick = prod => mutate(async function() {
+    const sb = getSB();
+    const { data:{ user } } = await sb.auth.getUser();
+    const maxSort = (picks || []).reduce((m,p)=>Math.max(m, p.sort||0), 0);
+    const { error } = await sb.from('store_picks').insert({
+      store_id: storeId, product_id: prod.id, sort: maxSort + 1, created_by: user?.id });
+    if (error) throw new Error(/duplicate/i.test(error.message) ? 'Already on the list' : error.message);
+  });
+
+  const removePick = pk => mutate(async function() {
+    const { error } = await getSB().from('store_picks').delete().eq('id', pk.id);
+    if (error) throw new Error(error.message);
+  });
+
+  const patchPick = (pk, fields) => mutate(async function() {
+    const { error } = await getSB().from('store_picks').update(fields).eq('id', pk.id);
+    if (error) throw new Error(error.message);
+  });
+
+  const move = (i, dir) => {
+    const list = picks.slice();
+    const j = i + dir;
+    if (j < 0 || j >= list.length) return;
+    mutate(async function() {
+      const sb = getSB();
+      await sb.from('store_picks').update({ sort: j }).eq('id', list[i].id);
+      await sb.from('store_picks').update({ sort: i }).eq('id', list[j].id);
+      // Normalize the rest so sorts stay dense.
+      for (let k = 0; k < list.length; k++) {
+        if (k !== i && k !== j) await sb.from('store_picks').update({ sort: k }).eq('id', list[k].id);
+      }
+    });
+  };
+
+  const pickEmbed =
+    '<iframe id="lrs-picks-' + storeId + '" src="https://lrs.thesuenocompany.com/features-embed.html?store=' + storeId + '&view=picks"'
+    + ' style="width:100%;border:0;height:0" scrolling="no" loading="lazy" title="Store picks"></iframe>\n'
+    + '<script>window.addEventListener("message",function(e){'
+    + 'if(e.origin==="https://lrs.thesuenocompany.com"&&e.data&&e.data.lrsFeaturesHeight){'
+    + 'document.getElementById("lrs-picks-' + storeId + '").style.height=e.data.lrsFeaturesHeight+"px";}});<\/script>';
+
+  const candidates = products
+    .filter(p => (p.image_url || p.data))
+    .filter(p => !(picks || []).some(pk => pk.product_id === p.id))
+    .filter(p => !q.trim() || (p.product_name || '').toUpperCase().includes(q.trim().toUpperCase()))
+    .slice(0, 30);
+
+  return (
+    <Card>
+      <div className="flex items-center gap-3 mb-1 flex-wrap">
+        <span className="ttl">Store picks · website</span>
+        <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+        <button className="lbl hover:underline" style={{color:'var(--cy)'}}
+          onClick={async function(){
+            try { await navigator.clipboard.writeText(pickEmbed); toast.success('Embed code copied'); }
+            catch(e) { toast.error(e.message); }
+          }}>
+          Copy embed code
+        </button>
+        {canEdit && (
+          <Button size="sm" variant="outline" onClick={()=>setShowAdd(v=>!v)} disabled={busy}>
+            <Icon name="tag"/> Add products
+          </Button>
+        )}
+      </div>
+      <p className="lbl mb-3">
+        A hand-picked shelf for the store's website, separate from the monthly
+        features. Prices optional. Changes go live in about five minutes — and
+        an empty list hides the whole block on the site.
+      </p>
+
+      {showAdd && canEdit && (
+        <div className="mb-3 p-3" style={{border:'1px solid var(--line)'}}>
+          <Input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search products…"
+                 className="text-xs mb-2 max-w-xs"/>
+          <div className="grid grid-cols-4 sm:grid-cols-8 gap-2" style={{maxHeight:'150px', overflowY:'auto'}}>
+            {candidates.map(function(p) {
+              return (
+                <button key={p.id} onClick={()=>addPick(p)} disabled={busy} title={p.product_name}
+                        className="text-left" style={{border:'1px solid var(--line)'}}>
+                  <img src={prodSrc(p)} alt="" className="w-full object-contain" style={{aspectRatio:'1', background:'#fff'}}/>
+                  <span className="lbl block px-1 truncate">{p.product_name}</span>
+                </button>
+              );
+            })}
+            {candidates.length === 0 && <p className="lbl col-span-full py-3">No matching products with photos.</p>}
+          </div>
+        </div>
+      )}
+
+      {picks === null ? <p className="lbl py-4">Loading…</p>
+       : picks.length === 0 ? (
+        <p className="lbl py-3">Nothing picked — the website block is hidden.</p>
+      ) : picks.map(function(pk, i) {
+        const prod = prodOf(pk.product_id);
+        if (!prod) return null;
+        const d = draft[pk.id] || {};
+        return (
+          <div key={pk.id} className="flex items-center gap-3 py-1.5 flex-wrap"
+               style={{borderBottom:'1px solid rgba(56,224,240,.06)'}}>
+            <img src={prodSrc(prod)} alt="" className="w-9 h-9 object-contain flex-none"
+                 style={{background:'#fff', border:'1px solid var(--line)'}}/>
+            <span className="text-xs flex-1 truncate" style={{color:'var(--txt)', minWidth:'120px'}}>
+              {prod.product_name}
+            </span>
+            <fieldset disabled={!canEdit || busy} style={{border:0, padding:0, margin:0, display:'contents'}}>
+              <Input type="number" step="0.01" placeholder="price" className="text-xs"
+                     style={{width:'80px', padding:'3px 6px'}}
+                     value={d.price !== undefined ? d.price : (pk.price ?? '')}
+                     onChange={e=>setDraft(prev=>Object.assign({}, prev, {[pk.id]: Object.assign({}, prev[pk.id], {price: e.target.value})}))}
+                     onBlur={()=>{ if (d.price !== undefined) patchPick(pk, { price: d.price === '' ? null : Number(d.price) }); }}/>
+              <Input type="number" step="0.01" placeholder="was" className="text-xs"
+                     style={{width:'80px', padding:'3px 6px'}}
+                     value={d.reg !== undefined ? d.reg : (pk.reg_price ?? '')}
+                     onChange={e=>setDraft(prev=>Object.assign({}, prev, {[pk.id]: Object.assign({}, prev[pk.id], {reg: e.target.value})}))}
+                     onBlur={()=>{ if (d.reg !== undefined) patchPick(pk, { reg_price: d.reg === '' ? null : Number(d.reg) }); }}/>
+              <Input placeholder="note (optional)" className="text-xs"
+                     style={{width:'150px', padding:'3px 6px'}}
+                     value={d.note !== undefined ? d.note : (pk.note ?? '')}
+                     onChange={e=>setDraft(prev=>Object.assign({}, prev, {[pk.id]: Object.assign({}, prev[pk.id], {note: e.target.value})}))}
+                     onBlur={()=>{ if (d.note !== undefined) patchPick(pk, { note: d.note.trim() || null }); }}/>
+              <Button size="sm" variant="ghost" onClick={()=>move(i,-1)} disabled={i===0} aria-label="Up"><Icon name="up" size={11}/></Button>
+              <Button size="sm" variant="ghost" onClick={()=>move(i,1)} disabled={i===picks.length-1} aria-label="Down"><Icon name="down" size={11}/></Button>
+              <Button size="sm" variant="ghost" onClick={()=>removePick(pk)} aria-label="Remove"><Icon name="close" size={11}/></Button>
+            </fieldset>
+          </div>
+        );
+      })}
+    </Card>
+  );
+}
+
+// ─────────────────────────────────────────────
 // MONTHLY COCKTAILS
 // ─────────────────────────────────────────────
 // One easy cocktail per featured spirit (wine on request), written by the
@@ -6666,6 +6888,10 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
           </div>
         )}
       </Card>
+
+      <StorePicksCard storeId={storeId}
+        storeName={(myStores.find(s=>s.id===storeId)||{}).name || ''}
+        canEdit={canEdit}/>
 
       {showBatch && (
         <FeatureCreativeBatch

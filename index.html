@@ -4967,6 +4967,7 @@ function StorePicksCard({ storeId, storeName, canEdit }) {
     const sb = getSB();
     const items = [];
     for (const pk of list) {
+      if (pk.visible === false) continue;   // hidden, not gone
       const prod = prodOf(pk.product_id);
       if (!prod) continue;
       let img = prod.image_url || null;
@@ -5122,13 +5123,21 @@ function StorePicksCard({ storeId, storeName, canEdit }) {
         const prod = prodOf(pk.product_id);
         if (!prod) return null;
         const d = draft[pk.id] || {};
+        const off = pk.visible === false;
         return (
           <div key={pk.id} className="flex items-center gap-3 py-1.5 flex-wrap"
-               style={{borderBottom:'1px solid rgba(56,224,240,.06)'}}>
+               style={{borderBottom:'1px solid rgba(56,224,240,.06)', opacity: off ? 0.45 : 1}}>
+            <button disabled={!canEdit || busy}
+                    onClick={()=>patchPick(pk, { visible: off })}
+                    title={off ? 'Hidden from the website — click to show' : 'Showing on the website — click to hide'}
+                    aria-label={off ? 'Show on website' : 'Hide from website'}>
+              <Icon name="eye" size={14} style={{color: off ? 'var(--txt3)' : 'var(--cy)'}}/>
+            </button>
             <img src={prodSrc(prod)} alt="" className="w-9 h-9 object-contain flex-none"
                  style={{background:'#fff', border:'1px solid var(--line)'}}/>
             <span className="text-xs flex-1 truncate" style={{color:'var(--txt)', minWidth:'120px'}}>
               {prod.product_name}
+              {off && <span className="lbl ml-2" style={{color:'var(--amb)'}}>hidden</span>}
             </span>
             <fieldset disabled={!canEdit || busy} style={{border:0, padding:0, margin:0, display:'contents'}}>
               <Input type="number" step="0.01" placeholder="price" className="text-xs"
@@ -5154,6 +5163,33 @@ function StorePicksCard({ storeId, storeName, canEdit }) {
         );
       })}
     </Card>
+  );
+}
+
+// The website's own corner of the app: store picks now, whatever else the
+// sites need later. Deliberately not on the Features page — picks have no
+// month; they're "what we want on the site right now".
+function WebsitePage({ editableIds }) {
+  const [storeId, setStoreId] = useState(
+    (editableIds && editableIds.length ? editableIds[0] : (STORES[0]||{}).id) || '');
+  const canEdit = !editableIds || editableIds.includes(storeId);
+  const store = STORES.find(s=>s.id===storeId) || {};
+  return (
+    <div className="space-y-4">
+      <Card>
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="ttl">Website</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          <StorePicker compact value={storeId} onChange={setStoreId}/>
+          {!canEdit && <Badge color="yellow">view only</Badge>}
+        </div>
+        <p className="lbl mt-2">
+          The monthly features block is pushed from the Features page; this page
+          manages everything else the store's website shows.
+        </p>
+      </Card>
+      <StorePicksCard storeId={storeId} storeName={store.name || ''} canEdit={canEdit}/>
+    </div>
   );
 }
 
@@ -6888,10 +6924,6 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
           </div>
         )}
       </Card>
-
-      <StorePicksCard storeId={storeId}
-        storeName={(myStores.find(s=>s.id===storeId)||{}).name || ''}
-        canEdit={canEdit}/>
 
       {showBatch && (
         <FeatureCreativeBatch
@@ -12618,6 +12650,7 @@ const ASSIGNABLE_SECTIONS = [
   { id:'features',  label:'Features' },
   { id:'creatives', label:'Creatives' },
   { id:'recipes',   label:'Recipes' },
+  { id:'website',   label:'Website' },
   { id:'prices',    label:'Price Check' },
   // Off by default for everyone who isn't an admin. Ads spends money, so the
   // edge function checks this same grant server-side rather than trusting the
@@ -15671,6 +15704,7 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
     { id:'features', icon:'tag', label:'Features' },
     { id:'creatives', icon:'image', label:'Creatives' },
     { id:'recipes',   icon:'spark', label:'Recipes' },
+    { id:'website',   icon:'globe', label:'Website' },
     { id:'prices',    icon:'search', label:'Price Check' },
     ...(granted('signage')  ? [{ id:'signage',  icon:'grid',    label:'Signage' }] : []),
     ...(granted('products') ? [{ id:'products', icon:'package', label:'Products' }] : []),
@@ -15785,6 +15819,7 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
         {page==='features'               && <FeaturesPage isAdmin={effIsAdmin}
                                              myStores={STORES}
                                              editableIds={effIsAdmin ? null : effStoreIds}/>}
+        {page==='website'                && <WebsitePage editableIds={effIsAdmin ? null : effStoreIds}/>}
         {page==='prices'                 && <PriceCheckPage isAdmin={effIsAdmin}/>}
         {page==='signage' && granted('signage') && <SignagePage/>}
         {page==='recipes'                && <RecipesPage isAdmin={effIsAdmin}

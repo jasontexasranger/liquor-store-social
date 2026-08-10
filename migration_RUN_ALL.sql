@@ -1591,6 +1591,14 @@ CREATE POLICY store_picks_write ON public.store_picks
 NOTIFY pgrst, 'reload schema';
 
 
+
+-- ==== migration_picks_visible.sql ====
+-- Hide a pick without deleting it: prices and notes survive off-season.
+ALTER TABLE public.store_picks
+  ADD COLUMN IF NOT EXISTS visible BOOLEAN NOT NULL DEFAULT true;
+NOTIFY pgrst, 'reload schema';
+
+
 -- ============================================================================
 -- Tell PostgREST about the new tables.
 -- "Could not find the table in the schema cache" means this step was missed.

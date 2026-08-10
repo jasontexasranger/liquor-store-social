@@ -11704,7 +11704,7 @@ const ASSIGNABLE_SECTIONS = [
   { id:'signage',   label:'Signage',   admin:true },
 ];
 
-function UserAccountsSection({ currentUserId }) {
+function UserAccountsSection({ currentUserId, onViewAs }) {
   const toast = useToast();
   const [users,        setUsers]        = useState([]);
   const [loading,      setLoading]      = useState(true);
@@ -12246,7 +12246,7 @@ function SettingsPage({ settings, onSave, currentUserId, onViewAs }) {
 
   return (
     <div className="space-y-4 max-w-2xl">
-      <UserAccountsSection currentUserId={currentUserId}/>
+      <UserAccountsSection currentUserId={currentUserId} onViewAs={onViewAs}/>
       <StoreLocationsSection/>
       <SignageScreensSection/>
       <Card>

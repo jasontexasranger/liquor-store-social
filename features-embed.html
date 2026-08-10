@@ -78,7 +78,9 @@
       var okImg = function (u) {
         return /^https:\/\/yyveikxfomxmedlxsulh\.supabase\.co\/storage\//.test(u || '');
       };
-      var items = (d.items || []).filter(function (it) { return okImg(it.image); });
+      var items = (d.items || []).filter(function (it) { return it.placeholder || okImg(it.image); });
+      var bp = (d.brand && /^#[0-9a-fA-F]{3,8}$/.test(d.brand.primary || '')) ? d.brand.primary : '#1e3a5f';
+      var bs = (d.brand && /^#[0-9a-fA-F]{3,8}$/.test(d.brand.secondary || '')) ? d.brand.secondary : '#c4a35a';
       if (!items.length) { app.innerHTML = '<p class="empty">Check back soon for this month’s features.</p>'; return; }
 
       var h = '<div class="hdr"><h2>' + esc(d.title || 'Monthly Features') + '</h2>'
@@ -93,8 +95,16 @@
           ribbon = '<span class="save">SAVE ' + money(it.savings).replace('.00', '')
             + (pct >= 10 ? '<small>' + pct + '% OFF</small>' : '') + '</span>';
         }
-        h += '<div class="card"><div class="ph">' + ribbon
-          + '<img loading="lazy" src="' + esc(it.image) + '" alt="' + esc(it.name) + '"></div>'
+        var photo = it.placeholder
+          ? '<div style="width:100%;height:100%;display:flex;flex-direction:column;align-items:center;'
+            + 'justify-content:center;gap:8px;background:' + bp + ';padding:16px;text-align:center">'
+            + '<span style="color:' + bs + ';font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase">'
+            + esc(d.title.split(' ')[0]) + '</span>'
+            + '<span style="color:#fff;font-size:19px;font-weight:800;line-height:1.2">' + esc(it.name) + '</span>'
+            + '<span style="color:' + bs + ';font-size:12px;font-style:italic">Too good to wait for a photo</span>'
+            + '</div>'
+          : '<img loading="lazy" src="' + esc(it.image) + '" alt="' + esc(it.name) + '">';
+        h += '<div class="card"><div class="ph">' + ribbon + photo + '</div>'
           + '<div class="tx"><span class="nm">' + esc(it.name) + '</span>'
           + (it.size ? '<span class="sz">' + esc(it.size) + '</span>' : '')
           + '<span class="pr">'

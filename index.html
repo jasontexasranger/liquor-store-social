@@ -4901,6 +4901,7 @@ function SignagePushModal({ storeId, storeName, period, periodRow, onClose }) {
 function WebsitePushModal({ storeId, storeName, period, periodRow, rows, products, onClose }) {
   const dragPanel = useDragPanel();
   const toast = useToast();
+  const { profile: brand } = useBrandProfile(storeId);
   const [busy, setBusy] = useState(false);
   const [published, setPublished] = useState(false);
 
@@ -4920,11 +4921,16 @@ function WebsitePushModal({ storeId, storeName, period, periodRow, rows, product
     if (prod.data)      return { src: prod.data,      hosted: false, prod };
     return null;
   };
+  // Every named row makes a card. No photo? A branded placeholder — better a
+  // confident card in store colours than a silent absence from the flyer.
   const withImage = rows
-    .map(r => ({ r, img: imageFor(r) }))
-    .filter(x => x.img && x.r.name)
-    .map(x => ({ r: x.r, image: x.img.src, hosted: x.img.hosted, prod: x.img.prod }));
-  const excluded = rows.filter(r => r.name && !imageFor(r));
+    .filter(r => r.name)
+    .map(function(r) {
+      const img = imageFor(r);
+      return img
+        ? { r, image: img.src, hosted: img.hosted, prod: img.prod, placeholder: false }
+        : { r, image: null, hosted: true, prod: null, placeholder: true };
+    });
 
   // Upload a database-only photo and remember the URL on the product.
   const hostPhoto = async function(prod) {
@@ -4968,6 +4974,10 @@ function WebsitePushModal({ storeId, storeName, period, periodRow, rows, product
     period, dates,
     updated_at: new Date().toISOString(),
     footnote: 'Prices exclude tax & deposit — while supplies last.',
+    brand: {
+      primary: (brand && brand.primary_color) || '#1e3a5f',
+      secondary: (brand && brand.secondary_color) || '#c4a35a',
+    },
     items: eligible.map(function(x) {
       return {
         name: x.r.name, size: x.r.size || '',
@@ -4975,6 +4985,7 @@ function WebsitePushModal({ storeId, storeName, period, periodRow, rows, product
         sale: x.r.sale_price != null ? Number(x.r.sale_price) : null,
         savings: x.r.savings != null ? Number(x.r.savings) : null,
         image: x.image,
+        placeholder: x.placeholder || undefined,
       };
     }),
   });
@@ -4997,9 +5008,15 @@ function WebsitePushModal({ storeId, storeName, period, periodRow, rows, product
           + (pct >= 10 ? '<small style="display:block;font-size:10px;font-weight:700;opacity:.92">' + pct + '% OFF</small>' : '')
           + '</span>'
         : '';
+      const bp = d.brand.primary, bs = d.brand.secondary;
+      const photo = it.placeholder
+        ? '<div style="width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;background:' + bp + ';padding:16px;text-align:center">'
+          + '<span style="color:' + bs + ';font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase">' + esc(d.title.split(' ')[0]) + '</span>'
+          + '<span style="color:#fff;font-size:19px;font-weight:800;line-height:1.2">' + esc(it.name) + '</span>'
+          + '<span style="color:' + bs + ';font-size:12px;font-style:italic">Too good to wait for a photo</span></div>'
+        : '<img loading="lazy" src="' + esc(it.image) + '" alt="' + esc(it.name) + '" style="max-width:88%;max-height:88%;object-fit:contain">';
       h += '<div style="border:1px solid #e5e5e5;border-radius:10px;overflow:hidden;background:#fff">'
-        + '<div style="aspect-ratio:1;display:flex;align-items:center;justify-content:center;background:#fafafa;position:relative">' + ribbon
-        + '<img loading="lazy" src="' + esc(it.image) + '" alt="' + esc(it.name) + '" style="max-width:88%;max-height:88%;object-fit:contain"></div>'
+        + '<div style="aspect-ratio:1;display:flex;align-items:center;justify-content:center;background:#fafafa;position:relative">' + ribbon + photo + '</div>'
         + '<div style="padding:10px 12px 12px"><div style="font-weight:600;font-size:14px">' + esc(it.name) + '</div>'
         + (it.size ? '<div style="color:#757575;font-size:12px">' + esc(it.size) + '</div>' : '')
         + '<div style="margin-top:6px">'
@@ -5063,9 +5080,23 @@ function WebsitePushModal({ storeId, storeName, period, periodRow, rows, product
               <label key={x.r.id} className="flex items-center gap-3 px-3 py-1.5 cursor-pointer"
                      style={{borderBottom:'1px solid rgba(56,224,240,.06)', opacity: on ? 1 : 0.5}}>
                 <input type="checkbox" checked={on} onChange={()=>toggleWeb(x.r)}/>
-                <img src={x.image} alt="" className="w-9 h-9 object-contain flex-none"
-                     style={{background:'#fff', border:'1px solid var(--line)'}}/>
-                <span className="text-xs flex-1 truncate" style={{color:'var(--txt)'}}>{x.r.name}</span>
+                {x.placeholder ? (
+                  <span className="w-9 h-9 flex-none flex items-center justify-center"
+                        title="No photo — shows as a branded card"
+                        style={{background:(brand && brand.primary_color) || '#1e3a5f',
+                                color:(brand && brand.secondary_color) || '#c4a35a',
+                                border:'1px solid var(--line)', fontSize:'8px', fontWeight:'700',
+                                textAlign:'center', lineHeight:'1.1'}}>
+                    NO<br/>PHOTO
+                  </span>
+                ) : (
+                  <img src={x.image} alt="" className="w-9 h-9 object-contain flex-none"
+                       style={{background:'#fff', border:'1px solid var(--line)'}}/>
+                )}
+                <span className="text-xs flex-1 truncate" style={{color:'var(--txt)'}}>
+                  {x.r.name}
+                  {x.placeholder && <span className="lbl ml-2" style={{color:'var(--amb)'}}>branded card</span>}
+                </span>
                 <span className="mono text-xs" style={{color:'var(--cy)'}}>
                   {x.r.sale_price != null ? money(x.r.sale_price) : ''}
                 </span>
@@ -5073,9 +5104,9 @@ function WebsitePushModal({ storeId, storeName, period, periodRow, rows, product
             );
           })}
         </div>
-        {excluded.length > 0 && (
-          <p className="text-xs mb-3" style={{color:'var(--amb)'}}>
-            Can't be shown (no usable photo): {excluded.map(r=>r.name).join(', ')}
+        {withImage.some(x=>x.placeholder) && (
+          <p className="lbl mb-3">
+            Items without photos show as branded "too good to wait for a photo" cards in store colours.
           </p>
         )}
 

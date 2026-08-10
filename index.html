@@ -6773,6 +6773,18 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
             </Button>
           </div>
           {periodRow && <Badge color={periodRow.status==='closed'?'gray':periodRow.status==='active'?'green':'yellow'}>{periodRow.status}</Badge>}
+          {/* The month's state lives beside the month's badge — it's about
+              the month, not part of the production toolbar. */}
+          {canEdit && periodRow && periodRow.status !== 'closed' && (
+            <button className="lbl hover:underline" style={{color:'var(--txt3)'}}
+              onClick={()=>{
+                if (periodRow.status !== 'draft' &&
+                    !confirm('Close ' + monthLabel(period) + '? Closed months are read-only.')) return;
+                setStatus(periodRow.status==='draft'?'active':'closed');
+              }}>
+              {periodRow.status==='draft' ? 'mark active' : 'close month'}
+            </button>
+          )}
           {!canEdit && <Badge color="yellow">view only</Badge>}
         </div>
 
@@ -6845,23 +6857,21 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
           {canEdit && (
             <React.Fragment>
               <Button size="sm" onClick={addBlank}><Icon name="tag"/> Add row</Button>
+              {/* Grouped by purpose, not by the order things were built:
+                  getting the sheet in, making assets from it, and sending
+                  those assets to each channel. */}
               <ToolMenu label="Import" icon="folder" items={[
                 { label:'Import CSV',       icon:'folder', onClick:()=>setShowCsv(v=>!v) },
                 { label:'Paste from Excel', icon:'down',   onClick:()=>setShowPaste(v=>!v) },
               ]}/>
-              <ToolMenu label="Create & send" icon="rocket" items={[
-                { label:'Generate creatives', icon:'image',    onClick:()=>setShowBatch(true), disabled: rows.length===0 },
-                { label:'Plan posts',         icon:'cal',      onClick:()=>setShowPlan(true),  disabled: rows.length===0 },
-                { label:'Monthly cocktails',  icon:'cocktail', onClick:()=>setShowCocktails(true), disabled: rows.length===0 },
-                { label:'Send to signage',    icon:'grid',     onClick:()=>setShowSign(true) },
-                { label:'Push to website',    icon:'globe',    onClick:()=>setShowWeb(true), disabled: rows.length===0 },
-                (periodRow && periodRow.status !== 'closed') ? { divider:true } : null,
-                (periodRow && periodRow.status !== 'closed') ? {
-                  label: periodRow.status==='draft' ? 'Mark month active' : 'Close the month',
-                  icon: periodRow.status==='draft' ? 'check' : 'lock',
-                  danger: periodRow.status!=='draft',
-                  onClick: ()=>setStatus(periodRow.status==='draft'?'active':'closed'),
-                } : null,
+              <ToolMenu label="Make" icon="image" items={[
+                { label:'Price creatives',   icon:'image',    onClick:()=>setShowBatch(true), disabled: rows.length===0 },
+                { label:'Cocktail recipes',  icon:'cocktail', onClick:()=>setShowCocktails(true), disabled: rows.length===0 },
+              ]}/>
+              <ToolMenu label="Publish" icon="rocket" items={[
+                { label:'To social — plan posts', icon:'cal',   onClick:()=>setShowPlan(true), disabled: rows.length===0 },
+                { label:'To the TVs',             icon:'grid',  onClick:()=>setShowSign(true) },
+                { label:'To the website',         icon:'globe', onClick:()=>setShowWeb(true), disabled: rows.length===0 },
               ]}/>
             </React.Fragment>
           )}

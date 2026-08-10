@@ -517,10 +517,25 @@ Deno.serve(async (req) => {
       }
       const token = getSystemToken();
       const data = await gGet(`/${accountId}/campaigns`, {
-        fields: 'name,status,objective,daily_budget,insights{spend,impressions,clicks,ctr}',
+        fields: 'name,status,effective_status,objective,daily_budget,'
+          + 'start_time,stop_time,updated_time,insights{spend,impressions,clicks,ctr}',
         limit: '100',
       }, token);
-      return Response.json({ campaigns: data.data ?? [] }, { headers: corsHeaders });
+
+      // The dashboard is for managing what matters now: campaigns currently
+      // running, plus anything that ran in the last 60 days. Years of dead
+      // campaigns live on in Ads Manager, not here.
+      const cutoff = Date.now() - 60 * 86400_000;
+      const recent = (iso?: string) => !!iso && new Date(iso).getTime() >= cutoff;
+      const campaigns = (data.data ?? []).filter((c: {
+        effective_status?: string; status?: string;
+        stop_time?: string; updated_time?: string;
+      }) =>
+        c.effective_status === 'ACTIVE' ||
+        recent(c.stop_time) ||
+        (!c.stop_time && c.status !== 'ARCHIVED' && recent(c.updated_time))
+      );
+      return Response.json({ campaigns }, { headers: corsHeaders });
     }
 
     // ── toggleCampaign ───────────────────────────────────────────────────────

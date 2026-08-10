@@ -114,7 +114,10 @@ Deno.serve(async (req) => {
       ADMIN_EMAILS.includes((user.email ?? '').toLowerCase());
     if (!allowed) throw new Error('Not permitted');
 
-    const body = await req.json() as { action: string; query?: string; sku?: string };
+    const body = await req.json() as {
+      action: string; query?: string; sku?: string;
+      storeId?: string; batch?: number;
+    };
     const action = body.action;
 
     const limit = async (name: string, max: number) => {
@@ -355,6 +358,126 @@ Deno.serve(async (req) => {
       });
 
       return Response.json({ imported: unique.length, list: label }, { headers: corsHeaders });
+    }
+
+    // ── buildLibrary ────────────────────────────────────────────────────────
+    // Turn a store's imported inventory into Product Library entries, with
+    // images linked only when we are sure: the SKU must exist in the BCL
+    // price table (exact match — POS Item IDs are BCL SKUs), and BCL's image
+    // for that exact SKU must actually exist. No fuzzy matching, no guessed
+    // photos. Items that fail either test are skipped and counted, not faked.
+    //
+    // Works in batches — the frontend calls repeatedly until remaining is 0 —
+    // so one invocation never runs long and BCL is fetched politely.
+    if (action === 'buildLibrary') {
+      const storeId = String(body.storeId ?? '').trim();
+      if (!storeId) throw new Error('storeId required');
+      const batch = Math.min(Math.max(Number(body.batch) || 15, 1), 25);
+      await limit('bcliquor_build', 400);
+
+      // Everything the store carries…
+      const { data: inv } = await sb.from('store_inventory')
+        .select('sku, description').eq('store_id', storeId).order('sku').range(0, 9999);
+      if (!inv?.length) throw new Error('No inventory imported for this store yet');
+
+      // …minus what the library already has, by SKU or by exact name — a
+      // hand-made product without a SKU should not come back as a duplicate.
+      const { data: lib } = await sb.from('brand_images')
+        .select('bcliquor_sku, product_name').range(0, 9999);
+      const haveSku  = new Set((lib ?? []).map(r => String(r.bcliquor_sku ?? '')).filter(Boolean));
+      const haveName = new Set((lib ?? []).map(r => String(r.product_name ?? '').trim().toUpperCase()).filter(Boolean));
+
+      // The cursor is the last SKU already walked past (in any earlier call),
+      // so skipped items are never retried and the loop always terminates.
+      const cursor = String((body as Record<string, unknown>).cursor ?? '');
+      const todo = inv
+        .filter(r => !haveSku.has(String(r.sku)))
+        .filter(r => String(r.sku) > cursor);
+
+      let created = 0, noBcl = 0, noImage = 0, dupName = 0;
+      let lastSku = cursor;
+
+      for (const item of todo) {
+        if (created >= batch) break;
+        const sku = String(item.sku);
+        lastSku = sku;
+
+        // Sure means: this exact SKU is in the government list.
+        const { data: bcl } = await sb.from('bcl_products')
+          .select('name, category, subcategory, litres, containers').eq('sku', sku).maybeSingle();
+        if (!bcl) { noBcl++; continue; }
+        if (haveName.has(bcl.name.trim().toUpperCase())) {
+          // Already in the library by name — link the SKU rather than duplicate.
+          await sb.from('brand_images').update({ bcliquor_sku: sku })
+            .eq('product_name', bcl.name).is('bcliquor_sku', null);
+          dupName++; continue;
+        }
+
+        // BCL's image URL is deterministic per SKU; existence is the test.
+        const imgRes = await fetch(`${IMG_BASE}/${encodeURIComponent(sku)}.jpg`, {
+          headers: { 'Accept': 'image/jpeg,image/png,image/webp', 'User-Agent': UA_IMPORT },
+          cache: 'no-store', signal: timeout(10_000),
+        }).catch(() => null);
+        if (!imgRes || !imgRes.ok) { noImage++; continue; }
+        const contentType = (imgRes.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+        const ext = OK_TYPES[contentType];
+        const bytes = ext ? new Uint8Array(await imgRes.arrayBuffer()) : null;
+        if (!bytes || !bytes.byteLength || bytes.byteLength > MAX_BYTES) { noImage++; continue; }
+
+        const storagePath = `products/bcliquor-${sku}-${Date.now()}.${ext}`;
+        const up = await sb.storage.from(BUCKET).upload(storagePath, bytes, {
+          contentType, cacheControl: '31536000', upsert: false,
+        });
+        if (up.error) { noImage++; continue; }
+        const publicUrl = sb.storage.from(BUCKET).getPublicUrl(storagePath).data.publicUrl;
+
+        const size = bcl.litres
+          ? ((bcl.containers && bcl.containers > 1 ? bcl.containers + ' × ' : '') +
+             (bcl.litres < 1 ? Math.round(bcl.litres * 1000) + ' mL' : bcl.litres + ' L'))
+          : '';
+        const cat = (function(c: string) {
+          const s = c.toLowerCase();
+          if (/beer|cider|cooler|refresh/.test(s)) return 'beer-cider';
+          if (/red/.test(s) && /wine/.test(s)) return 'red-wine';
+          if (/white/.test(s) && /wine/.test(s)) return 'white-wine';
+          if (/ros|sparkling|champagne/.test(s)) return 'rose-sparkling';
+          if (/whisky|whiskey|bourbon|scotch|rye/.test(s)) return 'whisky';
+          if (/vodka/.test(s)) return 'vodka';
+          if (/gin/.test(s)) return 'gin';
+          if (/rum/.test(s)) return 'rum';
+          if (/tequila|agave|mezcal/.test(s)) return 'tequila';
+          if (/liqueur|aperitif|brandy|cognac/.test(s)) return 'liqueur';
+          if (/wine/.test(s)) return 'red-wine';
+          return '';
+        })((bcl.subcategory || bcl.category || ''));
+
+        const { error: insErr } = await sb.from('brand_images').insert({
+          store_id: null,
+          product_name: bcl.name,
+          size, category: cat, notes: '',
+          image_url: publicUrl, data: null,
+          bcliquor_sku: sku,
+        });
+        if (insErr) { noImage++; continue; }
+        haveName.add(bcl.name.trim().toUpperCase());
+        created++;
+      }
+
+      const walked = created + noBcl + noImage + dupName;
+
+      await sb.from('audit_log').insert({
+        user_id: user.id,
+        action: 'build_product_library',
+        entity_type: 'brand_images',
+        changed_fields: ['bulk_import'],
+        safe_metadata: { storeId, created, noBcl, noImage, dupName },
+      });
+
+      return Response.json({
+        created, linked: dupName, skippedNoBcl: noBcl, skippedNoImage: noImage,
+        cursor: lastSku,
+        remaining: Math.max(0, todo.length - walked),
+      }, { headers: corsHeaders });
     }
 
     throw new Error(`Unknown action: ${action}`);

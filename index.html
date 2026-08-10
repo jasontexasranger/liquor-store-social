@@ -1828,6 +1828,35 @@ function StoreInventoryImport({ invMeta, onDone }) {
   const toast = useToast();
   const [target, setTarget] = useState(null);
   const [busy,   setBusy]   = useState(false);
+  const [building, setBuilding] = useState(null);   // progress text while the library builds
+  const buildStop = useRef(false);
+
+  // Walk the store's inventory and create Product Library entries with BCL
+  // photos — only for exact SKU matches whose image exists. Batched calls;
+  // safe to stop and re-run, it never duplicates.
+  const buildLibrary = async function() {
+    if (!target) { toast.error('Pick a store first'); return; }
+    buildStop.current = false;
+    let cursor = '', created = 0, linked = 0, skipped = 0, guard = 0;
+    setBuilding('Starting…');
+    try {
+      while (!buildStop.current && guard++ < 300) {
+        const r = await callEdge('bcliquor', 'buildLibrary', { storeId: target, batch: 15, cursor });
+        created += r.created; linked += r.linked;
+        skipped += r.skippedNoBcl + r.skippedNoImage;
+        cursor = r.cursor;
+        setBuilding(created + ' added · ' + linked + ' linked · ' + skipped + ' skipped · '
+          + r.remaining + ' to go');
+        if (!r.remaining) break;
+      }
+      toast.success('Library build done: ' + created + ' products added with photos, '
+        + linked + ' existing linked, ' + skipped + ' skipped (no BCL match or no photo)');
+      setBuilding(null);
+    } catch(e) {
+      toast.error(e.message);
+      setBuilding(null);
+    }
+  };
 
   const importFile = async function(file) {
     if (!target) { toast.error('Pick which store this export is from first'); return; }
@@ -1899,6 +1928,18 @@ function StoreInventoryImport({ invMeta, onDone }) {
           <input type="file" accept=".csv,text/csv" className="hidden" disabled={busy || !target}
                  onChange={e=>{ const f = e.target.files[0]; e.target.value=''; if (f) importFile(f); }}/>
         </label>
+        {building === null ? (
+          <Button size="sm" variant="outline" disabled={busy || !target || !(invMeta||{})[target]}
+                  onClick={buildLibrary}
+                  title="Create Product Library entries for this store's inventory, with BCL photos linked only on exact SKU matches">
+            <Icon name="image"/> Build product library
+          </Button>
+        ) : (
+          <span className="flex items-center gap-2">
+            <span className="lbl">{building}</span>
+            <Button size="sm" variant="ghost" onClick={()=>{ buildStop.current = true; }}>Stop</Button>
+          </span>
+        )}
       </div>
       <div className="mt-3">
         {STORES.map(function(st) {

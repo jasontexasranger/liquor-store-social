@@ -602,6 +602,133 @@ Deno.serve(async (req) => {
       }, { headers: corsHeaders });
     }
 
+    // ── Inbox ────────────────────────────────────────────────────────────────
+    // One place per brand for everything people say to the stores: comments on
+    // FB posts and IG media, Messenger threads, IG DMs. Store members see
+    // their own stores' inboxes; replying needs the newer token scopes
+    // (pages_manage_engagement, pages_messaging, instagram_manage_messages) —
+    // if the personal token predates those, Graph's error says so plainly.
+    const inboxAcct = async (storeId: string) => {
+      if (!storeId) throw new Error('storeId required');
+      if (!userInfo.isAdmin && userInfo.storeIds.length > 0 && !userInfo.storeIds.includes(storeId)) {
+        throw new Error('Not authorized for this store');
+      }
+      const { data: acct } = await sb
+        .from('meta_accounts')
+        .select('fb_page_id, ig_account_id')
+        .eq('store_id', storeId)
+        .single();
+      if (!acct) throw new Error('Store not found in meta_accounts');
+      return acct as { fb_page_id: string; ig_account_id: string | null };
+    };
+
+    if (action === 'inboxComments') {
+      const { storeId } = params as { storeId: string };
+      const acct = await inboxAcct(storeId);
+      const pageToken = await getPageToken(acct.fb_page_id, true);
+
+      // Recent FB posts with their comment threads. from{...} tells the UI
+      // which comments are the page's own replies.
+      let facebook: unknown[] = [];
+      try {
+        const fb = await gGet(`/${acct.fb_page_id}/published_posts`, {
+          fields: 'id,message,created_time,permalink_url,full_picture,'
+            + 'comments.summary(true).limit(25){id,message,from{id,name},created_time,like_count,'
+            + 'comments.limit(10){id,message,from{id,name},created_time}}',
+          limit: '12',
+        }, pageToken);
+        facebook = (fb.data ?? []).filter((p: { comments?: { data?: unknown[] } }) =>
+          (p.comments?.data ?? []).length > 0 ||
+          ((p as { comments?: { summary?: { total_count?: number } } }).comments?.summary?.total_count ?? 0) > 0);
+      } catch (e) {
+        facebook = [];
+        if (e instanceof Error && /permission|scope|OAuth/i.test(e.message)) throw e;
+      }
+
+      // IG media with comments, when the page has a linked IG account.
+      let instagram: unknown[] = [];
+      const igId = acct.ig_account_id ?? await getIgAccountId(acct.fb_page_id, pageToken);
+      if (igId) {
+        try {
+          const ig = await gGet(`/${igId}/media`, {
+            fields: 'id,caption,permalink,timestamp,thumbnail_url,media_url,comments_count,'
+              + 'comments.limit(25){id,text,username,timestamp,replies{id,text,username,timestamp}}',
+            limit: '12',
+          }, pageToken);
+          instagram = (ig.data ?? []).filter((m: { comments_count?: number }) => (m.comments_count ?? 0) > 0);
+        } catch (_e) { instagram = []; }
+      }
+
+      return Response.json({ facebook, instagram, pageId: acct.fb_page_id, igId },
+        { headers: corsHeaders });
+    }
+
+    if (action === 'inboxConversations') {
+      const { storeId, platform } = params as { storeId: string; platform?: string };
+      const acct = await inboxAcct(storeId);
+      const pageToken = await getPageToken(acct.fb_page_id, true);
+      const plat = platform === 'instagram' ? 'instagram' : 'messenger';
+      try {
+        const data = await gGet(`/${acct.fb_page_id}/conversations`, {
+          platform: plat,
+          fields: 'id,updated_time,snippet,unread_count,can_reply,'
+            + 'participants,messages.limit(25){id,from,message,created_time}',
+          limit: '25',
+        }, pageToken);
+        return Response.json({ conversations: data.data ?? [], pageId: acct.fb_page_id },
+          { headers: corsHeaders });
+      } catch (e) {
+        const m = e instanceof Error ? e.message : String(e);
+        if (/permission|scope|OAuth|pages_messaging/i.test(m)) {
+          throw new Error(
+            (plat === 'instagram' ? 'Instagram DMs' : 'Messenger') +
+            ' need the messaging scopes on the personal token — regenerate it with ' +
+            'pages_messaging' + (plat === 'instagram' ? ' and instagram_manage_messages' : '') +
+            ' ticked. (' + m + ')');
+        }
+        throw e;
+      }
+    }
+
+    if (action === 'inboxReplyComment') {
+      const { storeId, commentId, message, platform } = params as {
+        storeId: string; commentId: string; message: string; platform?: string;
+      };
+      if (!commentId || !message?.trim()) throw new Error('commentId and message required');
+      const acct = await inboxAcct(storeId);
+      const pageToken = await getPageToken(acct.fb_page_id, true);
+      // IG comment replies use /replies; FB nests a comment under the comment.
+      const result = platform === 'instagram'
+        ? await gPost(`/${commentId}/replies`, { message: message.trim() }, pageToken)
+        : await gPost(`/${commentId}/comments`, { message: message.trim() }, pageToken);
+      await sb.from('audit_log').insert({
+        user_id: userInfo.userId, action: 'inbox_reply_comment', entity_type: 'social',
+        changed_fields: ['comment'], safe_metadata: { storeId, platform: platform ?? 'facebook' },
+      });
+      return Response.json({ id: result.id }, { headers: corsHeaders });
+    }
+
+    if (action === 'inboxSendMessage') {
+      const { storeId, recipientId, message } = params as {
+        storeId: string; recipientId: string; message: string;
+      };
+      if (!recipientId || !message?.trim()) throw new Error('recipientId and message required');
+      const acct = await inboxAcct(storeId);
+      const pageToken = await getPageToken(acct.fb_page_id, true);
+      // RESPONSE covers replies inside the standard window; outside it Meta
+      // rejects with a clear error rather than us guessing at message tags.
+      const result = await gPost(`/${acct.fb_page_id}/messages`, {
+        recipient: { id: recipientId },
+        messaging_type: 'RESPONSE',
+        message: { text: message.trim() },
+      }, pageToken);
+      await sb.from('audit_log').insert({
+        user_id: userInfo.userId, action: 'inbox_send_message', entity_type: 'social',
+        changed_fields: ['message'], safe_metadata: { storeId },
+      });
+      return Response.json({ id: result.message_id ?? result.id ?? null }, { headers: corsHeaders });
+    }
+
     // ── listComments ─────────────────────────────────────────────────────────
     if (action === 'listComments') {
       const { postId, storeId } = params as { postId: string; storeId: string };

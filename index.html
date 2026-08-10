@@ -1798,12 +1798,132 @@ function bclUnitLabel(row) {
   return parts.join(' ');
 }
 
+// Quote-aware CSV split for the POS item-master export. Headers arrive with
+// stray leading spaces (" Dept.") — matching trims both sides.
+function parsePosCsv(text) {
+  const rows = [];
+  let row = [], cell = '', inQ = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inQ) {
+      if (ch === '"') { if (text[i+1] === '"') { cell += '"'; i++; } else inQ = false; }
+      else cell += ch;
+    } else if (ch === '"') inQ = true;
+    else if (ch === ',') { row.push(cell); cell = ''; }
+    else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i+1] === '\n') i++;
+      row.push(cell); cell = '';
+      if (row.some(c => c.trim() !== '')) rows.push(row);
+      row = [];
+    } else cell += ch;
+  }
+  if (cell !== '' || row.length) { row.push(cell); if (row.some(c => c.trim() !== '')) rows.push(row); }
+  return rows;
+}
+
+// Import the POS item master for one store: replace that store's rows with
+// what the file says. Item IDs are BCL SKUs, which is what makes everything
+// downstream (price joins, stock warnings) work.
+function StoreInventoryImport({ invMeta, onDone }) {
+  const toast = useToast();
+  const [target, setTarget] = useState(null);
+  const [busy,   setBusy]   = useState(false);
+
+  const importFile = async function(file) {
+    if (!target) { toast.error('Pick which store this export is from first'); return; }
+    setBusy(true);
+    try {
+      const rows = parsePosCsv(await file.text());
+      if (rows.length < 2) throw new Error('That file looks empty');
+      const head = rows[0].map(h => h.trim().toLowerCase());
+      const col = name => head.indexOf(name);
+      const iId = col('item id'), iDesc = col('description'), iUnit = col('unit'),
+            iDept = col('dept.'), iVend = col('vendor'), iCase = col('case-qty'),
+            iAvl = col('avl');
+      if (iId < 0 || iDesc < 0) {
+        throw new Error('Could not find the "Item ID" and "Description" columns — is this the POS item export?');
+      }
+      const seen = new Set();
+      const records = [];
+      for (const r of rows.slice(1)) {
+        const sku = String(r[iId] || '').trim();
+        if (!/^\d+$/.test(sku) || seen.has(sku)) continue;
+        if (iAvl >= 0 && String(r[iAvl] || '').trim().toUpperCase() === 'N') continue;
+        seen.add(sku);
+        records.push({
+          store_id: target, sku,
+          description: String(r[iDesc] || '').trim() || null,
+          unit:  iUnit >= 0 ? String(r[iUnit] || '').trim() || null : null,
+          dept:  iDept >= 0 ? String(r[iDept] || '').trim() || null : null,
+          vendor: iVend >= 0 ? String(r[iVend] || '').trim() || null : null,
+          case_qty: iCase >= 0 && String(r[iCase] || '').trim() ? Number(String(r[iCase]).trim()) || null : null,
+          imported_at: new Date().toISOString(),
+        });
+      }
+      if (!records.length) throw new Error('No product rows found in that file');
+
+      const sb = getSB();
+      // Replace, not merge — the file is the whole truth for this store.
+      const { error: delErr } = await sb.from('store_inventory').delete().eq('store_id', target);
+      if (delErr) throw new Error(delErr.message);
+      for (let i = 0; i < records.length; i += 500) {
+        const { error: insErr } = await sb.from('store_inventory').insert(records.slice(i, i + 500));
+        if (insErr) throw new Error(insErr.message + ' (at row ' + i + ')');
+      }
+      toast.success(records.length + ' products imported for ' +
+        ((STORES.find(s=>s.id===target)||{}).name || target));
+      onDone && onDone();
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Card>
+      <div className="flex items-center gap-3 mb-1">
+        <span className="ttl">Store inventory</span>
+        <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+      </div>
+      <p className="lbl mb-4">
+        Import each store's POS item export (CSV). Item IDs are BCL SKUs, so the
+        list powers the "carried at this store" filter above and stock warnings
+        on monthly features.
+      </p>
+      <div className="flex items-end gap-4 flex-wrap">
+        <StorePicker compact value={target || ''} onChange={setTarget}/>
+        <label className="inline-block">
+          <span className={'inline-flex items-center gap-2 px-3 py-2 text-xs cursor-pointer'}
+                style={{border:'1px solid var(--cy)', color:'var(--cy)',
+                        opacity: busy || !target ? 0.5 : 1}}>
+            <Icon name="up" size={12}/>{busy ? 'Importing…' : 'Import CSV'}
+          </span>
+          <input type="file" accept=".csv,text/csv" className="hidden" disabled={busy || !target}
+                 onChange={e=>{ const f = e.target.files[0]; e.target.value=''; if (f) importFile(f); }}/>
+        </label>
+      </div>
+      <div className="mt-3">
+        {STORES.map(function(st) {
+          const m = (invMeta || {})[st.id];
+          return (
+            <p key={st.id} className="lbl">
+              {st.name.split(' ')[0]}: {m && m.count
+                ? m.count + ' products · imported ' + new Date(m.at).toLocaleDateString(undefined,{day:'numeric',month:'short'})
+                : 'nothing imported yet'}
+            </p>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
 function PriceCheckPage({ isAdmin }) {
   const toast = useToast();
   const [q,       setQ]       = useState('');
   const [cat,     setCat]     = useState('all');
   const [sub,     setSub]     = useState('all');
   const [sort,    setSort]    = useState({ col:'name', dir:'asc' });
+  const [inv,     setInv]     = useState('all');   // 'all' = whole BCL list; store id = carried there
+  const [invMeta, setInvMeta] = useState({});      // store_id -> {count, at}
   const [pageN,   setPageN]   = useState(0);
   const [rows,    setRows]    = useState([]);
   const [total,   setTotal]   = useState(0);
@@ -1844,6 +1964,24 @@ function PriceCheckPage({ isAdmin }) {
   }, []);
   useEffect(function(){ loadMeta(); }, [loadMeta]);
 
+  // Which stores have an inventory loaded, how big, how fresh.
+  const loadInvMeta = useCallback(async function() {
+    const sb = getSB(); if (!sb) return;
+    const next = {};
+    for (const st of STORES) {
+      const { count: n } = await sb.from('store_inventory')
+        .select('sku', { count:'exact', head:true }).eq('store_id', st.id);
+      if (n) {
+        const { data: m } = await sb.from('store_inventory')
+          .select('imported_at').eq('store_id', st.id)
+          .order('imported_at', { ascending:false }).limit(1);
+        next[st.id] = { count: n, at: (m && m[0] && m[0].imported_at) || null };
+      }
+    }
+    setInvMeta(next);
+  }, []);
+  useEffect(function(){ loadInvMeta(); }, [loadInvMeta]);
+
   // One query serves both browsing and searching: filters, sort and paging are
   // all pushed to the database, so flicking through 8,000 rows stays instant.
   useEffect(function() {
@@ -1851,8 +1989,36 @@ function PriceCheckPage({ isAdmin }) {
     let alive = true;
     const t = setTimeout(async function() {
       setBusy(true);
-      let qy = sb.from('bcl_products').select('*', { count:'exact' });
       const term = q.trim();
+
+      // Store mode pages through that store's inventory and joins each page
+      // onto BCL by SKU — .in() with fifty SKUs is fine, with three thousand
+      // it is not, which is why the join happens per page.
+      if (inv !== 'all') {
+        let iq = sb.from('store_inventory').select('*', { count:'exact' }).eq('store_id', inv);
+        if (term.length >= 2) {
+          const digits = term.replace(/[^0-9]/g, '');
+          iq = (digits.length >= 4 && digits.length === term.length)
+            ? iq.eq('sku', digits)
+            : iq.ilike('description', '%' + term.replace(/[%,()]/g, '') + '%');
+        }
+        iq = iq.order('description', { ascending:true })
+               .range(pageN * PER, pageN * PER + PER - 1);
+        const { data: invRows, count: n } = await iq;
+        const skus = (invRows || []).map(r => r.sku);
+        const { data: bcls } = skus.length
+          ? await sb.from('bcl_products').select('*').in('sku', skus)
+          : { data: [] };
+        const bmap = {};
+        (bcls || []).forEach(b => { bmap[b.sku] = b; });
+        const joined = (invRows || []).map(ir => bmap[ir.sku]
+          ? Object.assign({}, bmap[ir.sku], { _inv: ir })
+          : { sku: ir.sku, name: ir.description, price: null, _inv: ir, _noBcl: true });
+        if (alive) { setRows(joined); setTotal(n ?? 0); setBusy(false); }
+        return;
+      }
+
+      let qy = sb.from('bcl_products').select('*', { count:'exact' });
       if (term.length >= 2) {
         const digits = term.replace(/[^0-9]/g, '');
         qy = (digits.length >= 4 && digits.length === term.length)
@@ -1867,10 +2033,10 @@ function PriceCheckPage({ isAdmin }) {
       if (alive) { setRows(data || []); setTotal(n ?? 0); setBusy(false); }
     }, q.trim() ? 250 : 0);
     return function(){ alive = false; clearTimeout(t); };
-  }, [q, cat, sub, sort, pageN, count]);
+  }, [q, cat, sub, sort, pageN, count, inv]);
 
   // Any filter change starts back at page one.
-  useEffect(function(){ setPageN(0); }, [q, cat, sub, sort]);
+  useEffect(function(){ setPageN(0); }, [q, cat, sub, sort, inv]);
 
   const flip = col => setSort(prev => ({
     col,
@@ -1948,20 +2114,35 @@ function PriceCheckPage({ isAdmin }) {
 
         {count > 0 && (
           <React.Fragment>
+            {Object.keys(invMeta).length > 0 && (
+              <div className="mb-4">
+                <StorePicker compact value={inv} onChange={setInv} allLabel="Full BCL list"
+                             stores={STORES.filter(s => invMeta[s.id])}/>
+              </div>
+            )}
             <div className="flex gap-2 flex-wrap items-center mb-4">
               <Input value={q} onChange={e=>setQ(e.target.value)} className="max-w-xs text-sm"
                      placeholder="Search name or SKU…"/>
-              <Select value={cat} className="w-auto text-xs"
-                      onChange={e=>{ setCat(e.target.value); setSub('all'); }}>
-                <option value="all">All categories</option>
-                {cats.map(c=><option key={c} value={c}>{c}</option>)}
-              </Select>
-              {cat !== 'all' && subs[cat] && Object.keys(subs[cat]).filter(Boolean).length > 1 && (
-                <Select value={sub} className="w-auto text-xs" onChange={e=>setSub(e.target.value)}>
-                  <option value="all">All {cat.toLowerCase()}</option>
-                  {Object.keys(subs[cat]).filter(Boolean).sort().map(x=>
-                    <option key={x} value={x}>{x}</option>)}
-                </Select>
+              {inv === 'all' && (
+                <React.Fragment>
+                  <Select value={cat} className="w-auto text-xs"
+                          onChange={e=>{ setCat(e.target.value); setSub('all'); }}>
+                    <option value="all">All categories</option>
+                    {cats.map(c=><option key={c} value={c}>{c}</option>)}
+                  </Select>
+                  {cat !== 'all' && subs[cat] && Object.keys(subs[cat]).filter(Boolean).length > 1 && (
+                    <Select value={sub} className="w-auto text-xs" onChange={e=>setSub(e.target.value)}>
+                      <option value="all">All {cat.toLowerCase()}</option>
+                      {Object.keys(subs[cat]).filter(Boolean).sort().map(x=>
+                        <option key={x} value={x}>{x}</option>)}
+                    </Select>
+                  )}
+                </React.Fragment>
+              )}
+              {inv !== 'all' && (
+                <span className="lbl">
+                  carried at {(STORES.find(s=>s.id===inv)||{}).name || inv} · sorted by name
+                </span>
               )}
               <span className="mono text-xs ml-auto self-center" style={{color:'var(--txt3)'}}>
                 {busy ? '…' : total + ' product' + (total===1?'':'s')}
@@ -1998,10 +2179,14 @@ function PriceCheckPage({ isAdmin }) {
                           <p className="lbl">SKU {r.sku}{r.country ? ' · ' + r.country : ''}</p>
                         </td>
                         <td className="text-xs" style={{padding:'7px 8px', color:'var(--txt2)', whiteSpace:'nowrap'}}>
-                          {bclUnitLabel(r)}
+                          {r._noBcl ? ((r._inv && r._inv.unit) || '') : bclUnitLabel(r)}
                         </td>
                         <td className="text-xs" style={{padding:'7px 8px', color:'var(--txt2)'}}>
-                          {r.subcategory || r.category || ''}
+                          {r._noBcl
+                            ? <span className="lbl" title="Direct-vendor product — not on the BCL price list">
+                                {(r._inv && r._inv.vendor) || 'not on BCL list'}
+                              </span>
+                            : (r.subcategory || r.category || '')}
                         </td>
                         <td className="mono text-xs" style={{padding:'7px 8px', color:'var(--txt2)'}}>
                           {r.alcohol_pct != null ? r.alcohol_pct + '%' : ''}
@@ -2019,6 +2204,8 @@ function PriceCheckPage({ isAdmin }) {
                                  <span className="lbl"> reg {money(lv.regular)}</span>}
                                <span className="lbl block">as of {lv.at}</span>
                              </span>
+                           ) : r._noBcl ? (
+                             <span className="lbl">—</span>
                            ) : (
                              <Button size="sm" variant="ghost" onClick={()=>checkLive(r.sku)}>Check</Button>
                            )}
@@ -2044,6 +2231,8 @@ function PriceCheckPage({ isAdmin }) {
           </React.Fragment>
         )}
       </Card>
+
+      {isAdmin && <StoreInventoryImport invMeta={invMeta} onDone={loadInvMeta}/>}
     </div>
   );
 }
@@ -5585,6 +5774,21 @@ function FeaturesPage({ isAdmin, myStores }) {
   const { campaigns } = useCampaigns();
   const bclMap = useBclPrices(rows, products);
 
+  // The store's inventory SKUs, when an inventory has been imported — powers
+  // "not in the stock list" warnings on rows. null = no inventory loaded, so
+  // no warnings (absence of data is not evidence of absence from shelves).
+  const [invSkus, setInvSkus] = useState(null);
+  useEffect(function() {
+    const sb = getSB(); if (!sb || !storeId) { setInvSkus(null); return; }
+    let alive = true;
+    sb.from('store_inventory').select('sku').eq('store_id', storeId).range(0, 9999)
+      .then(function(res) {
+        if (!alive) return;
+        setInvSkus(res.data && res.data.length ? new Set(res.data.map(r=>r.sku)) : null);
+      });
+    return function(){ alive = false; };
+  }, [storeId]);
+
   // Live BCL prices, fetched from the public catalogue as rows are worked on.
   // One request per name commit — typing doesn't fire anything until the field
   // is left — and results are kept for the session so re-renders cost nothing.
@@ -5840,6 +6044,12 @@ function FeaturesPage({ isAdmin, myStores }) {
                           <td style={{padding:'2px 5px', width:'86px'}}>
                             <BclCell feature={r} bcl={bclMap[r.id]} live={liveMap[r.id]}
                                      onCheck={()=>checkLive(r)}/>
+                            {invSkus && bclMap[r.id] && !invSkus.has(String(bclMap[r.id].sku)) && (
+                              <span className="lbl block" style={{color:'var(--amb)'}}
+                                    title="This SKU is not in the store's imported inventory — check it's actually on the shelf before featuring it">
+                                not in stock list
+                              </span>
+                            )}
                           </td>
                           <td style={{padding:'2px 5px', width:'130px'}}>
                             <Select value={r.campaign_id || ''} className="text-xs"
@@ -13050,6 +13260,266 @@ function StoreAnalytics({ visibleStores }) {
 }
 
 // ─────────────────────────────────────────────
+// SOCIAL INBOX
+// ─────────────────────────────────────────────
+// Everything people say to a brand, in one place: comments on FB posts and
+// IG media, Messenger threads, IG DMs — with inline replies. Reads use the
+// user-derived page token; messaging scopes may need a token regeneration,
+// and the edge function says so plainly when they do.
+function timeAgo(iso) {
+  const s = Math.max(1, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return s + 's';
+  if (s < 3600) return Math.round(s/60) + 'm';
+  if (s < 86400) return Math.round(s/3600) + 'h';
+  if (s < 86400*30) return Math.round(s/86400) + 'd';
+  return new Date(iso).toLocaleDateString('en-CA', { day:'numeric', month:'short' });
+}
+
+function InboxReplyBox({ placeholder, onSend, busy }) {
+  const [text, setText] = useState('');
+  return (
+    <div className="flex gap-2 mt-1.5">
+      <Input value={text} onChange={e=>setText(e.target.value)} className="text-xs flex-1"
+             placeholder={placeholder || 'Reply…'}
+             onKeyDown={e=>{ if (e.key==='Enter' && text.trim() && !busy) { onSend(text.trim()); setText(''); } }}/>
+      <Button size="sm" disabled={!text.trim() || busy} loading={busy}
+              onClick={()=>{ onSend(text.trim()); setText(''); }}>
+        <Icon name="send" size={12}/>
+      </Button>
+    </div>
+  );
+}
+
+function InboxCommentsView({ storeId }) {
+  const toast = useToast();
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const [openReply, setOpenReply] = useState(null);   // comment id with box open
+
+  const load = useCallback(async function() {
+    setData(null);
+    try { setData(await callEdge('meta-social', 'inboxComments', { storeId })); }
+    catch(e) { setData({ facebook:[], instagram:[], error:e.message }); }
+  }, [storeId]);
+  useEffect(function(){ load(); }, [load]);
+
+  const reply = async function(commentId, platform, text) {
+    setBusy(commentId);
+    try {
+      await callEdge('meta-social', 'inboxReplyComment', { storeId, commentId, platform, message: text });
+      toast.success('Reply posted');
+      setOpenReply(null);
+      await load();
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(null); }
+  };
+
+  if (data === null) return <p className="lbl text-center py-8">Loading comments…</p>;
+  if (data.error) return <p className="text-xs py-4" style={{color:'var(--amb)'}}>{data.error}</p>;
+  const fb = data.facebook || [], ig = data.instagram || [];
+  if (!fb.length && !ig.length) return <p className="lbl text-center py-8">No comments on recent posts.</p>;
+
+  const thread = function(c, platform, pageOwnId) {
+    const mine = platform === 'facebook'
+      ? (c.from && c.from.id === data.pageId)
+      : false;   // IG replies from the account carry the account username
+    const author = platform === 'facebook' ? ((c.from && c.from.name) || 'Someone') : ('@' + c.username);
+    const body = platform === 'facebook' ? c.message : c.text;
+    const when = c.created_time || c.timestamp;
+    const kids = platform === 'facebook' ? ((c.comments && c.comments.data) || []) : ((c.replies && c.replies.data) || []);
+    return (
+      <div key={c.id} className="py-1.5" style={{borderTop:'1px solid rgba(56,224,240,.06)'}}>
+        <div className="flex items-baseline gap-2">
+          <span className="text-xs font-semibold" style={{color: mine ? 'var(--cy)' : 'var(--txt)'}}>{author}</span>
+          <span className="lbl">{timeAgo(when)}</span>
+          <span className="flex-1"/>
+          <button className="lbl" style={{color:'var(--cy)'}}
+                  onClick={()=>setOpenReply(openReply === c.id ? null : c.id)}>reply</button>
+        </div>
+        <p className="text-xs" style={{color:'var(--txt2)', whiteSpace:'pre-wrap'}}>{body}</p>
+        {kids.map(function(k) {
+          const kMine = platform === 'facebook' ? (k.from && k.from.id === data.pageId) : false;
+          return (
+            <div key={k.id} className="mt-1 pl-3" style={{borderLeft:'2px solid var(--line)'}}>
+              <span className="text-xs font-semibold mr-2" style={{color: kMine ? 'var(--cy)' : 'var(--txt)'}}>
+                {platform === 'facebook' ? ((k.from && k.from.name) || 'Someone') : ('@' + k.username)}
+              </span>
+              <span className="lbl mr-2">{timeAgo(k.created_time || k.timestamp)}</span>
+              <span className="text-xs" style={{color:'var(--txt2)'}}>{platform === 'facebook' ? k.message : k.text}</span>
+            </div>
+          );
+        })}
+        {openReply === c.id && (
+          <InboxReplyBox busy={busy === c.id} placeholder="Reply as the store…"
+                         onSend={t=>reply(c.id, platform, t)}/>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div className="space-y-3">
+      {fb.map(function(p) {
+        return (
+          <div key={p.id} className="p-3" style={{border:'1px solid var(--line)'}}>
+            <div className="flex items-center gap-2 mb-1">
+              <Icon name="fb" size={12} style={{color:'var(--cy-dim)'}}/>
+              <span className="text-xs truncate flex-1" style={{color:'var(--txt3)'}}>
+                {(p.message || '(photo post)').slice(0, 90)}
+              </span>
+              <span className="lbl">{timeAgo(p.created_time)}</span>
+              {p.permalink_url &&
+                <a className="lbl" style={{color:'var(--cy)'}} href={p.permalink_url}
+                   target="_blank" rel="noopener">open</a>}
+            </div>
+            {((p.comments && p.comments.data) || []).map(c => thread(c, 'facebook'))}
+          </div>
+        );
+      })}
+      {ig.map(function(m) {
+        return (
+          <div key={m.id} className="p-3" style={{border:'1px solid var(--line)'}}>
+            <div className="flex items-center gap-2 mb-1">
+              <Icon name="ig" size={12} style={{color:'var(--cy-dim)'}}/>
+              <span className="text-xs truncate flex-1" style={{color:'var(--txt3)'}}>
+                {(m.caption || '(no caption)').slice(0, 90)}
+              </span>
+              <span className="lbl">{timeAgo(m.timestamp)}</span>
+              {m.permalink &&
+                <a className="lbl" style={{color:'var(--cy)'}} href={m.permalink}
+                   target="_blank" rel="noopener">open</a>}
+            </div>
+            {((m.comments && m.comments.data) || []).map(c => thread(c, 'instagram'))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function InboxMessagesView({ storeId, platform }) {
+  const toast = useToast();
+  const [data, setData] = useState(null);
+  const [sel,  setSel]  = useState(null);   // conversation id
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async function() {
+    setData(null); setSel(null);
+    try { setData(await callEdge('meta-social', 'inboxConversations', { storeId, platform })); }
+    catch(e) { setData({ conversations:[], error:e.message }); }
+  }, [storeId, platform]);
+  useEffect(function(){ load(); }, [load]);
+
+  if (data === null) return <p className="lbl text-center py-8">Loading conversations…</p>;
+  if (data.error) return <p className="text-xs py-4" style={{color:'var(--amb)'}}>{data.error}</p>;
+  const convos = data.conversations || [];
+  if (!convos.length) return <p className="lbl text-center py-8">No conversations yet.</p>;
+
+  const cur = convos.find(c => c.id === sel) || null;
+  const other = function(c) {
+    const ps = (c.participants && c.participants.data) || [];
+    const o = ps.find(p => p.id !== data.pageId);
+    return (o && o.name) || 'Customer';
+  };
+
+  const send = async function(text) {
+    if (!cur) return;
+    const ps = (cur.participants && cur.participants.data) || [];
+    const o = ps.find(p => p.id !== data.pageId);
+    if (!o) { toast.error('Could not work out who to reply to'); return; }
+    setBusy(true);
+    try {
+      await callEdge('meta-social', 'inboxSendMessage', { storeId, recipientId: o.id, message: text });
+      toast.success('Sent');
+      await load();
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="grid gap-3" style={{gridTemplateColumns:'minmax(180px, 260px) 1fr'}}>
+      <div style={{border:'1px solid var(--line)', maxHeight:'480px', overflowY:'auto'}}>
+        {convos.map(function(c) {
+          const on = sel === c.id;
+          const unread = (c.unread_count || 0) > 0;
+          return (
+            <button key={c.id} onClick={()=>setSel(c.id)} className="block w-full text-left p-2.5"
+              style={{borderBottom:'1px solid rgba(56,224,240,.07)',
+                      background: on ? 'var(--cy-glow)' : 'transparent'}}>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold truncate"
+                      style={{color: unread ? 'var(--cy)' : 'var(--txt)'}}>{other(c)}</span>
+                {unread && <span className="lbl" style={{color:'var(--cy)'}}>{c.unread_count}</span>}
+                <span className="flex-1"/>
+                <span className="lbl">{timeAgo(c.updated_time)}</span>
+              </div>
+              <p className="lbl truncate">{c.snippet}</p>
+            </button>
+          );
+        })}
+      </div>
+      <div style={{border:'1px solid var(--line)'}} className="p-3 flex flex-col">
+        {!cur ? <p className="lbl text-center py-8">Pick a conversation.</p> : (
+          <React.Fragment>
+            <div className="flex-1" style={{maxHeight:'400px', overflowY:'auto'}}>
+              {((cur.messages && cur.messages.data) || []).slice().reverse().map(function(m) {
+                const mine = m.from && m.from.id === data.pageId;
+                return (
+                  <div key={m.id} className="mb-1.5 flex" style={{justifyContent: mine ? 'flex-end' : 'flex-start'}}>
+                    <div className="px-2.5 py-1.5" style={{
+                      maxWidth:'75%',
+                      background: mine ? 'var(--cy-glow)' : 'rgba(4,8,16,.6)',
+                      border:'1px solid ' + (mine ? 'var(--cy)' : 'var(--line)')}}>
+                      <p className="text-xs" style={{color:'var(--txt)', whiteSpace:'pre-wrap'}}>{m.message}</p>
+                      <p className="lbl" style={{textAlign: mine ? 'right' : 'left'}}>{timeAgo(m.created_time)}</p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {cur.can_reply === false
+              ? <p className="lbl mt-2">Meta has closed the reply window for this conversation.</p>
+              : <InboxReplyBox busy={busy} placeholder={'Message ' + other(cur) + '…'} onSend={send}/>}
+          </React.Fragment>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SocialInboxPanel({ visibleStores }) {
+  const [storeId, setStoreId] = useState((visibleStores[0] || {}).id);
+  const [mode,    setMode]    = useState('comments');   // comments | messenger | igdm
+  const [nonce,   setNonce]   = useState(0);
+  return (
+    <Card>
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <span className="ttl">Inbox</span>
+        <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+        <div className="flex" style={{border:'1px solid var(--line)'}}>
+          {[['comments','Comments'],['messenger','Messenger'],['igdm','IG DMs']].map(function(o) {
+            const on = mode === o[0];
+            return (
+              <button key={o[0]} onClick={()=>setMode(o[0])} className="px-3 py-1.5 text-xs"
+                style={{ background:on?'var(--cy-glow)':'transparent', color:on?'var(--cy)':'var(--txt2)' }}>
+                {o[1]}
+              </button>
+            );
+          })}
+        </div>
+        <Button size="sm" variant="secondary" onClick={()=>setNonce(n=>n+1)}>Refresh</Button>
+      </div>
+      <div className="mb-4">
+        <StorePicker compact value={storeId} onChange={setStoreId} stores={visibleStores}/>
+      </div>
+      {mode === 'comments'  && <InboxCommentsView key={'c'+storeId+nonce} storeId={storeId}/>}
+      {mode === 'messenger' && <InboxMessagesView key={'m'+storeId+nonce} storeId={storeId} platform="messenger"/>}
+      {mode === 'igdm'      && <InboxMessagesView key={'i'+storeId+nonce} storeId={storeId} platform="instagram"/>}
+    </Card>
+  );
+}
+
+// ─────────────────────────────────────────────
 // PAGE CONTAINERS
 // ─────────────────────────────────────────────
 function PostsPage({ settings, userStoreIds, isAdmin }) {
@@ -13068,7 +13538,7 @@ function PostsPage({ settings, userStoreIds, isAdmin }) {
   return (
     <div>
       <div className="flex border-b border-gray-200 dark:border-gray-700 mb-5">
-        {[{id:'compose',icon:'edit', label:'Compose'},{id:'history',icon:'note', label:'History'},{id:'scheduled',icon:'cal', label:'Scheduled'},{id:'images',icon:'image', label:'Image Generator'},{id:'analytics',icon:'chart', label:'Analytics'}].map(t=>(
+        {[{id:'compose',icon:'edit', label:'Compose'},{id:'inbox',icon:'comment', label:'Inbox'},{id:'history',icon:'note', label:'History'},{id:'scheduled',icon:'cal', label:'Scheduled'},{id:'images',icon:'image', label:'Image Generator'},{id:'analytics',icon:'chart', label:'Analytics'}].map(t=>(
           <button key={t.id} onClick={()=>setTab(t.id)} className={`px-4 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}>
             <Icon name={t.icon} size={14} className="mr-2"/>{t.label}{t.id==='compose'&&pendingImage?' \u2022':''}
           </button>
@@ -13080,6 +13550,7 @@ function PostsPage({ settings, userStoreIds, isAdmin }) {
           <PostHistory  settings={settings} visibleStores={visibleStores}/>
         </div>
       )}
+      {tab==='inbox'      && <SocialInboxPanel visibleStores={visibleStores}/>}
       {tab==='scheduled'  && <ScheduledPostsPanel/>}
       {tab==='history'    && <PostHistory settings={settings} visibleStores={visibleStores}/>}
       {tab==='images'     && <ImageGenerator settings={settings} onUseInPost={handleUseInPost}/>}

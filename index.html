@@ -5203,18 +5203,31 @@ function StorePicksCard({ storeId, storeName, canEdit }) {
 // A small labelled dropdown for toolbars that would otherwise sprawl.
 function ToolMenu({ label, icon, items }) {
   const [open, setOpen] = useState(false);
+  const [pos,  setPos]  = useState(null);
+  const btnRef = useRef(null);
   const usable = items.filter(Boolean);
   if (!usable.length) return null;
+  // The menu is portalled to the body: cards use a clip-path, which silently
+  // clips any absolutely positioned child that pokes past the card's edge —
+  // the same trap that once ate the draggable dialogs.
+  const toggle = function() {
+    if (!open && btnRef.current) {
+      const r = btnRef.current.getBoundingClientRect();
+      setPos({ top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right) });
+    }
+    setOpen(v=>!v);
+  };
   return (
-    <div className="relative inline-block">
-      <Button size="sm" variant="outline" onClick={()=>setOpen(v=>!v)}>
+    <div className="inline-block" ref={btnRef}>
+      <Button size="sm" variant="outline" onClick={toggle}>
         <Icon name={icon}/> {label} <Icon name="down" size={9} style={{opacity:.6}}/>
       </Button>
-      {open && (
-        <React.Fragment>
-          <div className="fixed inset-0 z-[120]" onClick={()=>setOpen(false)}/>
-          <div className="absolute right-0 top-full mt-1 z-[130] min-w-[190px] py-1"
-               style={{background:'var(--bg2, #0a121f)', border:'1px solid var(--line)',
+      {open && pos && (
+        <Portal>
+          <div className="fixed inset-0 z-[240]" onClick={()=>setOpen(false)}/>
+          <div className="fixed z-[250] min-w-[190px] py-1"
+               style={{top: pos.top + 'px', right: pos.right + 'px',
+                       background:'#0a121f', border:'1px solid var(--line)',
                        boxShadow:'0 10px 30px rgba(0,0,0,.5)'}}>
             {usable.map(function(it, i) {
               if (it.divider) return <div key={i} className="my-1" style={{borderTop:'1px solid var(--line)'}}/>;
@@ -5228,7 +5241,7 @@ function ToolMenu({ label, icon, items }) {
               );
             })}
           </div>
-        </React.Fragment>
+        </Portal>
       )}
     </div>
   );

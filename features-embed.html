@@ -29,9 +29,20 @@
   /* Uniform cards: the photo box is always square, the name always gets two
      lines of room, the size line one, and the price sits at the same height
      on every card — nothing shifts with content length. Oversized images
-     scale down to fit the box; they never enlarge it. */
-  .card { border: 1px solid #e5e5e5; border-radius: 10px; overflow: hidden;
-          background: #fff; display: flex; flex-direction: column; }
+     scale down to fit the box; they never enlarge it.
+
+     Cards with a cocktail flip over: front is the product, back is the
+     recipe on a brand-coloured card. */
+  .card { perspective: 1200px; position: relative; }
+  .flip { position: relative; height: 100%; transition: transform .55s;
+          transform-style: preserve-3d; }
+  .card.on .flip { transform: rotateY(180deg); }
+  .face { border: 1px solid #e5e5e5; border-radius: 10px; overflow: hidden;
+          background: #fff; display: flex; flex-direction: column;
+          -webkit-backface-visibility: hidden; backface-visibility: hidden; }
+  .face.front { position: relative; height: 100%; }
+  .face.back { position: absolute; inset: 0; transform: rotateY(180deg);
+               border: 0; color: #fff; padding: 14px; overflow-y: auto; }
   .card .ph { aspect-ratio: 1; background: #fafafa; position: relative; flex: none; }
   .card img { position: absolute; inset: 0; margin: auto; z-index: 1;
               max-width: 88%; max-height: 88%; width: auto; height: auto; object-fit: contain; }
@@ -54,17 +65,20 @@
   .save small { display: block; font-size: 10px; font-weight: 700; opacity: .92; }
   .ft { text-align: center; color: var(--mut); font-size: 11px; margin: 16px 0 4px; }
   .empty { text-align: center; color: var(--mut); padding: 40px 0; }
-  /* Cocktail idea, tucked under the price on cards that have one. */
-  .rx { border-top: 1px dashed #e5e5e5; margin-top: 2px; }
-  .rx summary { list-style: none; cursor: pointer; padding: 7px 0 8px;
-                font-size: 12px; font-weight: 600; color: var(--accent); }
-  .rx summary::-webkit-details-marker { display: none; }
-  .rx summary::before { content: '🍸 '; }
-  .rx .body { font-size: 12px; color: var(--ink); padding-bottom: 10px; }
-  .rx .body em { color: var(--mut); display: block; margin-bottom: 6px; }
-  .rx ul { margin: 0 0 6px 16px; padding: 0; }
-  .rx ol { margin: 0 0 0 16px; padding: 0; }
-  .rx li { margin-bottom: 2px; }
+  /* Cocktail flip trigger under the price, and the recipe back face. */
+  .rxbtn { border-top: 1px dashed #e5e5e5; margin-top: 2px; padding: 7px 0 8px;
+           font-size: 12px; font-weight: 600; color: var(--accent);
+           background: none; border-left: 0; border-right: 0; border-bottom: 0;
+           cursor: pointer; text-align: left; font-family: inherit; }
+  .rxbtn::before { content: '🍸 '; }
+  .back .rname { font-size: 17px; font-weight: 800; line-height: 1.2; margin: 2px 18px 4px 0; }
+  .back .rblurb { font-size: 11px; font-style: italic; margin-bottom: 8px; }
+  .back ul { margin: 0 0 8px 16px; padding: 0; font-size: 12px; }
+  .back ol { margin: 0 0 8px 16px; padding: 0; font-size: 11px; }
+  .back li { margin-bottom: 3px; }
+  .back .rserve { font-size: 11px; font-style: italic; margin-top: auto; }
+  .back .close { position: absolute; top: 8px; right: 10px; background: none; border: 0;
+                 color: inherit; font-size: 16px; cursor: pointer; opacity: .8; }
 </style>
 </head>
 <body>
@@ -133,33 +147,50 @@
             + '<span style="color:' + bs + ';font-size:12px;font-style:italic">Too good to wait for a photo</span>'
             + '</div>'
           : '<img loading="lazy" src="' + esc(it.image) + '" alt="' + esc(it.name) + '">';
-        h += '<div class="card"><div class="ph">' + ribbon + photo + '</div>'
+        var front = '<div class="face front"><div class="ph">' + ribbon + photo + '</div>'
           + '<div class="tx"><span class="nm">' + esc(it.name) + '</span>'
           + '<span class="sz">' + esc(it.size || '') + '</span>'
           + '<span class="pr">'
           + (it.sale != null ? '<span class="sale">' + money(it.sale) + '</span>' : '')
           + (it.reg != null && it.sale != null && Number(it.reg) > Number(it.sale)
               ? '<span class="reg">was <s>' + money(it.reg) + '</s></span>' : '')
-          + '</span>';
+          + '</span>'
+          + (it.recipe && it.recipe.name
+              ? '<button class="rxbtn" data-flip>Cocktail idea: ' + esc(it.recipe.name) + '</button>'
+              : '')
+          + '</div></div>';
+
+        var back = '';
         if (it.recipe && it.recipe.name) {
           var rx = it.recipe;
-          h += '<details class="rx"><summary>Cocktail idea: ' + esc(rx.name) + '</summary>'
-            + '<div class="body">'
-            + (rx.blurb ? '<em>' + esc(rx.blurb) + '</em>' : '')
+          back = '<div class="face back" style="background:' + bp + '">'
+            + '<button class="close" data-flip aria-label="Back to the product">✕</button>'
+            + '<span style="color:' + bs + ';font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase">'
+            + esc(it.name) + '</span>'
+            + '<p class="rname">' + esc(rx.name) + '</p>'
+            + (rx.blurb ? '<p class="rblurb" style="color:' + bs + '">' + esc(rx.blurb) + '</p>' : '')
             + '<ul>' + (rx.ingredients || []).map(function (i) {
                 return '<li>' + esc((i.amount ? i.amount + ' ' : '') + i.item) + '</li>';
               }).join('') + '</ul>'
             + '<ol>' + (rx.method || []).map(function (s) {
                 return '<li>' + esc(s) + '</li>';
               }).join('') + '</ol>'
-            + (rx.glass ? '<em style="margin-top:6px">Serve in a ' + esc(rx.glass)
-                + (rx.garnish ? ' · ' + esc(rx.garnish) : '') + '</em>' : '')
-            + '</div></details>';
+            + (rx.glass ? '<p class="rserve" style="color:' + bs + '">Serve in a ' + esc(rx.glass)
+                + (rx.garnish ? ' · ' + esc(rx.garnish) : '') + '</p>' : '')
+            + '</div>';
         }
-        h += '</div></div>';
+
+        h += '<div class="card"><div class="flip">' + front + back + '</div></div>';
       });
       h += '</div><p class="ft">' + esc(d.footnote || 'Prices exclude tax & deposit — while supplies last.') + '</p>';
       app.innerHTML = h;
+      // One listener flips any card whose trigger (front line or back ✕) is
+      // clicked. The back face is absolutely positioned over the front, so
+      // the grid never reflows — the card just turns over.
+      app.addEventListener('click', function (e) {
+        var t = e.target.closest('[data-flip]');
+        if (t) { var c = t.closest('.card'); if (c) c.classList.toggle('on'); }
+      });
       window.__reportHeight();
       setTimeout(window.__reportHeight, 600);
     })

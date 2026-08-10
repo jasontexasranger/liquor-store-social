@@ -29,16 +29,23 @@
   .card { border: 1px solid #e5e5e5; border-radius: 10px; overflow: hidden;
           background: #fff; display: flex; flex-direction: column; }
   .card .ph { aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
-              background: #fafafa; }
+              background: #fafafa; position: relative; }
   .card img { max-width: 88%; max-height: 88%; object-fit: contain; }
   .card .tx { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 2px; flex: 1; }
   .nm { font-weight: 600; font-size: 14px; line-height: 1.25; }
   .sz { color: var(--mut); font-size: 12px; }
   .pr { margin-top: auto; padding-top: 6px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
-  .sale { color: var(--accent); font-size: 22px; font-weight: 700; }
-  .reg  { color: var(--mut); font-size: 13px; text-decoration: line-through; }
-  .save { background: var(--accent); color: #fff; font-size: 11px; font-weight: 700;
-          padding: 2px 7px; border-radius: 99px; }
+  .sale { color: var(--accent); font-size: 24px; font-weight: 800; }
+  .reg  { color: var(--mut); font-size: 13px; }
+  .reg s { text-decoration: line-through; }
+  /* The saving is the story — a ribbon on the photo, where the eye already
+     is, not a footnote under the price. */
+  .save { position: absolute; top: 10px; right: -1px;
+          background: var(--accent); color: #fff;
+          font-size: 15px; font-weight: 800; letter-spacing: .02em;
+          padding: 6px 12px 6px 14px; border-radius: 6px 0 0 6px;
+          box-shadow: 0 2px 6px rgba(0,0,0,.18); line-height: 1.15; text-align: right; }
+  .save small { display: block; font-size: 10px; font-weight: 700; opacity: .92; }
   .ft { text-align: center; color: var(--mut); font-size: 11px; margin: 16px 0 4px; }
   .empty { text-align: center; color: var(--mut); padding: 40px 0; }
 </style>
@@ -77,15 +84,23 @@
       var h = '<div class="hdr"><h2>' + esc(d.title || 'Monthly Features') + '</h2>'
         + (d.dates ? '<p>' + esc(d.dates) + '</p>' : '') + '</div><div class="grid">';
       items.forEach(function (it) {
-        h += '<div class="card"><div class="ph"><img loading="lazy" src="' + esc(it.image) + '" alt="' + esc(it.name) + '"></div>'
+        // The saving leads; a percentage joins it when it reads bigger than
+        // the dollars do (everything here is under $100, so it usually does).
+        var ribbon = '';
+        if (it.savings != null && Number(it.savings) > 0) {
+          var pct = (it.reg && Number(it.reg) > 0)
+            ? Math.round(Number(it.savings) / Number(it.reg) * 100) : 0;
+          ribbon = '<span class="save">SAVE ' + money(it.savings).replace('.00', '')
+            + (pct >= 10 ? '<small>' + pct + '% OFF</small>' : '') + '</span>';
+        }
+        h += '<div class="card"><div class="ph">' + ribbon
+          + '<img loading="lazy" src="' + esc(it.image) + '" alt="' + esc(it.name) + '"></div>'
           + '<div class="tx"><span class="nm">' + esc(it.name) + '</span>'
           + (it.size ? '<span class="sz">' + esc(it.size) + '</span>' : '')
           + '<span class="pr">'
           + (it.sale != null ? '<span class="sale">' + money(it.sale) + '</span>' : '')
           + (it.reg != null && it.sale != null && Number(it.reg) > Number(it.sale)
-              ? '<span class="reg">' + money(it.reg) + '</span>' : '')
-          + (it.savings != null && Number(it.savings) > 0
-              ? '<span class="save">SAVE ' + money(it.savings) + '</span>' : '')
+              ? '<span class="reg">was <s>' + money(it.reg) + '</s></span>' : '')
           + '</span></div></div>';
       });
       h += '</div><p class="ft">' + esc(d.footnote || 'Prices exclude tax & deposit — while supplies last.') + '</p>';

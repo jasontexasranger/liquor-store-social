@@ -4991,17 +4991,21 @@ function WebsitePushModal({ storeId, storeName, period, periodRow, rows, product
       + '<p style="color:#757575;font-size:14px;margin:4px 0 0">' + esc(d.dates) + '</p></div>'
       + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:14px;margin-top:18px">';
     d.items.forEach(function(it) {
+      const pct = (it.savings > 0 && it.reg > 0) ? Math.round(it.savings / it.reg * 100) : 0;
+      const ribbon = it.savings > 0
+        ? '<span style="position:absolute;top:10px;right:-1px;background:#b42a2a;color:#fff;font-size:15px;font-weight:800;padding:6px 12px 6px 14px;border-radius:6px 0 0 6px;box-shadow:0 2px 6px rgba(0,0,0,.18);line-height:1.15;text-align:right">SAVE ' + money(it.savings).replace('.00','')
+          + (pct >= 10 ? '<small style="display:block;font-size:10px;font-weight:700;opacity:.92">' + pct + '% OFF</small>' : '')
+          + '</span>'
+        : '';
       h += '<div style="border:1px solid #e5e5e5;border-radius:10px;overflow:hidden;background:#fff">'
-        + '<div style="aspect-ratio:1;display:flex;align-items:center;justify-content:center;background:#fafafa">'
+        + '<div style="aspect-ratio:1;display:flex;align-items:center;justify-content:center;background:#fafafa;position:relative">' + ribbon
         + '<img loading="lazy" src="' + esc(it.image) + '" alt="' + esc(it.name) + '" style="max-width:88%;max-height:88%;object-fit:contain"></div>'
         + '<div style="padding:10px 12px 12px"><div style="font-weight:600;font-size:14px">' + esc(it.name) + '</div>'
         + (it.size ? '<div style="color:#757575;font-size:12px">' + esc(it.size) + '</div>' : '')
         + '<div style="margin-top:6px">'
-        + (it.sale != null ? '<span style="color:#b42a2a;font-size:22px;font-weight:700">' + money(it.sale) + '</span> ' : '')
+        + (it.sale != null ? '<span style="color:#b42a2a;font-size:24px;font-weight:800">' + money(it.sale) + '</span> ' : '')
         + (it.reg != null && it.sale != null && it.reg > it.sale
-            ? '<span style="color:#757575;font-size:13px;text-decoration:line-through">' + money(it.reg) + '</span> ' : '')
-        + (it.savings > 0
-            ? '<span style="background:#b42a2a;color:#fff;font-size:11px;font-weight:700;padding:2px 7px;border-radius:99px">SAVE ' + money(it.savings) + '</span>' : '')
+            ? '<span style="color:#757575;font-size:13px">was <s>' + money(it.reg) + '</s></span>' : '')
         + '</div></div></div>';
     });
     h += '</div><p style="text-align:center;color:#757575;font-size:11px;margin:16px 0 4px">' + esc(d.footnote) + '</p></div>';

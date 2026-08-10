@@ -4889,6 +4889,210 @@ function SignagePushModal({ storeId, storeName, period, periodRow, onClose }) {
   );
 }
 
+// ─────────────────────────────────────────────
+// WEBSITE PUSH
+// ─────────────────────────────────────────────
+// The month's features, published to the store's website. Two shapes from
+// one snapshot: an iframe embed that updates itself on every push (Duda's
+// HTML/embed widget, added once), and a static HTML block for pasting when
+// someone wants the markup in the page itself. Only rows whose product has a
+// hosted photo — or a generated creative — make the cut; a features grid
+// with grey squares sells nothing.
+function WebsitePushModal({ storeId, storeName, period, periodRow, rows, products, onClose }) {
+  const dragPanel = useDragPanel();
+  const toast = useToast();
+  const { creatives } = useCreatives();
+  const [busy, setBusy] = useState(false);
+  const [published, setPublished] = useState(false);
+
+  const runR = periodRange(period, periodRow);
+  const dates = 'Prices run ' + rangeLabel(runR);
+  const prodOf = id => products.find(p => p.id === id) || null;
+
+  // Public URL for each row: the product's hosted photo first, else the
+  // feature's generated creative. Base64-only photos can't go on a website.
+  const imageFor = function(r) {
+    const prod = prodOf(r.product_id);
+    if (prod && prod.image_url) return prod.image_url;
+    const cr = creatives.find(c => c.feature_id === r.id && c.public_url);
+    return cr ? cr.public_url : null;
+  };
+  const withImage = rows
+    .map(r => ({ r, image: imageFor(r) }))
+    .filter(x => x.image && x.r.name);
+  const excluded = rows.filter(r => r.name && !imageFor(r));
+
+  // Which of those actually go on the site. The choice is stored on the
+  // feature row itself (on_website), so it survives closing this dialog and
+  // pre-ticks the same way next time.
+  const [webOn, setWebOn] = useState(function() {
+    const m = {};
+    withImage.forEach(x => { m[x.r.id] = x.r.on_website !== false; });
+    return m;
+  });
+  const toggleWeb = async function(row) {
+    const next = !webOn[row.id];
+    setWebOn(prev => Object.assign({}, prev, { [row.id]: next }));
+    try {
+      const { error } = await getSB().from('features')
+        .update({ on_website: next }).eq('id', row.id);
+      if (error) throw new Error(error.message);
+    } catch(e) {
+      setWebOn(prev => Object.assign({}, prev, { [row.id]: !next }));
+      toast.error(e.message);
+    }
+  };
+  const eligible = withImage.filter(x => webOn[x.r.id]);
+
+  const snapshot = () => ({
+    store: storeId,
+    title: storeName.replace(/ Liquor Store.*$/i, '') + ' Monthly Features',
+    period, dates,
+    updated_at: new Date().toISOString(),
+    footnote: 'Prices exclude tax & deposit — while supplies last.',
+    items: eligible.map(function(x) {
+      return {
+        name: x.r.name, size: x.r.size || '',
+        reg: x.r.reg_price != null ? Number(x.r.reg_price) : null,
+        sale: x.r.sale_price != null ? Number(x.r.sale_price) : null,
+        savings: x.r.savings != null ? Number(x.r.savings) : null,
+        image: x.image,
+      };
+    }),
+  });
+
+  const embedUrl = 'https://lrs.thesuenocompany.com/features-embed.html?store=' + encodeURIComponent(storeId);
+  const iframeCode = '<iframe src="' + embedUrl + '" style="width:100%;border:0;min-height:900px" loading="lazy" title="Monthly features"></iframe>';
+
+  const htmlBlock = function() {
+    const money = n => '$' + Number(n).toFixed(2);
+    const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    const d = snapshot();
+    let h = '<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#191919">'
+      + '<div style="text-align:center;margin:8px 0"><h2 style="font-size:26px;margin:0">' + esc(d.title) + '</h2>'
+      + '<p style="color:#757575;font-size:14px;margin:4px 0 0">' + esc(d.dates) + '</p></div>'
+      + '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:14px;margin-top:18px">';
+    d.items.forEach(function(it) {
+      h += '<div style="border:1px solid #e5e5e5;border-radius:10px;overflow:hidden;background:#fff">'
+        + '<div style="aspect-ratio:1;display:flex;align-items:center;justify-content:center;background:#fafafa">'
+        + '<img loading="lazy" src="' + esc(it.image) + '" alt="' + esc(it.name) + '" style="max-width:88%;max-height:88%;object-fit:contain"></div>'
+        + '<div style="padding:10px 12px 12px"><div style="font-weight:600;font-size:14px">' + esc(it.name) + '</div>'
+        + (it.size ? '<div style="color:#757575;font-size:12px">' + esc(it.size) + '</div>' : '')
+        + '<div style="margin-top:6px">'
+        + (it.sale != null ? '<span style="color:#b42a2a;font-size:22px;font-weight:700">' + money(it.sale) + '</span> ' : '')
+        + (it.reg != null && it.sale != null && it.reg > it.sale
+            ? '<span style="color:#757575;font-size:13px;text-decoration:line-through">' + money(it.reg) + '</span> ' : '')
+        + (it.savings > 0
+            ? '<span style="background:#b42a2a;color:#fff;font-size:11px;font-weight:700;padding:2px 7px;border-radius:99px">SAVE ' + money(it.savings) + '</span>' : '')
+        + '</div></div></div>';
+    });
+    h += '</div><p style="text-align:center;color:#757575;font-size:11px;margin:16px 0 4px">' + esc(d.footnote) + '</p></div>';
+    return h;
+  };
+
+  const publish = async function() {
+    if (!eligible.length) { toast.error('No features with usable photos yet'); return; }
+    setBusy(true);
+    try {
+      const sb = getSB();
+      const blob = new Blob([JSON.stringify(snapshot(), null, 1)], { type:'application/json' });
+      const { error } = await sb.storage.from('creatives')
+        .upload('website/' + storeId + '.json', blob,
+                { upsert:true, contentType:'application/json', cacheControl:'300' });
+      if (error) throw new Error(error.message);
+      setPublished(true);
+      toast.success(eligible.length + ' features published — the website embed shows them within ~5 minutes');
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(false); }
+  };
+
+  const copy = async function(text, what) {
+    try { await navigator.clipboard.writeText(text); toast.success(what + ' copied'); }
+    catch(e) { toast.error('Could not copy — ' + e.message); }
+  };
+
+  return (
+    <Portal>
+    <div className="fixed inset-0 z-[210] flex items-center justify-center p-6"
+         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}} onClick={busy ? undefined : onClose}>
+      <div className="hud hud-brk w-full max-w-xl max-h-[88vh] overflow-auto p-6"
+           style={dragPanel.style} onClick={e=>e.stopPropagation()}>
+        <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-4">
+          <span className="ttl">Push to website</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          {!busy && <button onClick={onClose} style={{color:'var(--txt2)'}}><Icon name="close"/></button>}
+        </div>
+
+        <p className="lbl mb-3">{storeName} · {monthLabel(period)} · {dates}</p>
+
+        <Label>On the website · {eligible.length} of {withImage.length}</Label>
+        <div className="mb-3" style={{maxHeight:'240px', overflowY:'auto', border:'1px solid var(--line)'}}>
+          {withImage.length === 0 && (
+            <p className="lbl p-3">No features with usable photos yet — add product photos or generate creatives first.</p>
+          )}
+          {withImage.map(function(x) {
+            const on = !!webOn[x.r.id];
+            return (
+              <label key={x.r.id} className="flex items-center gap-3 px-3 py-1.5 cursor-pointer"
+                     style={{borderBottom:'1px solid rgba(56,224,240,.06)', opacity: on ? 1 : 0.5}}>
+                <input type="checkbox" checked={on} onChange={()=>toggleWeb(x.r)}/>
+                <img src={x.image} alt="" className="w-9 h-9 object-contain flex-none"
+                     style={{background:'#fff', border:'1px solid var(--line)'}}/>
+                <span className="text-xs flex-1 truncate" style={{color:'var(--txt)'}}>{x.r.name}</span>
+                <span className="mono text-xs" style={{color:'var(--cy)'}}>
+                  {x.r.sale_price != null ? money(x.r.sale_price) : ''}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+        {excluded.length > 0 && (
+          <p className="text-xs mb-3" style={{color:'var(--amb)'}}>
+            Can't be shown (no usable photo): {excluded.map(r=>r.name).join(', ')}
+          </p>
+        )}
+
+        <div className="flex gap-2 mb-4">
+          <Button size="sm" onClick={publish} loading={busy} disabled={!eligible.length}>
+            <Icon name="up"/> {published ? 'Publish again' : 'Publish ' + eligible.length + ' features'}
+          </Button>
+          <a className="text-xs self-center hover:underline" style={{color:'var(--cy)'}}
+             href={embedUrl} target="_blank" rel="noopener">Preview the page</a>
+        </div>
+
+        <div className="p-3 mb-3" style={{border:'1px solid var(--line)'}}>
+          <p className="text-xs font-semibold mb-1" style={{color:'var(--txt)'}}>
+            Option 1 — embed once, updates itself
+          </p>
+          <p className="lbl mb-2">
+            Paste this into Duda's HTML/embed widget one time. Every future
+            "Publish" updates the website automatically — no more touching Duda.
+          </p>
+          <Button size="sm" variant="outline" onClick={()=>copy(iframeCode, 'Embed code')}>
+            Copy embed code
+          </Button>
+        </div>
+
+        <div className="p-3" style={{border:'1px solid var(--line)'}}>
+          <p className="text-xs font-semibold mb-1" style={{color:'var(--txt)'}}>
+            Option 2 — static HTML block
+          </p>
+          <p className="lbl mb-2">
+            The month's features as plain markup, pasted directly into the
+            page. Full control in Duda's editor, but it must be re-pasted
+            when the features change.
+          </p>
+          <Button size="sm" variant="outline" onClick={()=>copy(htmlBlock(), 'HTML block')}
+                  disabled={!eligible.length}>
+            Copy HTML block
+          </Button>
+        </div>
+      </div>
+    </div>
+    </Portal>
+  );
+}
+
 function FeatureCreativeBatch({ storeId, storeName, period, rows, products, campaigns, onClose, onDone }) {
   const dragPanel = useDragPanel();
   const toast = useToast();
@@ -5811,6 +6015,7 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
   const [showBatch, setShowBatch] = useState(false);
   const [showPlan,  setShowPlan]  = useState(false);
   const [showSign,  setShowSign]  = useState(false);
+  const [showWeb,   setShowWeb]   = useState(false);
   const [view, setView] = useState('month');   // month | dashboard
   const [mode, setMode] = useState('plan');   // plan | sales
 
@@ -6031,6 +6236,9 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
               <Button size="sm" variant="outline" onClick={()=>setShowSign(true)}>
                 <Icon name="grid"/> Send to signage
               </Button>
+              <Button size="sm" variant="outline" onClick={()=>setShowWeb(true)} disabled={rows.length===0}>
+                <Icon name="globe"/> Push to website
+              </Button>
               <Button size="sm" onClick={addBlank}><Icon name="tag"/> Add row</Button>
               {periodRow && periodRow.status !== 'closed' && (
                 <Button size="sm" variant="secondary"
@@ -6177,6 +6385,14 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
           storeName={(myStores.find(s=>s.id===storeId)||{}).name || ''}
           period={period} periodRow={periodRow}
           onClose={()=>setShowSign(false)}/>
+      )}
+
+      {showWeb && (
+        <WebsitePushModal
+          storeId={storeId}
+          storeName={(myStores.find(s=>s.id===storeId)||{}).name || ''}
+          period={period} periodRow={periodRow} rows={rows} products={products}
+          onClose={()=>setShowWeb(false)}/>
       )}
 
       {showPlan && (

@@ -51,3 +51,13 @@
     X-Content-Type-Options = "nosniff"
     Referrer-Policy        = "no-referrer"
     Content-Security-Policy = "default-src 'none'; img-src https://yyveikxfomxmedlxsulh.supabase.co; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+
+# The features embed is iframed by the stores' own websites (Duda). It shows
+# only a deliberately published snapshot and images from our storage.
+[[headers]]
+  for = "/features-embed.html"
+
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy        = "no-referrer"
+    Content-Security-Policy = "default-src 'none'; connect-src https://yyveikxfomxmedlxsulh.supabase.co; img-src https://yyveikxfomxmedlxsulh.supabase.co; style-src 'unsafe-inline'; script-src 'unsafe-inline'"

@@ -5010,16 +5010,17 @@ function WebsitePushModal({ storeId, storeName, period, periodRow, rows, product
         : '';
       const bp = d.brand.primary, bs = d.brand.secondary;
       const photo = it.placeholder
-        ? '<div style="width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;background:' + bp + ';padding:16px;text-align:center">'
+        ? '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;background:' + bp + ';padding:16px;text-align:center">'
           + '<span style="color:' + bs + ';font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase">' + esc(d.title.split(' ')[0]) + '</span>'
           + '<span style="color:#fff;font-size:19px;font-weight:800;line-height:1.2">' + esc(it.name) + '</span>'
           + '<span style="color:' + bs + ';font-size:12px;font-style:italic">Too good to wait for a photo</span></div>'
-        : '<img loading="lazy" src="' + esc(it.image) + '" alt="' + esc(it.name) + '" style="max-width:88%;max-height:88%;object-fit:contain">';
+        : '<img loading="lazy" src="' + esc(it.image) + '" alt="' + esc(it.name) + '" style="position:absolute;inset:0;margin:auto;max-width:88%;max-height:88%;width:auto;height:auto;object-fit:contain">';
       h += '<div style="border:1px solid #e5e5e5;border-radius:10px;overflow:hidden;background:#fff">'
-        + '<div style="aspect-ratio:1;display:flex;align-items:center;justify-content:center;background:#fafafa;position:relative">' + ribbon + photo + '</div>'
-        + '<div style="padding:10px 12px 12px"><div style="font-weight:600;font-size:14px">' + esc(it.name) + '</div>'
-        + (it.size ? '<div style="color:#757575;font-size:12px">' + esc(it.size) + '</div>' : '')
-        + '<div style="margin-top:6px">'
+        + '<div style="aspect-ratio:1;background:#fafafa;position:relative">' + ribbon + photo + '</div>'
+        + '<div style="padding:10px 12px 12px">'
+        + '<div style="font-weight:600;font-size:14px;line-height:1.25;height:35px;overflow:hidden">' + esc(it.name) + '</div>'
+        + '<div style="color:#757575;font-size:12px;height:15px;overflow:hidden">' + esc(it.size || '') + '</div>'
+        + '<div style="padding-top:6px;height:34px;white-space:nowrap">'
         + (it.sale != null ? '<span style="color:#b42a2a;font-size:24px;font-weight:800">' + money(it.sale) + '</span> ' : '')
         + (it.reg != null && it.sale != null && it.reg > it.sale
             ? '<span style="color:#757575;font-size:13px">was <s>' + money(it.reg) + '</s></span>' : '')

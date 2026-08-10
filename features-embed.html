@@ -26,15 +26,21 @@
   .hdr p  { color: var(--mut); font-size: 14px; margin-top: 4px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
           gap: 14px; margin-top: 18px; }
+  /* Uniform cards: the photo box is always square, the name always gets two
+     lines of room, the size line one, and the price sits at the same height
+     on every card — nothing shifts with content length. Oversized images
+     scale down to fit the box; they never enlarge it. */
   .card { border: 1px solid #e5e5e5; border-radius: 10px; overflow: hidden;
           background: #fff; display: flex; flex-direction: column; }
-  .card .ph { aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
-              background: #fafafa; position: relative; }
-  .card img { max-width: 88%; max-height: 88%; object-fit: contain; }
-  .card .tx { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 2px; flex: 1; }
-  .nm { font-weight: 600; font-size: 14px; line-height: 1.25; }
-  .sz { color: var(--mut); font-size: 12px; }
-  .pr { margin-top: auto; padding-top: 6px; display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .card .ph { aspect-ratio: 1; background: #fafafa; position: relative; flex: none; }
+  .card img { position: absolute; inset: 0; margin: auto;
+              max-width: 88%; max-height: 88%; width: auto; height: auto; object-fit: contain; }
+  .card .tx { padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 2px; }
+  .nm { font-weight: 600; font-size: 14px; line-height: 1.25;
+        height: 35px; overflow: hidden;
+        display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .sz { color: var(--mut); font-size: 12px; height: 15px; overflow: hidden; }
+  .pr { padding-top: 6px; display: flex; align-items: baseline; gap: 8px; white-space: nowrap; height: 34px; }
   .sale { color: var(--accent); font-size: 24px; font-weight: 800; }
   .reg  { color: var(--mut); font-size: 13px; }
   .reg s { text-decoration: line-through; }
@@ -96,7 +102,7 @@
             + (pct >= 10 ? '<small>' + pct + '% OFF</small>' : '') + '</span>';
         }
         var photo = it.placeholder
-          ? '<div style="width:100%;height:100%;display:flex;flex-direction:column;align-items:center;'
+          ? '<div style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;'
             + 'justify-content:center;gap:8px;background:' + bp + ';padding:16px;text-align:center">'
             + '<span style="color:' + bs + ';font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase">'
             + esc(d.title.split(' ')[0]) + '</span>'
@@ -106,7 +112,7 @@
           : '<img loading="lazy" src="' + esc(it.image) + '" alt="' + esc(it.name) + '">';
         h += '<div class="card"><div class="ph">' + ribbon + photo + '</div>'
           + '<div class="tx"><span class="nm">' + esc(it.name) + '</span>'
-          + (it.size ? '<span class="sz">' + esc(it.size) + '</span>' : '')
+          + '<span class="sz">' + esc(it.size || '') + '</span>'
           + '<span class="pr">'
           + (it.sale != null ? '<span class="sale">' + money(it.sale) + '</span>' : '')
           + (it.reg != null && it.sale != null && Number(it.reg) > Number(it.sale)

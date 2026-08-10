@@ -4991,7 +4991,14 @@ function WebsitePushModal({ storeId, storeName, period, periodRow, rows, product
   });
 
   const embedUrl = 'https://lrs.thesuenocompany.com/features-embed.html?store=' + encodeURIComponent(storeId);
-  const iframeCode = '<iframe src="' + embedUrl + '" style="width:100%;border:0;min-height:900px" loading="lazy" title="Monthly features"></iframe>';
+  // The frame sizes itself: the embedded page reports its height and this
+  // snippet's listener applies it — the whole grid shows, no scrollbar.
+  const iframeCode =
+    '<iframe id="lrs-features-' + storeId + '" src="' + embedUrl + '"'
+    + ' style="width:100%;border:0;height:600px" scrolling="no" loading="lazy" title="Monthly features"></iframe>\n'
+    + '<script>window.addEventListener("message",function(e){'
+    + 'if(e.origin==="https://lrs.thesuenocompany.com"&&e.data&&e.data.lrsFeaturesHeight){'
+    + 'document.getElementById("lrs-features-' + storeId + '").style.height=e.data.lrsFeaturesHeight+"px";}});<\/script>';
 
   const htmlBlock = function() {
     const money = n => '$' + Number(n).toFixed(2);

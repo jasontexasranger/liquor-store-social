@@ -60,6 +60,18 @@
 <div id="app"><p class="empty">Loading this month's features…</p></div>
 <script>
 (function () {
+  // Tell the embedding page how tall we are, so the iframe can fit the whole
+  // grid instead of growing a scrollbar. The parent's snippet listens for
+  // this message; sent on every layout change (images loading, window
+  // resizing, content updating).
+  function reportHeight() {
+    if (window.parent === window) return;
+    parent.postMessage({ lrsFeaturesHeight: document.documentElement.scrollHeight }, '*');
+  }
+  if (window.ResizeObserver) new ResizeObserver(reportHeight).observe(document.body);
+  window.addEventListener('load', reportHeight);
+  window.__reportHeight = reportHeight;
+
   var qs = new URLSearchParams(location.search);
   var store = (qs.get('store') || '').replace(/[^a-z0-9-]/g, '');
   var accent = qs.get('accent');
@@ -121,6 +133,8 @@
       });
       h += '</div><p class="ft">' + esc(d.footnote || 'Prices exclude tax & deposit — while supplies last.') + '</p>';
       app.innerHTML = h;
+      window.__reportHeight();
+      setTimeout(window.__reportHeight, 600);
     })
     .catch(function () {
       app.innerHTML = '<p class="empty">Check back soon for this month’s features.</p>';

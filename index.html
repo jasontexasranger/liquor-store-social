@@ -13034,6 +13034,164 @@ const ASSIGNABLE_SECTIONS = [
   { id:'signage',   label:'Signage',   admin:true },
 ];
 
+// One-time login links: pick an email, a role, and how many hours it's
+// good for, and get back a single-use URL. Opening it signs that person
+// straight in — creating their account first if needed — with the role
+// already applied. Creation/listing/revoking go straight through the
+// login_links_admin RLS policy; only *redeeming* a link needs the edge
+// function's service role (a fresh visitor has no session to be gated by).
+function LoginLinksCard() {
+  const toast = useToast();
+  const [email,     setEmail]     = useState('');
+  const [role,      setRole]      = useState('store');
+  const [storeIds,  setStoreIds]  = useState([]);
+  const [hours,     setHours]     = useState(24);
+  const [creating,  setCreating]  = useState(false);
+  const [fresh,     setFresh]     = useState(null);   // the just-created link, shown once
+  const [links,     setLinks]     = useState(null);   // null = loading
+  const [busyToken, setBusyToken] = useState(null);
+
+  const load = function() {
+    getSB().from('login_links').select('*').order('created_at', { ascending:false }).limit(30)
+      .then(({ data, error }) => { if (!error) setLinks(data || []); });
+  };
+  useEffect(load, []);
+
+  const toggleStore = sid => setStoreIds(prev =>
+    prev.indexOf(sid) !== -1 ? prev.filter(x=>x!==sid) : prev.concat(sid));
+
+  const create = async function() {
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail) { toast.error('Enter an email address'); return; }
+    if (role === 'store' && !storeIds.length) { toast.error('Pick at least one store'); return; }
+    const h = Math.min(Math.max(Number(hours) || 24, 1), 168);
+    setCreating(true);
+    try {
+      const { data: { user } } = await getSB().auth.getUser();
+      const { data, error } = await getSB().from('login_links').insert({
+        email: cleanEmail,
+        role: role,
+        store_ids: role === 'store' ? storeIds : [],
+        created_by: user ? user.id : null,
+        expires_at: new Date(Date.now() + h * 3600 * 1000).toISOString(),
+      }).select().single();
+      if (error) throw error;
+      setFresh(data);
+      setEmail(''); setStoreIds([]);
+      load();
+    } catch(e) { toast.error(e.message); }
+    finally { setCreating(false); }
+  };
+
+  const revoke = async function(token) {
+    setBusyToken(token);
+    try {
+      const { error } = await getSB().from('login_links').update({ revoked:true }).eq('token', token);
+      if (error) throw error;
+      setLinks(prev => prev.map(l => l.token===token ? { ...l, revoked:true } : l));
+      if (fresh && fresh.token === token) setFresh(prev => ({ ...prev, revoked:true }));
+    } catch(e) { toast.error(e.message); }
+    finally { setBusyToken(null); }
+  };
+
+  const copy = function(url) {
+    navigator.clipboard.writeText(url).then(()=>toast.success('Link copied'));
+  };
+
+  const urlFor = token => window.location.origin + '/?login=' + token;
+
+  const statusOf = l => {
+    if (l.revoked) return { label:'Revoked', color:'var(--txt3)' };
+    if (l.redeemed_at) return { label:'Used', color:'var(--grn)' };
+    if (new Date(l.expires_at) < new Date()) return { label:'Expired', color:'var(--txt3)' };
+    return { label:'Active', color:'var(--cy)' };
+  };
+
+  return (
+    <Card>
+      <h2 className="text-base font-bold text-gray-900 dark:text-white mb-1"><Icon name="key"/> One-time login links</h2>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+        Send someone a single-use link instead of a password — opening it signs them in (creating
+        their account first if it's their first time) with the role you pick, and it stops working
+        the moment it's used or its time runs out.
+      </p>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+        <div>
+          <Label>Email</Label>
+          <Input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="staff@hideaway.com"/>
+        </div>
+        <div>
+          <Label>Access</Label>
+          <Select value={role} onChange={e=>{ setRole(e.target.value); setStoreIds([]); }}>
+            <option value="store">Store manager (Posts + Shelf Talkers)</option>
+            <option value="admin">Admin (Full access)</option>
+          </Select>
+        </div>
+        {role==='store' && (
+          <div>
+            <Label>Assigned stores</Label>
+            <div className="flex flex-wrap gap-x-4 gap-y-2 mt-1">
+              {STORES.map(s => (
+                <label key={s.id} className="flex items-center gap-1.5 text-sm cursor-pointer text-gray-700 dark:text-gray-300">
+                  <input type="checkbox" checked={storeIds.indexOf(s.id) !== -1} onChange={()=>toggleStore(s.id)} className="accent-indigo-600"/>
+                  {s.name.split(' ')[0]}
+                </label>
+              ))}
+            </div>
+          </div>
+        )}
+        <div>
+          <Label>Expires in (hours)</Label>
+          <Input type="number" min="1" max="168" value={hours} onChange={e=>setHours(e.target.value)}/>
+        </div>
+      </div>
+      <Button size="sm" onClick={create} loading={creating}>
+        <Icon name="key"/> Generate link
+      </Button>
+
+      {fresh && !fresh.revoked && (
+        <div className="mt-4 p-3" style={{border:'1px solid var(--cy)', background:'rgba(var(--sink-rgb),.35)'}}>
+          <p className="text-xs font-semibold mb-2" style={{color:'var(--cy)'}}>
+            Link ready for {fresh.email} — expires {new Date(fresh.expires_at).toLocaleString()}
+          </p>
+          <div className="flex gap-2">
+            <Input readOnly value={urlFor(fresh.token)} className="flex-1 text-xs" onClick={e=>e.target.select()}/>
+            <Button size="sm" variant="outline" onClick={()=>copy(urlFor(fresh.token))}><Icon name="share" size={12}/> Copy</Button>
+          </div>
+        </div>
+      )}
+
+      {links && links.length > 0 && (
+        <div className="mt-5">
+          <p className="lbl mb-2">Recent links</p>
+          <div className="space-y-1.5">
+            {links.map(function(l) {
+              const st = statusOf(l);
+              const canRevoke = st.label === 'Active';
+              return (
+                <div key={l.token} className="flex items-center gap-2 px-2.5 py-2 text-xs"
+                     style={{border:'1px solid var(--line)'}}>
+                  <span className="font-bold flex-none" style={{color:st.color}}>{st.label}</span>
+                  <span className="truncate flex-1" style={{color:'var(--txt)'}}>{l.email}</span>
+                  <span className="flex-none" style={{color:'var(--txt2)'}}>{l.role==='admin' ? 'Admin' : 'Store'}</span>
+                  <span className="flex-none" style={{color:'var(--txt3)'}}>{new Date(l.expires_at).toLocaleDateString()}</span>
+                  {canRevoke && (
+                    <button onClick={()=>revoke(l.token)} disabled={busyToken===l.token}
+                      className="flex-none font-semibold" style={{color:'var(--red)'}}>
+                      Revoke
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function UserAccountsSection({ currentUserId, onViewAs }) {
   const toast = useToast();
   const [users,        setUsers]        = useState([]);
@@ -13763,6 +13921,7 @@ function SettingsPage({ settings, onSave, currentUserId, onViewAs, theme, onThem
       <AppearanceCard theme={theme} onTheme={onTheme}/>
       <SupportTicketsCard/>
       <CompanyLogoCard/>
+      <LoginLinksCard/>
       <UserAccountsSection currentUserId={currentUserId} onViewAs={onViewAs}/>
       <StoreLocationsSection/>
       <SignageScreensSection/>
@@ -16890,11 +17049,44 @@ function App() {
   const [user,      setUser]      = useState(null);
   const [recovery,  setRecovery]  = useState(false);
 
+  // A one-time login link (?login=TOKEN): redeeming it happens once, up
+  // front, before anything else renders — null once it's out of the way
+  // (either there was no token, or it finished and onAuthStateChange took
+  // over), 'redeeming' while in flight, or an error string if the link
+  // turned out to be used, expired, or revoked.
+  const [loginLinkState, setLoginLinkState] = useState(null);
+
   useEffect(()=>{
     document.documentElement.classList.add('dark');
     document.documentElement.setAttribute('data-theme', theme);
     ls.set('smm_theme', theme);
   },[theme]);
+
+  useEffect(function() {
+    const token = new URLSearchParams(window.location.search).get('login');
+    if (!token) return;
+    setLoginLinkState('redeeming');
+    (async function() {
+      try {
+        const resp = await fetch(SUPABASE_URL + '/functions/v1/meta-social', {
+          method: 'POST',
+          headers: { 'Content-Type':'application/json', 'Authorization':'Bearer ' + SUPABASE_KEY },
+          body: JSON.stringify({ action:'redeemLoginLink', token: token }),
+        });
+        const data = await resp.json();
+        if (data.error) throw new Error(data.error);
+        const sb = getSB();
+        const { error } = await sb.auth.verifyOtp({ token_hash: data.token_hash, type:'magiclink' });
+        if (error) throw error;
+        // Strip ?login=... so a refresh doesn't try to redeem an already-used
+        // link and show a scary error on a page that's actually fine now.
+        window.history.replaceState({}, '', window.location.pathname);
+        setLoginLinkState(null);
+      } catch(e) {
+        setLoginLinkState('error:' + e.message);
+      }
+    })();
+  }, []);
 
   useEffect(()=>{
     const sb=getSB(); if(!sb) return;
@@ -16916,6 +17108,26 @@ function App() {
     });
     return function() { sub.data.subscription.unsubscribe(); };
   },[]);
+
+  if (loginLinkState === 'redeeming') return (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900">
+      <div className="text-center"><div className="mb-3 flex justify-center"><Icon name="whisky" size={44} style={{color:"var(--cy)"}}/></div><p className="text-gray-400 text-sm animate-pulse">Signing you in…</p></div>
+    </div>
+  );
+
+  if (typeof loginLinkState === 'string' && loginLinkState.startsWith('error:')) return (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900 px-4">
+      <div className="text-center max-w-sm">
+        <div className="mb-3 flex justify-center"><Icon name="warn" size={40} style={{color:'var(--red)'}}/></div>
+        <p className="text-gray-200 text-sm font-semibold mb-1">This link didn't work</p>
+        <p className="text-gray-400 text-xs mb-5">{loginLinkState.slice(6)}</p>
+        <button onClick={()=>{ window.history.replaceState({}, '', window.location.pathname); setLoginLinkState(null); }}
+          className="text-xs font-semibold px-4 py-2" style={{border:'1px solid var(--line)', color:'var(--cy)'}}>
+          Go to login
+        </button>
+      </div>
+    </div>
+  );
 
   if (authState==='checking') return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-gray-900 via-gray-800 to-gray-900">

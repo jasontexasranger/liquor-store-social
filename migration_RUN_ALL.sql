@@ -1635,6 +1635,32 @@ CREATE POLICY help_tickets_update ON public.help_tickets
 NOTIFY pgrst, 'reload schema';
 
 
+-- ==== migration_login_links.sql ====
+-- One-time, expiring login links that grant admin or store access.
+CREATE TABLE IF NOT EXISTS public.login_links (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  token       TEXT UNIQUE NOT NULL
+                DEFAULT (replace(gen_random_uuid()::text,'-','') || replace(gen_random_uuid()::text,'-','')),
+  email       TEXT NOT NULL,
+  role        TEXT NOT NULL CHECK (role IN ('admin','store')),
+  store_ids   TEXT[] NOT NULL DEFAULT '{}',
+  sections    TEXT[],
+  created_by  UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at  TIMESTAMPTZ NOT NULL,
+  redeemed_at TIMESTAMPTZ,
+  revoked     BOOLEAN NOT NULL DEFAULT false
+);
+CREATE INDEX IF NOT EXISTS login_links_active_idx ON public.login_links (expires_at) WHERE redeemed_at IS NULL AND NOT revoked;
+ALTER TABLE public.login_links ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS login_links_admin ON public.login_links;
+CREATE POLICY login_links_admin ON public.login_links
+  FOR ALL TO authenticated
+  USING      (public.is_admin())
+  WITH CHECK (public.is_admin());
+NOTIFY pgrst, 'reload schema';
+
+
 -- ============================================================================
 -- Tell PostgREST about the new tables.
 -- "Could not find the table in the schema cache" means this step was missed.

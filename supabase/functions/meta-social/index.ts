@@ -237,6 +237,93 @@ Deno.serve(async (req) => {
     );
 
     const { action, ...params } = await req.json() as Record<string, unknown> & { action: string };
+
+    // ── redeemLoginLink ───────────────────────────────────────────────────────
+    // The one action a signed-out visitor can call — there's no session yet to
+    // authenticate, so this must run before getUserInfo() below (which throws
+    // without an Authorization header). Everything it needs (creating the
+    // account, granting the role, minting a sign-in token) requires the
+    // service-role client, which is exactly what `sb` already is here.
+    if (action === 'redeemLoginLink') {
+      const { token } = params as { token?: string };
+      if (!token || typeof token !== 'string') throw new Error('Missing link token');
+
+      // Atomic single-use claim: this UPDATE only matches (and only succeeds
+      // once) while the link is still unredeemed, unrevoked, and inside its
+      // own expires_at window — a second click, or a click after the clock
+      // runs out, simply matches no row.
+      const { data: claimed, error: claimErr } = await sb
+        .from('login_links')
+        .update({ redeemed_at: new Date().toISOString() })
+        .eq('token', token)
+        .is('redeemed_at', null)
+        .eq('revoked', false)
+        .gt('expires_at', new Date().toISOString())
+        .select()
+        .maybeSingle();
+      if (claimErr) throw claimErr;
+
+      if (!claimed) {
+        // The claim above can't tell us *why* it failed (a WHERE clause
+        // matching nothing is silent) — this second, unconditional lookup is
+        // just to give a clear reason instead of a flat "invalid link".
+        const { data: existing } = await sb
+          .from('login_links')
+          .select('redeemed_at, revoked, expires_at')
+          .eq('token', token)
+          .maybeSingle();
+        if (!existing) throw new Error('This link is not valid.');
+        if (existing.revoked) throw new Error('This link has been revoked.');
+        if (existing.redeemed_at) throw new Error('This link has already been used.');
+        throw new Error('This link has expired.');
+      }
+
+      const email = claimed.email as string;
+
+      // Find or create the auth account for this email.
+      let userId: string | null = null;
+      const { data: created, error: createErr } = await sb.auth.admin.createUser({
+        email, email_confirm: true,
+      });
+      if (created?.user) {
+        userId = created.user.id;
+      } else {
+        const { data: list, error: listErr } = await sb.auth.admin.listUsers({ page: 1, perPage: 1000 });
+        if (listErr) throw listErr;
+        const match = (list?.users ?? []).find(
+          (u) => (u.email ?? '').toLowerCase() === email.toLowerCase(),
+        );
+        if (!match) throw new Error(createErr?.message ?? 'Could not create or find that account.');
+        userId = match.id;
+      }
+
+      // Grant exactly the role/scope this link was created for.
+      const storeIds = (claimed.store_ids as string[] | null) ?? [];
+      const { error: roleErr } = await sb.from('user_roles').upsert({
+        user_id: userId,
+        role: claimed.role,
+        email,
+        store_ids: claimed.role === 'store' ? storeIds : [],
+        store_id: claimed.role === 'store' ? (storeIds[0] ?? null) : null,
+        sections: claimed.sections,
+      }, { onConflict: 'user_id' });
+      if (roleErr) throw roleErr;
+
+      // Mint a fresh magic-link token for this exact instant. The person
+      // redeems it within the same request/response round trip, so
+      // Supabase's own (short, fixed, non-configurable-per-link) OTP expiry
+      // never matters — our own expires_at above is what actually gated
+      // whether they got this far.
+      const { data: link, error: linkErr } = await sb.auth.admin.generateLink({
+        type: 'magiclink', email,
+      });
+      if (linkErr) throw linkErr;
+      const tokenHash = link?.properties?.hashed_token;
+      if (!tokenHash) throw new Error('Could not prepare a sign-in link.');
+
+      return Response.json({ email, token_hash: tokenHash }, { headers: corsHeaders });
+    }
+
     const userInfo = await getUserInfo(req.headers.get('Authorization'), sb);
 
     // ── publish ──────────────────────────────────────────────────────────────

@@ -1606,6 +1606,35 @@ ALTER TABLE public.store_picks
 NOTIFY pgrst, 'reload schema';
 
 
+-- ==== migration_help_tickets.sql ====
+-- Support tickets from the platform guide help bot.
+CREATE TABLE IF NOT EXISTS public.help_tickets (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     UUID REFERENCES auth.users(id) ON DELETE SET NULL,
+  user_email  TEXT,
+  question    TEXT NOT NULL,
+  transcript  JSONB NOT NULL DEFAULT '[]'::jsonb,
+  page        TEXT,
+  status      TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','resolved')),
+  admin_notes TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  resolved_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS help_tickets_status_idx ON public.help_tickets (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS help_tickets_user_idx   ON public.help_tickets (user_id);
+ALTER TABLE public.help_tickets ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS help_tickets_insert ON public.help_tickets;
+DROP POLICY IF EXISTS help_tickets_select ON public.help_tickets;
+DROP POLICY IF EXISTS help_tickets_update ON public.help_tickets;
+CREATE POLICY help_tickets_insert ON public.help_tickets
+  FOR INSERT TO authenticated WITH CHECK (auth.uid() = user_id);
+CREATE POLICY help_tickets_select ON public.help_tickets
+  FOR SELECT TO authenticated USING (auth.uid() = user_id OR public.is_admin());
+CREATE POLICY help_tickets_update ON public.help_tickets
+  FOR UPDATE TO authenticated USING (public.is_admin()) WITH CHECK (public.is_admin());
+NOTIFY pgrst, 'reload schema';
+
+
 -- ============================================================================
 -- Tell PostgREST about the new tables.
 -- "Could not find the table in the schema cache" means this step was missed.

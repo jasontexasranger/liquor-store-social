@@ -13633,6 +13633,110 @@ function AppearanceCard({ theme, onTheme }) {
   );
 }
 
+// Tickets filed from the pinned help bot when it couldn't answer something
+// itself. Open ones first, each expandable to the chat that led to it.
+function SupportTicketsCard() {
+  const toast = useToast();
+  const [tickets, setTickets] = useState(null);   // null = loading
+  const [openId,  setOpenId]  = useState(null);
+  const [busyId,  setBusyId]  = useState(null);
+  const [showResolved, setShowResolved] = useState(false);
+
+  const load = function() {
+    const sb = getSB(); if (!sb) return;
+    sb.from('help_tickets').select('*').order('created_at', { ascending:false }).limit(200)
+      .then(({ data, error }) => { if (!error) setTickets(data || []); });
+  };
+  useEffect(load, []);
+
+  const resolve = async function(id, status) {
+    setBusyId(id);
+    try {
+      const { error } = await getSB().from('help_tickets')
+        .update({ status, resolved_at: status==='resolved' ? new Date().toISOString() : null })
+        .eq('id', id);
+      if (error) throw error;
+      setTickets(prev => prev.map(t => t.id===id ? { ...t, status, resolved_at: status==='resolved' ? new Date().toISOString() : null } : t));
+    } catch(e) { toast.error(e.message); }
+    finally { setBusyId(null); }
+  };
+
+  const open     = (tickets || []).filter(t => t.status !== 'resolved');
+  const resolved = (tickets || []).filter(t => t.status === 'resolved');
+  const shown    = showResolved ? resolved : open;
+
+  return (
+    <Card>
+      <div className="flex items-center gap-2 mb-1">
+        <h2 className="text-base font-bold text-gray-900 dark:text-white"><Icon name="comment"/> Support tickets</h2>
+        {open.length > 0 && (
+          <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{background:'var(--red)', color:'#fff'}}>
+            {open.length} open
+          </span>
+        )}
+        <span className="flex-1"/>
+        <button onClick={()=>setShowResolved(v=>!v)} className="text-xs font-semibold" style={{color:'var(--txt2)'}}>
+          {showResolved ? 'Show open' : 'Show resolved'}
+        </button>
+      </div>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+        Filed from the platform guide when it couldn't help someone directly.
+      </p>
+
+      {tickets === null ? (
+        <p className="lbl text-center py-6">Loading…</p>
+      ) : shown.length === 0 ? (
+        <p className="text-xs text-center py-6" style={{color:'var(--txt2)'}}>
+          {showResolved ? 'Nothing resolved yet.' : 'No open tickets — you\'re caught up.'}
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {shown.map(function(t) {
+            const isOpenRow = openId === t.id;
+            return (
+              <div key={t.id} style={{border:'1px solid var(--line)', borderRadius:'10px', overflow:'hidden'}}>
+                <button onClick={()=>setOpenId(isOpenRow ? null : t.id)}
+                  className="w-full text-left px-3 py-2.5 flex items-start gap-2"
+                  style={{background:'rgba(var(--sink-rgb),.35)'}}>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm truncate" style={{color:'var(--txt)'}}>{t.question}</p>
+                    <p className="lbl mt-0.5">
+                      {t.user_email || 'unknown user'} · {t.page || 'unknown page'} · {new Date(t.created_at).toLocaleString()}
+                    </p>
+                  </div>
+                  <Icon name={isOpenRow ? 'up' : 'down'} size={12} style={{color:'var(--txt2)', flex:'none', marginTop:'3px'}}/>
+                </button>
+                {isOpenRow && (
+                  <div className="px-3 py-3" style={{borderTop:'1px solid var(--line)'}}>
+                    <div className="space-y-1.5 mb-3" style={{maxHeight:'220px', overflow:'auto'}}>
+                      {(t.transcript || []).map((m, i) => (
+                        <p key={i} className="text-xs" style={{color: m.role==='user' ? 'var(--txt)' : 'var(--txt2)'}}>
+                          <span className="font-bold">{m.role==='user' ? 'Them: ' : 'Guide: '}</span>{m.content}
+                        </p>
+                      ))}
+                    </div>
+                    <div className="flex gap-2">
+                      {t.status !== 'resolved' ? (
+                        <Button size="sm" onClick={()=>resolve(t.id,'resolved')} loading={busyId===t.id}>
+                          <Icon name="check" size={12}/> Mark resolved
+                        </Button>
+                      ) : (
+                        <Button size="sm" variant="ghost" onClick={()=>resolve(t.id,'open')} loading={busyId===t.id}>
+                          Reopen
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function SettingsPage({ settings, onSave, currentUserId, onViewAs, theme, onTheme }) {
   const toast = useToast();
   const [form,   setForm]   = useState({ ...settings, tokens:{ ...settings.tokens } });
@@ -13651,6 +13755,7 @@ function SettingsPage({ settings, onSave, currentUserId, onViewAs, theme, onThem
   return (
     <div className="space-y-4 max-w-2xl">
       <AppearanceCard theme={theme} onTheme={onTheme}/>
+      <SupportTicketsCard/>
       <CompanyLogoCard/>
       <UserAccountsSection currentUserId={currentUserId} onViewAs={onViewAs}/>
       <StoreLocationsSection/>
@@ -16142,7 +16247,8 @@ function BrandPage({ settings }) {
 // answers as a general assistant. The client just renders a conversation
 // and, when the model names one, a "take me there" shortcut into the app's
 // own navigation — it never invents its own idea of what pages exist.
-function HelpBot({ go, nav }) {
+function HelpBot({ go, nav, user, page }) {
+  const toast = useToast();
   const [open,     setOpen]     = useState(false);
   const [messages, setMessages] = useState([
     { role:'assistant',
@@ -16152,23 +16258,40 @@ function HelpBot({ go, nav }) {
   const [busy,  setBusy]  = useState(false);
   const listRef = useRef(null);
 
+  // The manual fallback for when the bot genuinely can't help — files a
+  // ticket with the chat transcript attached so nobody has to retype what
+  // they already told the bot. An admin works these under Settings.
+  const [ticketOpen,  setTicketOpen]  = useState(false);
+  const [ticketSub,   setTicketSub]   = useState('');
+  const [ticketNote,  setTicketNote]  = useState('');
+  const [ticketBusy,  setTicketBusy]  = useState(false);
+
   const allowedPages = new Set((nav || []).map(n => n.id));
 
   useEffect(function() {
     if (open && listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
   }, [messages, open, busy]);
 
-  // Pulls a trailing "[[nav:page=x;tab=y]]" marker out of the reply and
-  // turns it into a shortcut — but only if that page is one this user can
-  // actually reach, so the bot never points someone at a locked door.
-  function parseNav(text) {
-    const m = text.match(/\[\[nav:page=([a-z]+)(?:;tab=([a-z]+))?\]\]\s*$/i);
-    if (!m) return { text, navTo: null };
-    const page  = m[1].toLowerCase();
-    const tab   = m[2] ? m[2].toLowerCase() : null;
-    const clean = text.slice(0, m.index).trim();
-    if (!allowedPages.has(page)) return { text: clean, navTo: null };
-    return { text: clean, navTo: { page: page, tab: tab } };
+  // Pulls a trailing marker out of the reply — either a "[[nav:page=x;tab=y]]"
+  // shortcut (only kept if that page is one this user can actually reach, so
+  // the bot never points someone at a locked door) or a "[[ticket:summary]]"
+  // for a request the platform genuinely doesn't do (a newspaper ad, a radio
+  // spot — real marketing work, just not built here).
+  function parseMarkers(text) {
+    const navM = text.match(/\[\[nav:page=([a-z]+)(?:;tab=([a-z]+))?\]\]\s*$/i);
+    if (navM) {
+      const page  = navM[1].toLowerCase();
+      const tab   = navM[2] ? navM[2].toLowerCase() : null;
+      const clean = text.slice(0, navM.index).trim();
+      if (!allowedPages.has(page)) return { text: clean, navTo: null, ticketHint: null };
+      return { text: clean, navTo: { page: page, tab: tab }, ticketHint: null };
+    }
+    const tM = text.match(/\[\[ticket:([^\[\]]+)\]\]\s*$/i);
+    if (tM) {
+      const clean = text.slice(0, tM.index).trim();
+      return { text: clean, navTo: null, ticketHint: tM[1].trim().slice(0, 120) };
+    }
+    return { text, navTo: null, ticketHint: null };
   }
 
   // The model is told to write plain text, but a stray **bold** or "- "
@@ -16216,11 +16339,12 @@ function HelpBot({ go, nav }) {
       const r = await callEdge('meta-social', 'assistantChat', {
         messages: next.map(m => ({ role:m.role, content:m.content })),
       });
-      const parsed = parseNav(r.text || '');
+      const parsed = parseMarkers(r.text || '');
       setMessages(prev => prev.concat({
         role:'assistant',
         content: parsed.text || "Sorry, I didn't catch that — try asking a different way.",
         navTo: parsed.navTo,
+        ticketHint: parsed.ticketHint,
       }));
     } catch (e) {
       setMessages(prev => prev.concat({
@@ -16228,6 +16352,46 @@ function HelpBot({ go, nav }) {
       }));
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Opens the ticket form. A preset subject (from the bot recognizing a
+  // request this platform doesn't do — a print ad, a radio spot) wins over
+  // guessing from the last thing they typed.
+  const openTicket = function(presetSubject) {
+    const lastQuestion = messages.filter(m => m.role === 'user').slice(-1)[0];
+    setTicketSub(presetSubject || (lastQuestion ? lastQuestion.content : ''));
+    setTicketNote('');
+    setTicketOpen(true);
+  };
+
+  const submitTicket = async function() {
+    const subject = ticketSub.trim();
+    if (!subject || ticketBusy) return;
+    setTicketBusy(true);
+    try {
+      const sb = getSB();
+      const transcript = messages
+        .filter(m => m.role === 'user' || m.role === 'assistant')
+        .map(m => ({ role:m.role, content:m.content }))
+        .concat(ticketNote.trim() ? [{ role:'user', content: ticketNote.trim() }] : []);
+      const { error } = await sb.from('help_tickets').insert({
+        user_id:    user ? user.id : null,
+        user_email: user ? user.email : null,
+        question:   subject,
+        transcript: transcript,
+        page:       page || null,
+      });
+      if (error) throw error;
+      setTicketOpen(false);
+      setMessages(prev => prev.concat({
+        role:'assistant',
+        content:"Done — I've filed a ticket with this conversation attached. Someone will follow up with you directly.",
+      }));
+    } catch (e) {
+      toast.error('Could not create the ticket: ' + e.message);
+    } finally {
+      setTicketBusy(false);
     }
   };
 
@@ -16249,9 +16413,57 @@ function HelpBot({ go, nav }) {
               <p style={{fontSize:'10.5px', color:'var(--txt2)', marginTop:'1px'}}>Ask about the app — not general questions</p>
             </div>
             <span className="flex-1"/>
+            {!ticketOpen && (
+              <button onClick={openTicket} title="Open a support ticket"
+                style={{color:'var(--txt2)'}}>
+                <Icon name="tag" size={15}/>
+              </button>
+            )}
             <button onClick={()=>setOpen(false)} style={{color:'var(--txt2)'}}><Icon name="close" size={15}/></button>
           </div>
 
+          {ticketOpen ? (
+            <div className="flex-1 overflow-auto px-4 py-4" style={{display:'flex', flexDirection:'column', gap:'11px'}}>
+              <div>
+                <p className="ttl" style={{fontSize:'12px'}}>Create a support ticket</p>
+                <p style={{fontSize:'11.5px', color:'var(--txt2)', marginTop:'3px', lineHeight:1.4}}>
+                  This sends your question and this conversation to the team — a person will follow up with you.
+                </p>
+              </div>
+              <div>
+                <label style={{fontSize:'11px', color:'var(--txt2)', display:'block', marginBottom:'4px'}}>What do you need help with?</label>
+                <input value={ticketSub} onChange={e=>setTicketSub(e.target.value)}
+                  placeholder="Short summary…"
+                  className="text-sm px-3 py-2 w-full"
+                  style={{background:'var(--void)', border:'1px solid var(--line)', borderRadius:'10px', color:'var(--txt)', outline:'none'}}/>
+              </div>
+              <div>
+                <label style={{fontSize:'11px', color:'var(--txt2)', display:'block', marginBottom:'4px'}}>Anything else to add? (optional)</label>
+                <textarea value={ticketNote} onChange={e=>setTicketNote(e.target.value)} rows={4}
+                  placeholder="Extra detail, store name, what you tried…"
+                  className="text-sm px-3 py-2 w-full"
+                  style={{background:'var(--void)', border:'1px solid var(--line)', borderRadius:'10px', color:'var(--txt)', outline:'none', resize:'none'}}/>
+              </div>
+              <p style={{fontSize:'10.5px', color:'var(--txt3)', lineHeight:1.4}}>
+                Your recent conversation with the guide is attached automatically.
+              </p>
+              <div className="flex gap-2 mt-1">
+                <button onClick={()=>setTicketOpen(false)} disabled={ticketBusy}
+                  className="flex-1 text-sm font-semibold py-2"
+                  style={{borderRadius:'10px', border:'1px solid var(--line)', background:'transparent', color:'var(--txt2)', cursor:'pointer'}}>
+                  Cancel
+                </button>
+                <button onClick={submitTicket} disabled={ticketBusy || !ticketSub.trim()}
+                  className="flex-1 text-sm font-semibold py-2"
+                  style={{
+                    borderRadius:'10px', border:'none', background:'var(--cy)', color:'#0a0a0a', cursor:'pointer',
+                    opacity: (ticketBusy || !ticketSub.trim()) ? .5 : 1,
+                  }}>
+                  {ticketBusy ? 'Sending…' : 'Create ticket'}
+                </button>
+              </div>
+            </div>
+          ) : (
           <div ref={listRef} className="flex-1 overflow-auto px-3.5 py-3.5" style={{display:'flex', flexDirection:'column', gap:'12px'}}>
             {messages.map(function(m, i) {
               const isUser = m.role === 'user';
@@ -16279,6 +16491,17 @@ function HelpBot({ go, nav }) {
                         Take me there <Icon name="fwd" size={11}/>
                       </button>
                     )}
+                    {m.ticketHint && (
+                      <button onClick={()=>openTicket(m.ticketHint)}
+                        className="flex items-center gap-1.5"
+                        style={{
+                          marginTop:'6px', fontSize:'12px', fontWeight:700, padding:'7px 12px',
+                          borderRadius:'999px', border:'1px solid var(--cy)', background:'transparent', color:'var(--cy)',
+                          cursor:'pointer',
+                        }}>
+                        <Icon name="tag" size={11}/> File a ticket: {m.ticketHint}
+                      </button>
+                    )}
                   </div>
                 </div>
               );
@@ -16291,7 +16514,19 @@ function HelpBot({ go, nav }) {
               </div>
             )}
           </div>
+          )}
 
+          {!ticketOpen && (
+            <div className="text-center" style={{padding:'2px 0 8px'}}>
+              <button onClick={openTicket}
+                className="text-xs font-semibold"
+                style={{color:'var(--cy)', background:'transparent', border:'none', cursor:'pointer', textDecoration:'underline'}}>
+                Can't find your answer? Open a support ticket
+              </button>
+            </div>
+          )}
+
+          {!ticketOpen && (
           <div className="flex items-center gap-2 px-3 py-3" style={{borderTop:'1px solid var(--line)'}}>
             <input value={input} onChange={e=>setInput(e.target.value)}
               onKeyDown={e=>{ if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
@@ -16307,6 +16542,7 @@ function HelpBot({ go, nav }) {
               <Icon name="send" size={15}/>
             </button>
           </div>
+          )}
         </div>
       )}
 
@@ -16631,7 +16867,7 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
         Liquor Store Social · Supabase · Graph API v25.0 · {user && user.email ? user.email : ''}
       </footer>
 
-      <HelpBot go={goHome} nav={nav}/>
+      <HelpBot go={goHome} nav={nav} user={user} page={page}/>
     </div>
   );
 }

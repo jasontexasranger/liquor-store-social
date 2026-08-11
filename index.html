@@ -16171,6 +16171,40 @@ function HelpBot({ go, nav }) {
     return { text: clean, navTo: { page: page, tab: tab } };
   }
 
+  // The model is told to write plain text, but a stray **bold** or "- "
+  // list slips through sometimes — this renders those instead of showing
+  // the raw asterisks, without pulling in a full markdown parser.
+  function renderMsg(text) {
+    const boldSplit = s => s.split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
+      part.startsWith('**') && part.endsWith('**')
+        ? <strong key={i}>{part.slice(2, -2)}</strong>
+        : part);
+
+    const blocks = String(text || '').split(/\n{2,}/);
+    return blocks.map(function(block, bi) {
+      const lines = block.split('\n').filter(l => l.trim());
+      const isList = lines.length > 1 && lines.every(l => /^\s*(?:[-•]|\d+[.)])\s+/.test(l));
+      if (isList) {
+        const ordered = /^\s*\d+[.)]\s+/.test(lines[0]);
+        const Tag = ordered ? 'ol' : 'ul';
+        return (
+          <Tag key={bi} style={{margin: bi ? '8px 0 0' : 0, paddingLeft:'18px', listStyle: ordered ? 'decimal' : 'disc'}}>
+            {lines.map((l, li) => (
+              <li key={li} style={{marginBottom: li < lines.length-1 ? '3px' : 0}}>
+                {boldSplit(l.replace(/^\s*(?:[-•]|\d+[.)])\s+/, ''))}
+              </li>
+            ))}
+          </Tag>
+        );
+      }
+      return (
+        <p key={bi} style={{margin: bi ? '8px 0 0' : 0}}>
+          {lines.flatMap((l, li) => li ? [<br key={'br'+li}/>, ...boldSplit(l)] : boldSplit(l))}
+        </p>
+      );
+    });
+  }
+
   const send = async function() {
     const q = input.trim();
     if (!q || busy) return;
@@ -16200,37 +16234,50 @@ function HelpBot({ go, nav }) {
   return (
     <div style={{position:'fixed', right:'20px', bottom:'20px', zIndex:9999}}>
       {open && (
-        <div className="hud hud-brk" style={{
-          width:'340px', maxWidth:'calc(100vw - 40px)', height:'460px', maxHeight:'calc(100vh - 110px)',
-          display:'flex', flexDirection:'column', marginBottom:'12px', boxShadow:'var(--hudshadow)',
+        <div style={{
+          width:'360px', maxWidth:'calc(100vw - 40px)', height:'480px', maxHeight:'calc(100vh - 110px)',
+          display:'flex', flexDirection:'column', marginBottom:'14px',
+          background:'var(--menu)', border:'1px solid var(--line)', borderRadius:'16px',
+          boxShadow:'0 12px 40px rgba(0,0,0,.28)', overflow:'hidden',
         }}>
-          <div className="flex items-center gap-2 px-4 py-3" style={{borderBottom:'1px solid var(--line)'}}>
-            <Icon name="comment" size={16} style={{color:'var(--cy)'}}/>
-            <span className="ttl" style={{fontSize:'13px'}}>Platform guide</span>
+          <div className="flex items-center gap-2 px-4 py-3.5" style={{borderBottom:'1px solid var(--line)', background:'rgba(var(--sink-rgb),.35)'}}>
+            <div style={{width:'26px', height:'26px', borderRadius:'50%', background:'var(--cy)', display:'flex', alignItems:'center', justifyContent:'center', flex:'none'}}>
+              <Icon name="comment" size={13} style={{color:'#0a0a0a'}}/>
+            </div>
+            <div>
+              <p className="ttl" style={{fontSize:'12.5px', lineHeight:1.2}}>Platform guide</p>
+              <p style={{fontSize:'10.5px', color:'var(--txt2)', marginTop:'1px'}}>Ask about the app — not general questions</p>
+            </div>
             <span className="flex-1"/>
             <button onClick={()=>setOpen(false)} style={{color:'var(--txt2)'}}><Icon name="close" size={15}/></button>
           </div>
 
-          <div ref={listRef} className="flex-1 overflow-auto px-3 py-3" style={{display:'flex', flexDirection:'column', gap:'10px'}}>
+          <div ref={listRef} className="flex-1 overflow-auto px-3.5 py-3.5" style={{display:'flex', flexDirection:'column', gap:'12px'}}>
             {messages.map(function(m, i) {
+              const isUser = m.role === 'user';
               return (
-                <div key={i} style={{display:'flex', justifyContent: m.role==='user' ? 'flex-end' : 'flex-start'}}>
-                  <div style={{
-                    maxWidth:'85%', padding:'8px 11px', fontSize:'13px', lineHeight:1.45,
-                    whiteSpace:'pre-wrap',
-                    background: m.role==='user' ? 'var(--cy)' : 'rgba(var(--sink-rgb),.6)',
-                    color: m.role==='user' ? '#0a0a0a' : 'var(--txt)',
-                    border: m.role==='user' ? 'none' : '1px solid var(--line)',
-                  }}>
-                    {m.content}
+                <div key={i} style={{display:'flex', justifyContent: isUser ? 'flex-end' : 'flex-start'}}>
+                  <div>
+                    <div style={{
+                      maxWidth:'260px', padding:'9px 12px', fontSize:'13.5px', lineHeight:1.5,
+                      borderRadius: isUser ? '13px 13px 3px 13px' : '13px 13px 13px 3px',
+                      background: isUser ? 'var(--cy)' : 'var(--void)',
+                      color: isUser ? '#0a0a0a' : 'var(--txt)',
+                      border: isUser ? 'none' : '1px solid var(--line)',
+                      boxShadow: isUser ? 'none' : '0 1px 3px rgba(0,0,0,.06)',
+                    }}>
+                      {renderMsg(m.content)}
+                    </div>
                     {m.navTo && (
-                      <div className="mt-2">
-                        <button onClick={()=>{ go(m.navTo.page, m.navTo.tab); setOpen(false); }}
-                          className="text-xs font-semibold px-2 py-1"
-                          style={{border:'1px solid var(--cy)', color: m.role==='user' ? '#0a0a0a' : 'var(--cy)', background:'transparent'}}>
-                          Take me there →
-                        </button>
-                      </div>
+                      <button onClick={()=>{ go(m.navTo.page, m.navTo.tab); setOpen(false); }}
+                        className="flex items-center gap-1.5"
+                        style={{
+                          marginTop:'6px', fontSize:'12px', fontWeight:700, padding:'7px 12px',
+                          borderRadius:'999px', border:'none', background:'var(--cy)', color:'#0a0a0a',
+                          cursor:'pointer', boxShadow:'0 2px 8px rgba(0,0,0,.15)',
+                        }}>
+                        Take me there <Icon name="fwd" size={11}/>
+                      </button>
                     )}
                   </div>
                 </div>
@@ -16238,7 +16285,7 @@ function HelpBot({ go, nav }) {
             })}
             {busy && (
               <div style={{display:'flex', justifyContent:'flex-start'}}>
-                <div style={{padding:'8px 11px', fontSize:'13px', background:'rgba(var(--sink-rgb),.6)', border:'1px solid var(--line)', color:'var(--txt2)'}}>
+                <div style={{padding:'9px 12px', borderRadius:'13px 13px 13px 3px', background:'var(--void)', border:'1px solid var(--line)', color:'var(--txt2)', fontSize:'13px'}}>
                   …
                 </div>
               </div>
@@ -16250,9 +16297,14 @@ function HelpBot({ go, nav }) {
               onKeyDown={e=>{ if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
               placeholder="Ask how to do something…" disabled={busy}
               className="flex-1 text-sm px-3 py-2"
-              style={{background:'rgba(var(--sink-rgb),.55)', border:'1px solid var(--line)', color:'var(--txt)', outline:'none'}}/>
-            <button onClick={send} disabled={busy || !input.trim()} style={{color:'var(--cy)', opacity: (busy || !input.trim()) ? .4 : 1}}>
-              <Icon name="send" size={17}/>
+              style={{background:'var(--void)', border:'1px solid var(--line)', borderRadius:'10px', color:'var(--txt)', outline:'none'}}/>
+            <button onClick={send} disabled={busy || !input.trim()}
+              style={{
+                width:'34px', height:'34px', borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center', flex:'none',
+                background:'var(--cy)', color:'#0a0a0a', border:'none', cursor:'pointer',
+                opacity: (busy || !input.trim()) ? .4 : 1,
+              }}>
+              <Icon name="send" size={15}/>
             </button>
           </div>
         </div>

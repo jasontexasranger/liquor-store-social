@@ -1,11 +1,17 @@
 <!doctype html>
-<!-- Monthly features embed for store websites (Duda et al).
+<!-- Monthly features / store picks embed for store websites (Duda et al).
 
      Embedded once as an iframe (or opened directly); the content updates
      every time someone presses "Push to website" in the platform, because
      this page renders a JSON snapshot published to our public storage:
 
-       ?store=brothers   →  .../creatives/website/brothers.json
+       ?store=brothers            →  .../creatives/website/brothers.json          (monthly features)
+       ?store=brothers&view=picks →  .../creatives/website/brothers-picks.json    (manager picks)
+
+     Monthly features show everything at once in a wrapping grid, with
+     filters for category, price and savings. Store picks stay a single row
+     — a hand-picked shelf reads better as one line the visitor scrolls
+     through than a whole page of it.
 
      Nothing here is authenticated — the snapshot only ever contains what an
      admin or store manager deliberately published, which is the same
@@ -24,11 +30,27 @@
   .hdr { text-align: center; margin: 8px 0 4px; }
   .hdr h2 { font-size: 26px; letter-spacing: .02em; }
   .hdr p  { color: var(--mut); font-size: 14px; margin-top: 4px; }
-  /* One row, up to five cards; more than fits rotates through automatically.
-     The block's height is always exactly one card row. */
-  .grid { overflow: hidden; margin-top: 18px; }
-  .track { display: flex; gap: 14px; transition: transform .6s ease; align-items: stretch; }
-  .track .card { flex: 0 0 210px; }
+
+  /* Filter bar — features only. Plain selects so it works everywhere a
+     store's site might embed this, no framework required. */
+  .filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+             justify-content: center; margin: 14px 0 4px; }
+  .filters select { font: inherit; font-size: 13px; padding: 6px 10px; border-radius: 7px;
+                     border: 1px solid #d8d8d8; background: #fff; color: var(--ink); }
+  .filters label { font-size: 13px; color: var(--mut); display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  .filters .count { font-size: 12px; color: var(--mut); }
+
+  /* Monthly features: every card, wrapping to as many rows as it takes. */
+  .grid.wrap { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+               gap: 14px; margin-top: 18px; }
+
+  /* Store picks: one row, native horizontal scroll — a shelf, not a page. */
+  .grid.row { display: flex; gap: 14px; margin-top: 18px; overflow-x: auto;
+              -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity; padding-bottom: 8px; }
+  .grid.row .card { flex: 0 0 200px; scroll-snap-align: start; }
+  .grid.row::-webkit-scrollbar { height: 7px; }
+  .grid.row::-webkit-scrollbar-thumb { background: #d8d8d8; border-radius: 4px; }
+
   /* Uniform cards: the photo box is always square, the name always gets two
      lines of room, the size line one, and the price sits at the same height
      on every card — nothing shifts with content length. Oversized images
@@ -85,13 +107,13 @@
 </style>
 </head>
 <body>
-<div id="app"><p class="empty">Loading this month's features…</p></div>
+<div id="app"><p class="empty">Loading…</p></div>
 <script>
 (function () {
   // Tell the embedding page how tall we are, so the iframe can fit the whole
-  // grid instead of growing a scrollbar. The parent's snippet listens for
+  // block instead of growing a scrollbar. The parent's snippet listens for
   // this message; sent on every layout change (images loading, window
-  // resizing, content updating).
+  // resizing, filters changing).
   function reportHeight() {
     if (window.parent === window) return;
     parent.postMessage({ lrsFeaturesHeight: document.documentElement.scrollHeight }, '*');
@@ -128,6 +150,9 @@
           return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c];
         });
       };
+      var catLabel = function (c) {
+        return String(c).replace(/-/g, ' ').replace(/\b\w/g, function (m) { return m.toUpperCase(); });
+      };
       // Images only from our own storage — the snapshot is trusted, but a
       // belt goes well with braces on a page other sites embed.
       var okImg = function (u) {
@@ -144,7 +169,31 @@
       }
 
       var h = '<div class="hdr"><h2>' + esc(d.title || 'Monthly Features') + '</h2>'
-        + (d.dates ? '<p>' + esc(d.dates) + '</p>' : '') + '</div><div class="grid"><div class="track">';
+        + (d.dates ? '<p>' + esc(d.dates) + '</p>' : '') + '</div>';
+
+      // Filters only make sense once there's enough on the page to sort
+      // through — and only for the full features grid, never the one-row
+      // picks shelf, which is short by design.
+      var showFilters = !isPicks && items.length > 3;
+      if (showFilters) {
+        var cats = {};
+        items.forEach(function (it) { if (it.category) cats[it.category] = true; });
+        var catNames = Object.keys(cats).sort();
+        h += '<div class="filters">';
+        if (catNames.length > 1) {
+          h += '<select id="fcat"><option value="all">All categories</option>'
+            + catNames.map(function (c) { return '<option value="' + esc(c) + '">' + esc(catLabel(c)) + '</option>'; }).join('')
+            + '</select>';
+        }
+        h += '<select id="fprice"><option value="any">Any price</option>'
+          + '<option value="u15">Under $15</option><option value="15-30">$15 – $30</option>'
+          + '<option value="30-50">$30 – $50</option><option value="50p">$50+</option></select>';
+        h += '<label><input type="checkbox" id="fsale"> On sale only</label>';
+        h += '<span class="count" id="fcount"></span>';
+        h += '</div>';
+      }
+
+      h += '<div class="grid ' + (isPicks ? 'row' : 'wrap') + '">';
       items.forEach(function (it) {
         // The saving leads; a percentage joins it when it reads bigger than
         // the dollars do (everything here is under $100, so it usually does).
@@ -159,7 +208,7 @@
           ? '<div style="position:absolute;inset:0;z-index:1;display:flex;flex-direction:column;align-items:center;'
             + 'justify-content:center;gap:8px;background:' + bp + ';padding:16px;text-align:center">'
             + '<span style="color:' + bs + ';font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase">'
-            + esc(d.title.split(' ')[0]) + '</span>'
+            + esc((d.title || '').split(' ')[0]) + '</span>'
             + '<span style="color:#fff;font-size:19px;font-weight:800;line-height:1.2">' + esc(it.name) + '</span>'
             + '<span style="color:' + bs + ';font-size:12px;font-style:italic">Too good to wait for a photo</span>'
             + '</div>'
@@ -197,50 +246,55 @@
             + '</div>';
         }
 
-        h += '<div class="card"><div class="flip">' + front + back + '</div></div>';
+        h += '<div class="card" data-cat="' + esc(it.category || '') + '" data-price="' + (it.sale != null ? it.sale : '')
+          + '" data-savings="' + (it.savings != null ? it.savings : '') + '"><div class="flip">' + front + back + '</div></div>';
       });
-      h += '</div></div><p class="ft">' + esc(d.footnote || 'Prices exclude tax & deposit — while supplies last.') + '</p>';
+      h += '</div><p class="ft">' + esc(d.footnote || 'Prices exclude tax & deposit — while supplies last.') + '</p>';
       app.innerHTML = h;
+
       // One listener flips any card whose trigger (front line or back ✕) is
       // clicked. The back face is absolutely positioned over the front, so
-      // the row never reflows — the card just turns over.
+      // the card never reflows — it just turns over.
       app.addEventListener('click', function (e) {
         var t = e.target.closest('[data-flip]');
         if (t) { var c = t.closest('.card'); if (c) c.classList.toggle('on'); }
       });
 
-      // Carousel: fit as many cards as the width allows (never more than 5),
-      // and if there are more items than fit, rotate one card every few
-      // seconds — pausing while someone hovers or has a recipe open.
-      (function () {
-        var wrap = app.querySelector('.grid');
-        var track = app.querySelector('.track');
-        var cards = [].slice.call(track.children);
-        var idx = 0, step = 0, maxIdx = 0, hover = false;
-        function layout() {
-          var W = wrap.clientWidth;
-          var vis = Math.max(1, Math.min(5, Math.floor((W + 14) / 224)));
-          var cw = Math.floor((W - 14 * (vis - 1)) / vis);
-          cards.forEach(function (c) { c.style.flex = '0 0 ' + cw + 'px'; });
-          step = cw + 14;
-          maxIdx = Math.max(0, cards.length - vis);
-          if (idx > maxIdx) idx = maxIdx;
-          apply();
+      if (showFilters) {
+        var cards = [].slice.call(app.querySelectorAll('.card'));
+        var fcat = document.getElementById('fcat');
+        var fprice = document.getElementById('fprice');
+        var fsale = document.getElementById('fsale');
+        var fcount = document.getElementById('fcount');
+        function apply() {
+          var cat = fcat ? fcat.value : 'all';
+          var price = fprice.value;
+          var saleOnly = fsale.checked;
+          var shown = 0;
+          cards.forEach(function (c) {
+            var savings = parseFloat(c.getAttribute('data-savings'));
+            var p = parseFloat(c.getAttribute('data-price'));
+            var ok = true;
+            if (cat !== 'all' && c.getAttribute('data-cat') !== cat) ok = false;
+            if (saleOnly && !(savings > 0)) ok = false;
+            if (price !== 'any') {
+              if (isNaN(p)) ok = false;
+              else if (price === 'u15' && !(p < 15)) ok = false;
+              else if (price === '15-30' && !(p >= 15 && p < 30)) ok = false;
+              else if (price === '30-50' && !(p >= 30 && p < 50)) ok = false;
+              else if (price === '50p' && !(p >= 50)) ok = false;
+            }
+            c.style.display = ok ? '' : 'none';
+            if (ok) shown++;
+          });
+          fcount.textContent = shown + ' of ' + cards.length;
+          window.__reportHeight();
         }
-        function apply() { track.style.transform = 'translateX(-' + (idx * step) + 'px)'; }
-        wrap.addEventListener('mouseenter', function(){ hover = true; });
-        wrap.addEventListener('mouseleave', function(){ hover = false; });
-        window.addEventListener('resize', function(){ layout(); window.__reportHeight(); });
-        if (cards.length) {
-          layout();
-          setInterval(function () {
-            if (hover || maxIdx === 0) return;
-            if (track.querySelector('.card.on')) return;   // recipe open — hold still
-            idx = idx >= maxIdx ? 0 : idx + 1;
-            apply();
-          }, 4500);
-        }
-      })();
+        if (fcat) fcat.addEventListener('change', apply);
+        fprice.addEventListener('change', apply);
+        fsale.addEventListener('change', apply);
+        apply();
+      }
 
       window.__reportHeight();
       setTimeout(window.__reportHeight, 600);

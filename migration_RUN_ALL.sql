@@ -1599,6 +1599,13 @@ ALTER TABLE public.store_picks
 NOTIFY pgrst, 'reload schema';
 
 
+-- ==== migration_picks_recipe.sql ====
+-- Store picks can flip to a recipe card too, same as monthly features.
+ALTER TABLE public.store_picks
+  ADD COLUMN IF NOT EXISTS recipe_on BOOLEAN NOT NULL DEFAULT true;
+NOTIFY pgrst, 'reload schema';
+
+
 -- ============================================================================
 -- Tell PostgREST about the new tables.
 -- "Could not find the table in the schema cache" means this step was missed.

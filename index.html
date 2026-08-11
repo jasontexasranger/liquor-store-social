@@ -5043,6 +5043,7 @@ function StorePicksCard({ storeId, storeName, canEdit }) {
   const toast = useToast();
   const { images: products } = useBrandImageLibrary();
   const { profile: brand } = useBrandProfile(storeId);
+  const { recipes } = useRecipes();
   const [picks,   setPicks]   = useState(null);
   const [showAdd, setShowAdd] = useState(false);
   const [q,       setQ]       = useState('');
@@ -5055,6 +5056,7 @@ function StorePicksCard({ storeId, storeName, canEdit }) {
   const [suggestScope, setSuggestScope] = useState('store'); // 'store' | 'all'
 
   const prodOf = id => products.find(p => p.id === id) || null;
+  const recipeFor = prod => (prod && recipes.find(x => x.product_id === prod.id)) || null;
 
   const load = useCallback(async function() {
     const sb = getSB(); if (!sb) return;
@@ -5091,12 +5093,21 @@ function StorePicksCard({ storeId, storeName, canEdit }) {
       }
       const price = pk.price != null ? Number(pk.price) : null;
       const reg   = pk.reg_price != null ? Number(pk.reg_price) : null;
+      const rec = recipeFor(prod);
+      const withRec = rec && pk.recipe_on !== false && rec.name;
       items.push({
         name: prod.product_name, size: prod.size || '',
         sale: price, reg,
         savings: (price != null && reg != null && reg > price) ? Math.round((reg - price) * 100) / 100 : null,
         note: pk.note || '',
+        category: prod.category || null,
         image: img, placeholder: img ? undefined : true,
+        recipe: withRec ? {
+          name: rec.name, blurb: rec.notes || '', glass: rec.glass || '',
+          garnish: rec.garnish || '',
+          ingredients: (rec.ingredients || []).filter(i => i.item),
+          method: (rec.method || []).filter(Boolean),
+        } : undefined,
       });
     }
     const snap = {
@@ -5395,6 +5406,8 @@ function StorePicksCard({ storeId, storeName, canEdit }) {
         if (!prod) return null;
         const d = draft[pk.id] || {};
         const off = pk.visible === false;
+        const rec = recipeFor(prod);
+        const recOn = pk.recipe_on !== false;
         return (
           <div key={pk.id} className="flex items-center gap-3 py-1.5 flex-wrap"
                style={{borderBottom:'1px solid rgba(212,175,55,.06)', opacity: off ? 0.45 : 1}}>
@@ -5404,6 +5417,14 @@ function StorePicksCard({ storeId, storeName, canEdit }) {
                     aria-label={off ? 'Show on website' : 'Hide from website'}>
               <Icon name="eye" size={14} style={{color: off ? 'var(--txt3)' : 'var(--cy)'}}/>
             </button>
+            {rec && (
+              <button disabled={!canEdit || busy}
+                      onClick={()=>patchPick(pk, { recipe_on: !recOn })}
+                      title={recOn ? 'Card flips to "' + rec.name + '" — click to remove the flip' : 'Click to add the "' + rec.name + '" flip card'}
+                      aria-label={recOn ? 'Remove recipe flip' : 'Add recipe flip'}>
+                <Icon name="cocktail" size={14} style={{color: recOn ? 'var(--cy)' : 'var(--txt3)'}}/>
+              </button>
+            )}
             <img src={prodSrc(prod)} alt="" className="w-9 h-9 object-contain flex-none"
                  style={{background:'#fff', border:'1px solid var(--line)'}}/>
             <span className="text-xs flex-1 truncate" style={{color:'var(--txt)', minWidth:'120px'}}>
@@ -5750,6 +5771,7 @@ function WebsitePushModal({ storeId, storeName, period, periodRow, rows, product
         reg: x.r.reg_price != null ? Number(x.r.reg_price) : null,
         sale: x.r.sale_price != null ? Number(x.r.sale_price) : null,
         savings: x.r.savings != null ? Number(x.r.savings) : null,
+        category: (x.prod && x.prod.category) || null,
         image: x.image,
         placeholder: x.placeholder || undefined,
         recipe: withRec ? {

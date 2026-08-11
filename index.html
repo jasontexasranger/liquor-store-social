@@ -5166,6 +5166,14 @@ function StorePicksCard({ storeId, storeName, canEdit }) {
   // typed in on monthly features. Not a real POS feed, so this only ever
   // knows about products that were featured — good enough as a starting
   // point, framed honestly rather than as a definitive "top sellers" claim.
+  //
+  // Sales get entered after a month closes, but by then the row's product_id
+  // link is often missing — features from finished months were mostly typed
+  // in without ever picking a product photo, while the *current* month's
+  // rows are linked but have no sales yet (the month isn't over). So this
+  // can't join on product_id alone; it falls back to matching the feature's
+  // name against the product library, the same way the rest of the app
+  // treats a feature row as "the same product" everywhere else.
   const loadSuggestions = async function() {
     setSuggestBusy(true);
     try {
@@ -5179,16 +5187,45 @@ function StorePicksCard({ storeId, storeName, canEdit }) {
         .eq('store_id', storeId)
         .gte('period', cutoff);
       if (error) throw new Error(error.message);
+
+      // Feature names are typed free-hand ("CORONA") while the product
+      // library carries full SKU names ("Corona Extra"), so exact matching
+      // misses almost everything. Match on shared significant words instead
+      // — a single shared word only counts if it's long and specific enough
+      // to actually mean something (so "LIGHT" or "WHITE" alone can't match
+      // two unrelated products that both happen to say it).
+      const STOPWORDS = new Set(['MIXER','MIXERS','PACK','PACKS','PK','VARIETY','ASSORTED','CANS','CAN','BOTTLE','BOTTLES','THE','AND','OF','A','ALL','SET','BOXSET','BOX']);
+      const GENERIC   = new Set(['LIGHT','WHITE','RED','ROSE','GOLD','SILVER','DRY','SWEET','ORIGINAL','PINK','BLUSH','ICE','EXTRA','CLASSIC','PREMIUM','RESERVE','SPARKLING','BLANC','ROUGE','SPICED','SPICE']);
+      const tokenize  = s => String(s||'').toUpperCase().replace(/[^A-Z0-9 ]/g,' ').split(/\s+/).filter(w => w && !STOPWORDS.has(w));
+      const productTokens = products.map(p => ({ p, tokens: tokenize(p.product_name) }));
+      const nameMatch = function(name) {
+        const ft = tokenize(name);
+        if (!ft.length) return null;
+        let best = null, bestOverlap = 0, bestLen = Infinity;
+        productTokens.forEach(function(pt) {
+          if (!pt.tokens.length) return;
+          const common = ft.filter(t => pt.tokens.includes(t));
+          const overlap = common.length;
+          if (overlap === 0) return;
+          if (overlap === 1 && (common[0].length < 5 || GENERIC.has(common[0]))) return;
+          if (overlap > bestOverlap || (overlap === bestOverlap && pt.tokens.length < bestLen)) {
+            best = pt.p; bestOverlap = overlap; bestLen = pt.tokens.length;
+          }
+        });
+        return best;
+      };
+
       const already = new Set((picks || []).map(pk => pk.product_id));
       const byProduct = {};
       (data || []).flatMap(p => p.features || []).forEach(function(r) {
-        if (!r.product_id || already.has(r.product_id)) return;
         if (r.qty_sold == null && r.revenue == null) return;
-        const prod = prodOf(r.product_id);
-        if (!prod) return;
-        if (!byProduct[r.product_id]) byProduct[r.product_id] = { product_id: r.product_id, prod, qty:0, revenue:0 };
-        byProduct[r.product_id].qty     += Number(r.qty_sold || 0);
-        byProduct[r.product_id].revenue += Number(r.revenue  || 0);
+        const prod = (r.product_id && prodOf(r.product_id))
+                  || nameMatch(r.name)
+                  || null;
+        if (!prod || already.has(prod.id)) return;
+        if (!byProduct[prod.id]) byProduct[prod.id] = { product_id: prod.id, prod, qty:0, revenue:0 };
+        byProduct[prod.id].qty     += Number(r.qty_sold || 0);
+        byProduct[prod.id].revenue += Number(r.revenue  || 0);
       });
       const top = Object.values(byProduct)
         .sort((a,b) => (b.qty - a.qty) || (b.revenue - a.revenue))

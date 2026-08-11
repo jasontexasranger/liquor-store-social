@@ -26,7 +26,12 @@
       --txt:#dbe9f2; --txt2:#7d93a8; --txt3:#48596b;
       --line:rgba(212,175,55,.18); --line2:rgba(212,175,55,.34);
       --menu:#0a121f; --headerbg:rgba(6,11,20,.9); --hudshadow:0 0 34px rgba(0,0,0,.5);
-      --field:rgba(4,8,16,.55); --scanline-op:.45;
+      /* Recessed/nested surfaces (inputs, sub-panels, calendar cells) are
+         built as rgba(var(--sink*-rgb), alpha) throughout the app, alpha
+         varying per spot. Retheming these two triplets recolours every one
+         of them without touching each call site. */
+      --sink-rgb:4,8,16; --sink2-rgb:2,5,11;
+      --field:rgba(var(--sink-rgb),.55); --scanline-op:.45;
       --disp:'Chakra Petch',ui-sans-serif,system-ui,sans-serif;
       --mono:'JetBrains Mono',ui-monospace,monospace;
     }
@@ -43,6 +48,9 @@
       --line:rgba(60,45,15,.14); --line2:rgba(60,45,15,.26);
       --menu:#ffffff; --headerbg:rgba(255,255,255,.92);
       --hudshadow:0 4px 18px rgba(40,28,5,.10);
+      /* Same warm tan for both — the two darks read as one "sunken" surface
+         once inverted for daylight, no need to keep them distinct here. */
+      --sink-rgb:206,190,152; --sink2-rgb:206,190,152;
       --field:rgba(0,0,0,.035); --scanline-op:0;
       color-scheme: light;
     }
@@ -651,7 +659,7 @@ function CreativePicker({ allowed, storeIds, onPick, onPickMany, onClose, multi,
   return (
     <Portal>
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-6"
-         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
+         style={{background:'rgba(var(--sink2-rgb),.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
       <div className="hud hud-brk w-full max-w-4xl max-h-[86vh] overflow-auto p-6" style={dragPanel.style} onClick={e=>e.stopPropagation()}>
         <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-5">
           <span className="ttl">Creative Library</span>
@@ -706,7 +714,7 @@ function CreativePicker({ allowed, storeIds, onPick, onPickMany, onClose, multi,
                     outlineOffset: '-2px',
                     opacity: blocked ? 0.35 : 1,
                   } : undefined}>
-                  <div className="w-full" style={{aspectRatio:String(aspectMeta(c.aspect).ratio), background:'rgba(4,8,16,.7)'}}>
+                  <div className="w-full" style={{aspectRatio:String(aspectMeta(c.aspect).ratio), background:'rgba(var(--sink-rgb),.7)'}}>
                     <img src={c.public_url} alt={c.name} className="w-full h-full object-cover"/>
                   </div>
                   {/* The number, not just a tick — card order is the carousel's order. */}
@@ -790,7 +798,7 @@ function UploadCreativeModal({ campaigns, myStores, onClose, onUpload }) {
   return (
     <Portal>
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-6"
-         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
+         style={{background:'rgba(var(--sink2-rgb),.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
       <div className="hud hud-brk w-full max-w-lg max-h-[88vh] overflow-auto p-6" style={dragPanel.style} onClick={e=>e.stopPropagation()}>
         <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-5">
           <span className="ttl">Add Creative</span>
@@ -800,7 +808,7 @@ function UploadCreativeModal({ campaigns, myStores, onClose, onUpload }) {
 
         <div onClick={()=>ref.current?.click()}
              className="cursor-pointer mb-4 flex items-center justify-center"
-             style={{border:'1px dashed var(--line2)', minHeight:'150px', background:'rgba(4,8,16,.5)'}}>
+             style={{border:'1px dashed var(--line2)', minHeight:'150px', background:'rgba(var(--sink-rgb),.5)'}}>
           {prev
             ? <img src={prev} alt="" style={{maxHeight:'230px'}} className="object-contain"/>
             : <div className="text-center py-8">
@@ -825,7 +833,7 @@ function UploadCreativeModal({ campaigns, myStores, onClose, onUpload }) {
                 <button key={a.id} onClick={()=>setAspect(a.id)}
                   className="flex items-center gap-2.5 p-2.5 border text-left transition-all"
                   style={{ borderColor:on?'var(--cy)':'var(--line)',
-                           background:on?'var(--cy-glow)':'rgba(4,8,16,.4)',
+                           background:on?'var(--cy-glow)':'rgba(var(--sink-rgb),.4)',
                            color:on?'var(--cy)':'var(--txt2)' }}>
                   <span style={{width:'22px', height:'22px', display:'flex', alignItems:'center', justifyContent:'center'}}>
                     <span style={{ width: a.ratio>=1?'20px':(20*a.ratio)+'px',
@@ -848,7 +856,7 @@ function UploadCreativeModal({ campaigns, myStores, onClose, onUpload }) {
         {dims && (
           <div className="mb-4 p-3 border" style={{
             borderColor: check.ok?'var(--line)':'var(--amb)',
-            background: check.ok?'rgba(4,8,16,.4)':'rgba(240,168,48,.09)'}}>
+            background: check.ok?'rgba(var(--sink-rgb),.4)':'rgba(240,168,48,.09)'}}>
             <p className="mono text-xs" style={{color:check.ok?'var(--txt2)':'var(--amb)'}}>
               {check.ok
                 ? <React.Fragment><Icon name="check" size={13} className="mr-1.5"/>{dims.w} × {dims.h} — matches {aspect}</React.Fragment>
@@ -915,7 +923,7 @@ function CampaignManager({ campaigns, onCreate, onUpdate, counts }) {
       </div>
 
       {open && (
-        <div className="mb-5 p-4" style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.4)'}}>
+        <div className="mb-5 p-4" style={{border:'1px solid var(--line)', background:'rgba(var(--sink-rgb),.4)'}}>
           <div className="mb-3"><Label>Name</Label>
             <Input value={name} onChange={e=>setName(e.target.value)} placeholder="Summer Patio 2026"/></div>
           <div className="grid grid-cols-2 gap-3 mb-3">
@@ -1051,12 +1059,12 @@ function CreativeLibrary({ isAdmin, myStores }) {
               const st = myStores.find(x=>x.id===c.store_id);
               return (
                 <div key={c.id} className="hud p-0 overflow-hidden group relative">
-                  <div className="w-full" style={{aspectRatio:String(aspectMeta(c.aspect).ratio), background:'rgba(4,8,16,.7)'}}>
+                  <div className="w-full" style={{aspectRatio:String(aspectMeta(c.aspect).ratio), background:'rgba(var(--sink-rgb),.7)'}}>
                     <img src={c.public_url} alt={c.name} className="w-full h-full object-cover"/>
                   </div>
                   <button onClick={()=>del(c)}
                     className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1.5"
-                    style={{background:'rgba(2,5,11,.85)', color:'var(--red)', border:'1px solid var(--red)'}}
+                    style={{background:'rgba(var(--sink2-rgb),.85)', color:'var(--red)', border:'1px solid var(--red)'}}
                     aria-label={'Delete '+c.name}>
                     <Icon name="trash" size={12}/>
                   </button>
@@ -1810,7 +1818,7 @@ function RecipeStyleEditor({ tokens, isOwn, onSave, onClear, isAdmin, storeName,
                   <button key={c[0]} onClick={()=>set('stamp_corner', c[0])} title={c[1]}
                     style={{ height:'34px',
                              border:'1px solid ' + (on ? 'var(--cy)' : 'var(--line)'),
-                             background: on ? 'var(--cy-glow)' : 'rgba(4,8,16,.45)' }}>
+                             background: on ? 'var(--cy-glow)' : 'rgba(var(--sink-rgb),.45)' }}>
                     <span style={{display:'block', width:'9px', height:'9px', background: on ? 'var(--cy)' : 'var(--txt3)',
                                   marginLeft: c[0][1]==='l' ? '5px' : 'auto',
                                   marginRight: c[0][1]==='r' ? '5px' : 'auto',
@@ -2415,6 +2423,7 @@ function RecipesPage({ isAdmin, myStores, onCompose }) {
   const { addRendered } = useCreatives();
 
   const [draft,    setDraft]    = useState(null);   // the recipe being edited
+  const editorRef = useRef(null);
   const [preview,  setPreview]  = useState(null);   // rendered card data URL
   // The generated photo, kept apart from the card. Restyling redraws the name
   // over the same photo instead of paying for a new drink.
@@ -2433,6 +2442,15 @@ function RecipesPage({ isAdmin, myStores, onCompose }) {
   const [capText,  setCapText]  = useState(null);   // null = auto caption from the recipe
 
   const storeName = (myStores.find(s=>s.id===storeId)||{}).name || '';
+
+  // The editor renders below the recipe grid, not as an overlay — without
+  // this, opening or starting a recipe on a full grid can land the new panel
+  // entirely off-screen, and it looks like the click did nothing.
+  useEffect(function() {
+    if (draft && editorRef.current) {
+      editorRef.current.scrollIntoView({ behavior:'smooth', block:'start' });
+    }
+  }, [draft && draft.id, !!draft]);
 
   useEffect(function() {
     const sb = getSB(); if (!sb || !storeId) { setStamp(null); return; }
@@ -2696,7 +2714,7 @@ function RecipesPage({ isAdmin, myStores, onCompose }) {
         </div>
 
         {showStyle && (
-          <div className="p-4 mb-4" style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.4)'}}>
+          <div className="p-4 mb-4" style={{border:'1px solid var(--line)', background:'rgba(var(--sink-rgb),.4)'}}>
             <RecipeStyleEditor tokens={tokens} isOwn={isOwn} isAdmin={isAdmin}
               storeName={storeName} busy={busy==='style'} hasStamp={!!stamp}
               onSave={async function(t, scope){
@@ -2727,7 +2745,7 @@ function RecipesPage({ isAdmin, myStores, onCompose }) {
               const p = products.find(x=>x.id===r.product_id);
               return (
                 <div key={r.id} className="hud p-0 overflow-hidden group relative">
-                  <div className="w-full" style={{aspectRatio:'4/5', background:'rgba(4,8,16,.7)'}}>
+                  <div className="w-full" style={{aspectRatio:'4/5', background:'rgba(var(--sink-rgb),.7)'}}>
                     {r.image_url
                       ? <img src={r.image_url} alt="" className="w-full h-full object-cover"/>
                       : p && prodSrc(p)
@@ -2745,7 +2763,7 @@ function RecipesPage({ isAdmin, myStores, onCompose }) {
                             catch(e){ toast.error(e.message); }
                           }}
                     className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 p-1.5"
-                    style={{background:'rgba(2,5,11,.85)', color:'var(--red)', border:'1px solid var(--red)'}}>
+                    style={{background:'rgba(var(--sink2-rgb),.85)', color:'var(--red)', border:'1px solid var(--red)'}}>
                     <Icon name="trash" size={12}/>
                   </button>
                   <div className="p-2.5">
@@ -2782,7 +2800,7 @@ function RecipesPage({ isAdmin, myStores, onCompose }) {
       </Card>
 
       {draft && (
-        <Card>
+        <Card cardRef={editorRef}>
           <div className="flex items-center gap-3 mb-4">
             <span className="ttl">{draft.id ? 'Edit recipe' : 'New recipe'}</span>
             <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
@@ -2864,7 +2882,7 @@ function RecipesPage({ isAdmin, myStores, onCompose }) {
 
             <div>
               <Label>Card · 1080 × 1350</Label>
-              <div style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.6)'}}>
+              <div style={{border:'1px solid var(--line)', background:'rgba(var(--sink-rgb),.6)'}}>
                 {preview
                   ? <img src={preview} alt="Recipe card preview" className="w-full"/>
                   : <div className="flex items-center justify-center" style={{aspectRatio:'4/5'}}>
@@ -2918,7 +2936,7 @@ function RecipesPage({ isAdmin, myStores, onCompose }) {
                     here and both routes below use your words. */}
                 <textarea
                   className="w-full text-xs p-2.5 mb-1"
-                  style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.4)',
+                  style={{border:'1px solid var(--line)', background:'rgba(var(--sink-rgb),.4)',
                           color:'var(--txt2)', minHeight:'150px', resize:'vertical'}}
                   value={capText !== null ? capText
                     : recipeCaption(draft, (productOf(draft)||{}).product_name || '', offer)}
@@ -3005,7 +3023,7 @@ function ProductPickerModal({ products, onPick, onClose }) {
   return (
     <Portal>
     <div className="fixed inset-0 z-[210] flex items-center justify-center p-6"
-         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
+         style={{background:'rgba(var(--sink2-rgb),.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
       <div className="hud hud-brk w-full max-w-3xl max-h-[86vh] overflow-auto p-6"
            style={dragPanel.style} onClick={e=>e.stopPropagation()}>
         <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-4">
@@ -3022,7 +3040,7 @@ function ProductPickerModal({ products, onPick, onClose }) {
             {list.map(function(p) {
               return (
                 <button key={p.id} onClick={()=>onPick(p)} className="hud p-0 overflow-hidden text-left">
-                  <div className="w-full" style={{aspectRatio:'1', background:'rgba(4,8,16,.7)'}}>
+                  <div className="w-full" style={{aspectRatio:'1', background:'rgba(var(--sink-rgb),.7)'}}>
                     <img src={prodSrc(p)} alt="" className="w-full h-full object-contain"/>
                   </div>
                   <p className="text-xs p-2 truncate" style={{color:'var(--txt)'}}>{p.product_name}</p>
@@ -3490,7 +3508,7 @@ function BCLiquorSearch({ onImported }) {
   const money = v => (v == null ? null : '$' + Number(v).toFixed(2));
 
   return (
-    <div className="p-4" style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.4)'}}>
+    <div className="p-4" style={{border:'1px solid var(--line)', background:'rgba(var(--sink-rgb),.4)'}}>
       <div className="flex items-center gap-3 mb-3">
         <span className="ttl">BC Liquor lookup</span>
         <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
@@ -3516,7 +3534,7 @@ function BCLiquorSearch({ onImported }) {
             {results.map(function(p) {
               return (
                 <div key={p.sku} className="flex items-center gap-3 p-2.5"
-                     style={{border:'1px solid var(--line)', background:'rgba(2,5,11,.5)'}}>
+                     style={{border:'1px solid var(--line)', background:'rgba(var(--sink2-rgb),.5)'}}>
                   <img src={p.image_url} alt={p.name}
                        className="object-contain flex-none"
                        style={{width:'54px', height:'54px', background:'rgba(255,255,255,.04)'}}
@@ -3757,7 +3775,7 @@ function FeaturePasteBox({ onImport, onClose }) {
   const preview = parseFeaturePaste(text);
 
   return (
-    <div className="p-4 mb-4" style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.45)'}}>
+    <div className="p-4 mb-4" style={{border:'1px solid var(--line)', background:'rgba(var(--sink-rgb),.45)'}}>
       <div className="flex items-center gap-3 mb-3">
         <span className="ttl">Paste from Excel</span>
         <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
@@ -3857,7 +3875,7 @@ function QuickProductCreate({ seedName, seedSize, onCreated, onClose }) {
   return (
     <Portal>
     <div className="fixed inset-0 z-[210] flex items-center justify-center p-6"
-         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
+         style={{background:'rgba(var(--sink2-rgb),.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
       <div className="hud hud-brk w-full max-w-lg max-h-[88vh] overflow-auto p-6"
            style={dragPanel.style} onClick={e=>e.stopPropagation()}>
         <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-4">
@@ -3866,7 +3884,7 @@ function QuickProductCreate({ seedName, seedSize, onCreated, onClose }) {
         </div>
 
         <ImageDropZone className="p-3 mb-3 flex items-center justify-center"
-          style={{border:'1px dashed var(--line2)', background:'rgba(4,8,16,.4)', minHeight:'132px'}}
+          style={{border:'1px dashed var(--line2)', background:'rgba(var(--sink-rgb),.4)', minHeight:'132px'}}
           onImage={function(out){ setPrev(out.dataUrl); setHosted(out.hostedUrl || null); }}>
           {prev
             ? <img src={prev} alt="" style={{maxHeight:'150px'}} className="object-contain"/>
@@ -4194,7 +4212,7 @@ function ScreenPreviewModal({ screen, playlistId, playlistName, account, onClose
   return (
     <Portal>
     <div className="fixed inset-0 z-[220] flex items-center justify-center p-6"
-         style={{background:'rgba(2,5,11,.9)', backdropFilter:'blur(4px)'}} onClick={onClose}>
+         style={{background:'rgba(var(--sink2-rgb),.9)', backdropFilter:'blur(4px)'}} onClick={onClose}>
       <div className="hud hud-brk p-5" onClick={e=>e.stopPropagation()}>
         <div className="flex items-center gap-3 mb-3">
           <span className="ttl">{screen.deviceName}</span>
@@ -4637,7 +4655,7 @@ function SignagePage() {
                                    style={{border:'1px solid var(--line)'}}
                                    onClick={()=>window.open(url, '_blank', 'noopener')}/>
                             : <span className="w-14 h-9 flex-none flex flex-col items-center justify-center"
-                                    style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.6)'}}
+                                    style={{border:'1px solid var(--line)', background:'rgba(var(--sink-rgb),.6)'}}
                                     title="Preview only available in the OptiSigns dashboard — this file lives in their private storage">
                                 <Icon name={signageTypeLabel(it)==='VIDEO' ? 'play' : 'file'} size={11}
                                       style={{color:'var(--cy-dim)'}}/>
@@ -4874,7 +4892,7 @@ function SignagePushModal({ storeId, storeName, period, periodRow, onClose }) {
   return (
     <Portal>
     <div className="fixed inset-0 z-[210] flex items-center justify-center p-6"
-         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}}
+         style={{background:'rgba(var(--sink2-rgb),.88)', backdropFilter:'blur(4px)'}}
          onClick={busy ? undefined : onClose}>
       <div className="hud hud-brk w-full max-w-2xl max-h-[88vh] overflow-auto p-6"
            style={dragPanel.style} onClick={e=>e.stopPropagation()}>
@@ -4966,7 +4984,7 @@ function SignagePushModal({ storeId, storeName, period, periodRow, onClose }) {
                              style={{aspectRatio:'1'}}/>
                         {c.aspect === '16:9' &&
                           <span className="lbl absolute bottom-0 left-0 px-1"
-                                style={{background:'rgba(2,5,11,.85)', color:'var(--cy)'}}>16:9</span>}
+                                style={{background:'rgba(var(--sink2-rgb),.85)', color:'var(--cy)'}}>16:9</span>}
                       </button>
                     );
                   })}
@@ -5632,7 +5650,7 @@ function FeatureCocktailBatch({ storeId, period, rows, products, onClose, onDone
   return (
     <Portal>
     <div className="fixed inset-0 z-[210] flex items-center justify-center p-6"
-         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}}
+         style={{background:'rgba(var(--sink2-rgb),.88)', backdropFilter:'blur(4px)'}}
          onClick={running ? undefined : onClose}>
       <div className="hud hud-brk w-full max-w-lg max-h-[88vh] overflow-auto p-6"
            style={dragPanel.style} onClick={e=>e.stopPropagation()}>
@@ -5903,7 +5921,7 @@ function WebsitePushModal({ storeId, storeName, period, periodRow, rows, product
   return (
     <Portal>
     <div className="fixed inset-0 z-[210] flex items-center justify-center p-6"
-         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}} onClick={busy ? undefined : onClose}>
+         style={{background:'rgba(var(--sink2-rgb),.88)', backdropFilter:'blur(4px)'}} onClick={busy ? undefined : onClose}>
       <div className="hud hud-brk w-full max-w-xl max-h-[88vh] overflow-auto p-6"
            style={dragPanel.style} onClick={e=>e.stopPropagation()}>
         <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-4">
@@ -6115,7 +6133,7 @@ function FeatureCreativeBatch({ storeId, storeName, period, rows, products, camp
   return (
     <Portal>
     <div className="fixed inset-0 z-[210] flex items-center justify-center p-6"
-         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}}
+         style={{background:'rgba(var(--sink2-rgb),.88)', backdropFilter:'blur(4px)'}}
          onClick={running ? undefined : onClose}>
       <div className="hud hud-brk w-full max-w-2xl max-h-[88vh] overflow-auto p-6"
            style={dragPanel.style} onClick={e=>e.stopPropagation()}>
@@ -6628,7 +6646,7 @@ function PostPlanBuilder({ storeId, storeName, period, periodRow, rows, products
   return (
     <Portal>
     <div className="fixed inset-0 z-[210] flex items-center justify-center p-6"
-         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}}
+         style={{background:'rgba(var(--sink2-rgb),.88)', backdropFilter:'blur(4px)'}}
          onClick={busy ? undefined : onClose}>
       <div className="hud hud-brk w-full max-w-3xl max-h-[90vh] overflow-auto p-6"
            style={dragPanel.style} onClick={e=>e.stopPropagation()}>
@@ -6779,7 +6797,7 @@ function PostPlanBuilder({ storeId, storeName, period, periodRow, rows, products
               })}
             </div>
 
-            <div className="p-3 mb-4" style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.4)'}}>
+            <div className="p-3 mb-4" style={{border:'1px solid var(--line)', background:'rgba(var(--sink-rgb),.4)'}}>
               <p className="lbl mb-2">Plan preview</p>
               {planned.length === 0 ? (
                 <p className="text-xs" style={{color:'var(--amb)'}}>
@@ -7345,7 +7363,7 @@ function FeaturePicker({ storeId, onPick, onClose }) {
   return (
     <Portal>
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-6"
-         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
+         style={{background:'rgba(var(--sink2-rgb),.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
       <div className="hud hud-brk w-full max-w-2xl max-h-[85vh] overflow-auto p-6" style={dragPanel.style} onClick={e=>e.stopPropagation()}>
         <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-4 flex-wrap">
           <span className="ttl">This month's features</span>
@@ -7369,7 +7387,7 @@ function FeaturePicker({ storeId, onPick, onClose }) {
               return (
                 <button key={r.id} onClick={()=>{ onPick(r, prod); onClose(); }}
                         className="flex items-center gap-3 w-full p-2.5 text-left"
-                        style={{border:'1px solid var(--line)', background:'rgba(2,5,11,.5)'}}>
+                        style={{border:'1px solid var(--line)', background:'rgba(var(--sink2-rgb),.5)'}}>
                   {prod
                     ? <img src={prodSrc(prod)} alt="" className="w-11 h-11 object-cover flex-none"/>
                     : <div className="w-11 h-11 flex-none flex items-center justify-center"
@@ -7567,7 +7585,7 @@ function FeatureCsvImport({ onDone, onClose }) {
   const total = (blocks||[]).reduce((a,b)=>a+b.rows.length, 0);
 
   return (
-    <div className="p-4" style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.45)'}}>
+    <div className="p-4" style={{border:'1px solid var(--line)', background:'rgba(var(--sink-rgb),.45)'}}>
       <div className="flex items-center gap-3 mb-3">
         <span className="ttl">Import a monthly CSV</span>
         <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
@@ -7786,7 +7804,7 @@ function FeatureDrill({ title, subtitle, rows, onClose }) {
   return (
     <Portal>
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-6"
-         style={{background:'rgba(2,5,11,.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
+         style={{background:'rgba(var(--sink2-rgb),.88)', backdropFilter:'blur(4px)'}} onClick={onClose}>
       <div className="hud hud-brk w-full max-w-3xl max-h-[86vh] overflow-auto p-6"
            style={dragPanel.style} onClick={e=>e.stopPropagation()}>
         <div {...dragPanel.handleProps} className="flex items-start gap-3 mb-1">
@@ -8174,7 +8192,7 @@ function ImageDropZone({ onImage, children, className='', style={} }) {
       {children}
       {(over || busy) && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none"
-             style={{background:'rgba(2,5,11,.8)', zIndex:5}}>
+             style={{background:'rgba(var(--sink2-rgb),.8)', zIndex:5}}>
           <p className="lbl" style={{color:'var(--cy)'}}>
             {busy ? 'Fetching image…' : 'Drop to add'}
           </p>
@@ -8528,7 +8546,7 @@ function StorePicker({ value, onChange, stores, allLabel, allValue = 'all', extr
       <span className="flex items-center justify-center px-3"
         style={{ height: px + 'px', minWidth: px + 'px',
                  border: '2px solid ' + (active ? 'var(--cy)' : 'var(--line)'),
-                 background: active ? 'var(--cy-glow)' : 'rgba(4,8,16,.45)',
+                 background: active ? 'var(--cy-glow)' : 'rgba(var(--sink-rgb),.45)',
                  color: active ? 'var(--cy)' : 'var(--txt2)',
                  fontSize:'11px', letterSpacing:'.1em', textTransform:'uppercase' }}>
         {label}
@@ -9216,14 +9234,14 @@ function fbPostUrl(id)  { const p=String(id).split('_'); return p.length===2?`ht
 // ─────────────────────────────────────────────
 // UI PRIMITIVES
 // ─────────────────────────────────────────────
-const Card = ({ children, className='' }) => (
-  <div className={`hud hud-brk p-5 ${className}`}>{children}</div>
+const Card = ({ children, className='', cardRef }) => (
+  <div ref={cardRef} className={`hud hud-brk p-5 ${className}`}>{children}</div>
 );
 const Label = ({ children, className='' }) => (
   <label className={`lbl block mb-2 ${className}`}>{children}</label>
 );
 const inputCls = 'w-full border px-3 py-2.5 text-sm outline-none transition-all';
-const inputStyle = { background:'rgba(4,8,16,.72)', borderColor:'var(--line)', color:'var(--txt)' };
+const inputStyle = { background:'rgba(var(--sink-rgb),.72)', borderColor:'var(--line)', color:'var(--txt)' };
 const fx = e => { e.target.style.borderColor='var(--cy)'; e.target.style.boxShadow='inset 0 0 22px rgba(212,175,55,.07)'; };
 const fb = e => { e.target.style.borderColor='var(--line)'; e.target.style.boxShadow='none'; };
 const Input    = ({ className='', style={}, ...p }) => <input    onFocus={fx} onBlur={fb} style={{...inputStyle,...style}} className={`${inputCls} ${className}`} {...p} />;
@@ -9235,7 +9253,7 @@ function Button({ children, variant='primary', size='md', className='', loading=
   const sz   = { sm:'px-3 py-1.5 text-[10px]', md:'px-4 py-2.5 text-[11px]', lg:'px-5 py-3 text-[11.5px]' }[size];
   const V = {
     primary:   { borderColor:'var(--cy)',  color:'var(--cy)',  background:'var(--cy-glow)' },
-    secondary: { borderColor:'var(--line)',color:'var(--txt2)',background:'rgba(4,8,16,.5)' },
+    secondary: { borderColor:'var(--line)',color:'var(--txt2)',background:'rgba(var(--sink-rgb),.5)' },
     danger:    { borderColor:'var(--red)', color:'var(--red)', background:'rgba(255,77,94,.12)' },
     success:   { borderColor:'var(--grn)', color:'var(--grn)', background:'rgba(63,240,138,.12)' },
     ghost:     { borderColor:'transparent',color:'var(--txt2)',background:'transparent' },
@@ -10246,7 +10264,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated, seedFeature }) {
         </Button>
 
         {lastAd ? (
-          <div className="mt-1 p-3" style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.45)'}}>
+          <div className="mt-1 p-3" style={{border:'1px solid var(--line)', background:'rgba(var(--sink-rgb),.45)'}}>
             <div className="flex items-center gap-3 mb-2.5">
               <span className="ttl">Latest ad</span>
               <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
@@ -10607,21 +10625,21 @@ function PostComposer({ settings, pendingImage, pendingCaption, onClearPending, 
                          className="w-full object-cover cursor-zoom-in"
                          style={{aspectRatio:'1'}}/>
                     <span className="mono absolute top-1 left-1 px-1"
-                          style={{fontSize:'9px', background:'rgba(2,5,11,.8)', color:'var(--cy)'}}>{i+1}</span>
+                          style={{fontSize:'9px', background:'rgba(var(--sink2-rgb),.8)', color:'var(--cy)'}}>{i+1}</span>
                     <button onClick={()=>removeImage(i)} aria-label="Remove image"
                       className="absolute top-1 right-1 w-5 h-5 items-center justify-center hidden group-hover:flex"
-                      style={{background:'rgba(2,5,11,.85)', color:'var(--red)', border:'1px solid var(--red)'}}>
+                      style={{background:'rgba(var(--sink2-rgb),.85)', color:'var(--red)', border:'1px solid var(--red)'}}>
                       <Icon name="close" size={11}/>
                     </button>
                     <div className="absolute bottom-1 left-1 right-1 gap-1 hidden group-hover:flex">
                       <button onClick={()=>moveImage(i,-1)} disabled={i===0} aria-label="Move earlier"
                         className="flex-1 flex items-center justify-center py-0.5 disabled:opacity-30"
-                        style={{background:'rgba(2,5,11,.85)', color:'var(--cy)', border:'1px solid var(--line2)'}}>
+                        style={{background:'rgba(var(--sink2-rgb),.85)', color:'var(--cy)', border:'1px solid var(--line2)'}}>
                         <Icon name="back" size={11}/>
                       </button>
                       <button onClick={()=>moveImage(i,1)} disabled={i===images.length-1} aria-label="Move later"
                         className="flex-1 flex items-center justify-center py-0.5 disabled:opacity-30"
-                        style={{background:'rgba(2,5,11,.85)', color:'var(--cy)', border:'1px solid var(--line2)'}}>
+                        style={{background:'rgba(var(--sink2-rgb),.85)', color:'var(--cy)', border:'1px solid var(--line2)'}}>
                         <Icon name="fwd" size={11}/>
                       </button>
                     </div>
@@ -11124,7 +11142,7 @@ function CampaignBuilder({ settings }) {
                   });
                   return (
                     <div key={i} className="flex gap-3 p-2.5"
-                         style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.4)'}}>
+                         style={{border:'1px solid var(--line)', background:'rgba(var(--sink-rgb),.4)'}}>
                       <div className="flex-none">
                         <img src={c.url} alt="" className="object-cover"
                              style={{width:'76px', height:'76px', border:'1px solid var(--line2)'}}/>
@@ -11752,7 +11770,7 @@ function ProductLibrary() {
             <div className="sm:col-span-2">
               <Label>{editId ? 'Product Photo — leave as-is to keep current' : 'Product Photo'}</Label>
               <ImageDropZone className="p-3 mb-2"
-                style={{border:'1px dashed var(--line2)', background:'rgba(4,8,16,.35)'}}
+                style={{border:'1px dashed var(--line2)', background:'rgba(var(--sink-rgb),.35)'}}
                 onImage={function(out){
                   setFormPrev(out.dataUrl);
                   setFormImg(out.file || null);
@@ -11848,13 +11866,13 @@ function ProductLibrary() {
                   <div className="absolute top-1.5 right-1.5 gap-1 hidden group-hover:flex">
                     <button onClick={()=>startEdit(p)} aria-label={'Edit '+p.product_name}
                       className="w-6 h-6 flex items-center justify-center transition-colors"
-                      style={{background:'rgba(2,5,11,.85)', color:'var(--cy)', border:'1px solid var(--cy)'}}>
+                      style={{background:'rgba(var(--sink2-rgb),.85)', color:'var(--cy)', border:'1px solid var(--cy)'}}>
                       <Icon name="edit" size={12}/>
                     </button>
                     <button onClick={()=>deleteProduct(p.id)} disabled={deleting===p.id}
                       aria-label={'Delete '+p.product_name}
                       className="w-6 h-6 flex items-center justify-center transition-colors"
-                      style={{background:'rgba(2,5,11,.85)', color:'var(--red)', border:'1px solid var(--red)'}}>
+                      style={{background:'rgba(var(--sink2-rgb),.85)', color:'var(--red)', border:'1px solid var(--red)'}}>
                       {deleting===p.id?'…':<Icon name="trash" size={12}/>}
                     </button>
                   </div>
@@ -12178,7 +12196,7 @@ function ImageGenerator({ settings, onUseInPost }) {
             </div>
             <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">GPT-4o Vision will describe it and weave it into the prompt. Photos are auto-saved to your library.</p>
             <ImageDropZone className="p-2.5 mb-2"
-              style={{border:'1px dashed var(--line2)', background:'rgba(4,8,16,.35)'}}
+              style={{border:'1px dashed var(--line2)', background:'rgba(var(--sink-rgb),.35)'}}
               onImage={function(out){
                 setProdPrev(out.dataUrl);
                 if (out.file) setProdFile(out.file);
@@ -12199,7 +12217,7 @@ function ImageGenerator({ settings, onUseInPost }) {
             </div>
 
             {showGallery && (
-              <div className="mt-3 p-3" style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.45)'}}>
+              <div className="mt-3 p-3" style={{border:'1px solid var(--line)', background:'rgba(var(--sink-rgb),.45)'}}>
                 <div className="flex items-center gap-2 mb-3 flex-wrap">
                   <span className="ttl">Product Gallery</span>
                   <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
@@ -13816,7 +13834,7 @@ function PostReviewModal({ post, index, count, onStep, onClose, onChanged }) {
     <Portal>
     {lightbox && <Lightbox src={lightbox} onClose={function(){ setLightbox(null); }}/>}
     <div className="fixed inset-0 z-[205] flex items-center justify-center p-6"
-         style={{background:'rgba(2,5,11,.9)', backdropFilter:'blur(4px)'}} onClick={onClose}>
+         style={{background:'rgba(var(--sink2-rgb),.9)', backdropFilter:'blur(4px)'}} onClick={onClose}>
       <div className="hud hud-brk w-full max-w-3xl max-h-[92vh] overflow-auto p-6"
            style={dragPanel.style} onClick={e=>e.stopPropagation()}>
         <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-1">
@@ -13842,7 +13860,7 @@ function PostReviewModal({ post, index, count, onStep, onClose, onChanged }) {
         </div>
 
         {!editable && (
-          <div className="p-3 mb-4" style={{border:'1px solid var(--line)', background:'rgba(4,8,16,.4)'}}>
+          <div className="p-3 mb-4" style={{border:'1px solid var(--line)', background:'rgba(var(--sink-rgb),.4)'}}>
             <p className="text-xs" style={{color:'var(--txt2)'}}>
               This post is history and can't be changed.
               {post.error_msg ? ' ' + post.error_msg : ''}
@@ -13860,13 +13878,13 @@ function PostReviewModal({ post, index, count, onStep, onClose, onChanged }) {
                      style={{width:'132px', height:'132px', border:'1px solid var(--line2)'}}/>
                 {editable && <button onClick={function(){ setImages(images.filter((_,ix)=>ix!==i)); }}
                         className="absolute top-1 right-1 p-1 opacity-0 group-hover:opacity-100"
-                        style={{background:'rgba(2,5,11,.85)', color:'var(--red)', border:'1px solid var(--red)'}}
+                        style={{background:'rgba(var(--sink2-rgb),.85)', color:'var(--red)', border:'1px solid var(--red)'}}
                         aria-label="Remove image">
                   <Icon name="close" size={11}/>
                 </button>}
                 {i === 0 && images.length > 1 && (
                   <span className="lbl absolute bottom-1 left-1 px-1"
-                        style={{background:'rgba(2,5,11,.85)', color:'var(--cy)'}}>First</span>
+                        style={{background:'rgba(var(--sink2-rgb),.85)', color:'var(--cy)'}}>First</span>
                 )}
               </div>
             );
@@ -13923,7 +13941,7 @@ function PostReviewModal({ post, index, count, onStep, onClose, onChanged }) {
                           }}
                     className="flex-1 flex items-center justify-center gap-1.5 p-2 text-xs border"
                     style={{ borderColor:on?'var(--cy)':'var(--line)',
-                             background:on?'var(--cy-glow)':'rgba(4,8,16,.4)',
+                             background:on?'var(--cy-glow)':'rgba(var(--sink-rgb),.4)',
                              color:on?'var(--cy)':'var(--txt2)' }}>
                     <Icon name={c[1]} size={13}/>{c[2]}
                   </button>
@@ -14111,7 +14129,7 @@ function PostCalendar({ posts, onOpen }) {
       <div className="grid grid-cols-7 gap-px" style={{background:'var(--line)'}}>
         {DOW_NAMES.map(function(d) {
           return (
-            <div key={d} className="lbl text-center py-1.5" style={{background:'rgba(4,8,16,.9)'}}>{d}</div>
+            <div key={d} className="lbl text-center py-1.5" style={{background:'rgba(var(--sink-rgb),.9)'}}>{d}</div>
           );
         })}
 
@@ -14121,7 +14139,7 @@ function PostCalendar({ posts, onOpen }) {
           const isToday = sameDay(d, today);
           return (
             <div key={i} className="p-1.5"
-                 style={{ background: inMonth ? 'rgba(4,8,16,.62)' : 'rgba(4,8,16,.3)',
+                 style={{ background: inMonth ? 'rgba(var(--sink-rgb),.62)' : 'rgba(var(--sink-rgb),.3)',
                           minHeight: mode==='week' ? '190px' : '104px' }}>
               <div className="flex items-center gap-1 mb-1">
                 <span className="mono text-xs"
@@ -14405,7 +14423,7 @@ function ScheduledPostsPanel() {
               return (
                 <div key={p.id} className="flex items-center gap-2 p-2"
                   style={{border:'1px solid ' + (picked.includes(p.id) ? 'var(--cy)' : 'var(--line)'),
-                          background: picked.includes(p.id) ? 'var(--cy-glow)' : 'rgba(4,8,16,.45)'}}>
+                          background: picked.includes(p.id) ? 'var(--cy-glow)' : 'rgba(var(--sink-rgb),.45)'}}>
                   <input type="checkbox" className="flex-none" checked={picked.includes(p.id)}
                          onChange={function(){ togglePick(p.id); }}
                          aria-label={'Select post for ' + storeName}/>
@@ -14528,7 +14546,7 @@ function ScheduledPostsPanel() {
                                 <button key={c[0]} onClick={function(){ toggleChannel(c[0]); }}
                                   className="flex-1 flex items-center justify-center gap-1.5 p-2 text-xs border transition-all"
                                   style={{ borderColor:on?'var(--cy)':'var(--line)',
-                                           background:on?'var(--cy-glow)':'rgba(4,8,16,.4)',
+                                           background:on?'var(--cy-glow)':'rgba(var(--sink-rgb),.4)',
                                            color:on?'var(--cy)':'var(--txt2)' }}>
                                   <Icon name={c[1]} size={13}/>{c[2]}
                                 </button>
@@ -14925,7 +14943,7 @@ function InboxMessagesView({ storeId, platform }) {
                   <div key={m.id} className="mb-1.5 flex" style={{justifyContent: mine ? 'flex-end' : 'flex-start'}}>
                     <div className="px-2.5 py-1.5" style={{
                       maxWidth:'75%',
-                      background: mine ? 'var(--cy-glow)' : 'rgba(4,8,16,.6)',
+                      background: mine ? 'var(--cy-glow)' : 'rgba(var(--sink-rgb),.6)',
                       border:'1px solid ' + (mine ? 'var(--cy)' : 'var(--line)')}}>
                       <p className="text-xs" style={{color:'var(--txt)', whiteSpace:'pre-wrap'}}>{m.message}</p>
                       <p className="lbl" style={{textAlign: mine ? 'right' : 'left'}}>{timeAgo(m.created_time)}</p>
@@ -15222,7 +15240,7 @@ function TemplateManager({ storeId }) {
                           </button>
                         </div>
                       </div>
-                      <div className="absolute top-1.5 left-1.5 text-xs px-2 py-0.5" style={{background:'rgba(2,5,11,.75)', color:'var(--txt)'}}>{t.name}</div>
+                      <div className="absolute top-1.5 left-1.5 text-xs px-2 py-0.5" style={{background:'rgba(var(--sink2-rgb),.75)', color:'var(--txt)'}}>{t.name}</div>
                       {t.kind==='price_ad' && <div className="absolute top-1.5 right-1.5"><Badge color="blue">Fields</Badge></div>}
                     </div>
                   ))}

@@ -5048,6 +5048,10 @@ function StorePicksCard({ storeId, storeName, canEdit }) {
   const [q,       setQ]       = useState('');
   const [draft,   setDraft]   = useState({});   // pick id -> {price, reg, note} being typed
   const [busy,    setBusy]    = useState(false);
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const [suggestions, setSuggestions] = useState(null);  // null = not loaded yet
+  const [suggestSel,  setSuggestSel]  = useState({});    // product_id -> checked
+  const [suggestBusy, setSuggestBusy] = useState(false);
 
   const prodOf = id => products.find(p => p.id === id) || null;
 
@@ -5158,6 +5162,65 @@ function StorePicksCard({ storeId, storeName, canEdit }) {
     });
   };
 
+  // Suggests from what we actually know sold: qty_sold/revenue that managers
+  // typed in on monthly features. Not a real POS feed, so this only ever
+  // knows about products that were featured — good enough as a starting
+  // point, framed honestly rather than as a definitive "top sellers" claim.
+  const loadSuggestions = async function() {
+    setSuggestBusy(true);
+    try {
+      const sb = getSB();
+      const cutoff = (function(){
+        const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 2);
+        return d.toISOString().slice(0,10);
+      })();
+      const { data, error } = await sb.from('feature_periods')
+        .select('period, features(*)')
+        .eq('store_id', storeId)
+        .gte('period', cutoff);
+      if (error) throw new Error(error.message);
+      const already = new Set((picks || []).map(pk => pk.product_id));
+      const byProduct = {};
+      (data || []).flatMap(p => p.features || []).forEach(function(r) {
+        if (!r.product_id || already.has(r.product_id)) return;
+        if (r.qty_sold == null && r.revenue == null) return;
+        const prod = prodOf(r.product_id);
+        if (!prod) return;
+        if (!byProduct[r.product_id]) byProduct[r.product_id] = { product_id: r.product_id, prod, qty:0, revenue:0 };
+        byProduct[r.product_id].qty     += Number(r.qty_sold || 0);
+        byProduct[r.product_id].revenue += Number(r.revenue  || 0);
+      });
+      const top = Object.values(byProduct)
+        .sort((a,b) => (b.qty - a.qty) || (b.revenue - a.revenue))
+        .slice(0, 5);
+      setSuggestions(top);
+      setSuggestSel(Object.fromEntries(top.map(t => [t.product_id, true])));
+    } catch(e) { toast.error(e.message); }
+    finally { setSuggestBusy(false); }
+  };
+
+  const toggleSuggest = async function() {
+    if (suggestOpen) { setSuggestOpen(false); return; }
+    setSuggestOpen(true);
+    if (suggestions === null) await loadSuggestions();
+  };
+
+  const addSuggested = () => mutate(async function() {
+    const sb = getSB();
+    const { data:{ user } } = await sb.auth.getUser();
+    const chosen = (suggestions || []).filter(s => suggestSel[s.product_id]);
+    if (!chosen.length) return;
+    const maxSort = (picks || []).reduce((m,p)=>Math.max(m, p.sort||0), 0);
+    const rows = chosen.map((s,i) => ({
+      store_id: storeId, product_id: s.product_id, sort: maxSort + 1 + i, created_by: user?.id,
+    }));
+    const { error } = await sb.from('store_picks').insert(rows);
+    if (error) throw new Error(error.message);
+    setSuggestOpen(false);
+    setSuggestions(null);
+    toast.success(chosen.length + (chosen.length===1?' pick':' picks') + ' added');
+  });
+
   const pickEmbed =
     '<iframe id="lrs-picks-' + storeId + '" src="https://lrs.thesuenocompany.com/features-embed.html?store=' + storeId + '&view=picks"'
     + ' style="width:100%;border:0;height:0" scrolling="no" loading="lazy" title="Store picks"></iframe>\n'
@@ -5185,6 +5248,11 @@ function StorePicksCard({ storeId, storeName, canEdit }) {
           Copy embed code
         </button>
         {canEdit && (
+          <Button size="sm" variant="outline" onClick={toggleSuggest} disabled={busy || suggestBusy}>
+            <Icon name="chart"/> Top sellers
+          </Button>
+        )}
+        {canEdit && (
           <Button size="sm" variant="outline" onClick={()=>setShowAdd(v=>!v)} disabled={busy}>
             <Icon name="tag"/> Add products
           </Button>
@@ -5195,6 +5263,46 @@ function StorePicksCard({ storeId, storeName, canEdit }) {
         features. Prices optional. Changes go live in about five minutes — and
         an empty list hides the whole block on the site.
       </p>
+
+      {suggestOpen && canEdit && (
+        <div className="mb-3 p-3" style={{border:'1px solid var(--line)'}}>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="lbl">Top 5 from feature sales, last two months</span>
+            <span className="flex-1"/>
+            <button className="lbl hover:underline" style={{color:'var(--cy)'}}
+                    onClick={loadSuggestions} disabled={suggestBusy}>Refresh</button>
+          </div>
+          {suggestBusy ? <p className="lbl py-3">Checking feature sales…</p>
+           : !suggestions || suggestions.length === 0 ? (
+            <p className="lbl py-3">
+              No feature sales figures for this store in the last two months.
+              This ranks by qty sold on monthly features, so it only knows
+              about products that were featured with sales entered — not a
+              full sales feed.
+            </p>
+          ) : (
+            <React.Fragment>
+              <div className="space-y-1 mb-2">
+                {suggestions.map(function(s) {
+                  return (
+                    <label key={s.product_id} className="flex items-center gap-2 py-1 cursor-pointer">
+                      <input type="checkbox" checked={!!suggestSel[s.product_id]}
+                             onChange={e=>setSuggestSel(prev=>Object.assign({}, prev, {[s.product_id]: e.target.checked}))}/>
+                      <img src={prodSrc(s.prod)} alt="" className="w-7 h-7 object-contain flex-none"
+                           style={{background:'#fff', border:'1px solid var(--line)'}}/>
+                      <span className="text-xs flex-1 truncate">{s.prod.product_name}</span>
+                      <span className="lbl">{s.qty ? s.qty.toLocaleString() + ' sold' : fmtMoney(s.revenue)}</span>
+                    </label>
+                  );
+                })}
+              </div>
+              <Button size="sm" onClick={addSuggested} disabled={busy || !Object.values(suggestSel).some(Boolean)}>
+                <Icon name="check"/> Add selected to picks
+              </Button>
+            </React.Fragment>
+          )}
+        </div>
+      )}
 
       {showAdd && canEdit && (
         <div className="mb-3 p-3" style={{border:'1px solid var(--line)'}}>

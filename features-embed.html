@@ -39,17 +39,30 @@
                      border: 1px solid #d8d8d8; background: #fff; color: var(--ink); }
   .filters label { font-size: 13px; color: var(--mut); display: flex; align-items: center; gap: 5px; cursor: pointer; }
   .filters .count { font-size: 12px; color: var(--mut); }
+  .filters.cats { margin-bottom: 4px; }
+  .filters.cats label { font-weight: 500; color: var(--ink); }
 
   /* Monthly features: every card, wrapping to as many rows as it takes. */
   .grid.wrap { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
                gap: 14px; margin-top: 18px; }
 
-  /* Store picks: one row, native horizontal scroll — a shelf, not a page. */
-  .grid.row { display: flex; gap: 14px; margin-top: 18px; overflow-x: auto;
-              -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity; padding-bottom: 8px; }
+  /* Store picks: one row that scrolls itself — a shelf, not a page. Arrows
+     replace the scrollbar; it still drags/swipes fine, the bar is just
+     hidden so the arrows read as the way to move it. */
+  .shelf { position: relative; margin-top: 18px; }
+  .grid.row { display: flex; gap: 14px; overflow-x: auto; scroll-behavior: smooth;
+              -webkit-overflow-scrolling: touch; scroll-snap-type: x proximity;
+              scrollbar-width: none; -ms-overflow-style: none; }
+  .grid.row::-webkit-scrollbar { display: none; }
   .grid.row .card { flex: 0 0 200px; scroll-snap-align: start; }
-  .grid.row::-webkit-scrollbar { height: 7px; }
-  .grid.row::-webkit-scrollbar-thumb { background: #d8d8d8; border-radius: 4px; }
+  .arrow { position: absolute; top: 50%; margin-top: -18px; width: 36px; height: 36px;
+           border-radius: 50%; border: 1px solid #e5e5e5; background: #fff; cursor: pointer;
+           display: flex; align-items: center; justify-content: center; z-index: 4;
+           box-shadow: 0 2px 8px rgba(0,0,0,.15); color: var(--ink); }
+  .arrow.prev { left: -6px; }
+  .arrow.next { right: -6px; }
+  .arrow[disabled] { opacity: .3; cursor: default; }
+  .arrow svg { width: 16px; height: 16px; }
 
   /* Uniform cards: the photo box is always square, the name always gets two
      lines of room, the size line one, and the price sits at the same height
@@ -179,20 +192,28 @@
         var cats = {};
         items.forEach(function (it) { if (it.category) cats[it.category] = true; });
         var catNames = Object.keys(cats).sort();
-        h += '<div class="filters">';
+        // Categories get their own line — only the ones actually present in
+        // this month's items, never the full master list.
         if (catNames.length > 1) {
-          h += '<select id="fcat"><option value="all">All categories</option>'
-            + catNames.map(function (c) { return '<option value="' + esc(c) + '">' + esc(catLabel(c)) + '</option>'; }).join('')
-            + '</select>';
+          h += '<div class="filters cats">' + catNames.map(function (c) {
+            return '<label><input type="checkbox" class="fcat" value="' + esc(c) + '"> ' + esc(catLabel(c)) + '</label>';
+          }).join('') + '</div>';
         }
-        h += '<select id="fprice"><option value="any">Any price</option>'
+        h += '<div class="filters">'
+          + '<select id="fprice"><option value="any">Any price</option>'
           + '<option value="u15">Under $15</option><option value="15-30">$15 – $30</option>'
-          + '<option value="30-50">$30 – $50</option><option value="50p">$50+</option></select>';
-        h += '<label><input type="checkbox" id="fsale"> On sale only</label>';
-        h += '<span class="count" id="fcount"></span>';
-        h += '</div>';
+          + '<option value="30-50">$30 – $50</option><option value="50p">$50+</option></select>'
+          + '<label><input type="checkbox" id="fsale"> On sale only</label>'
+          + '<span class="count" id="fcount"></span>'
+          + '</div>';
       }
 
+      var arrowSvg = function (dir) {
+        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">'
+          + '<polyline points="' + (dir < 0 ? '15 6 9 12 15 18' : '9 6 15 12 9 18') + '"></polyline></svg>';
+      };
+      if (isPicks) h += '<div class="shelf">'
+        + '<button class="arrow prev" id="pprev" aria-label="Previous">' + arrowSvg(-1) + '</button>';
       h += '<div class="grid ' + (isPicks ? 'row' : 'wrap') + '">';
       items.forEach(function (it) {
         // The saving leads; a percentage joins it when it reads bigger than
@@ -249,7 +270,9 @@
         h += '<div class="card" data-cat="' + esc(it.category || '') + '" data-price="' + (it.sale != null ? it.sale : '')
           + '" data-savings="' + (it.savings != null ? it.savings : '') + '"><div class="flip">' + front + back + '</div></div>';
       });
-      h += '</div><p class="ft">' + esc(d.footnote || 'Prices exclude tax & deposit — while supplies last.') + '</p>';
+      h += '</div>';
+      if (isPicks) h += '<button class="arrow next" id="pnext" aria-label="Next">' + arrowSvg(1) + '</button></div>';
+      h += '<p class="ft">' + esc(d.footnote || 'Prices exclude tax & deposit — while supplies last.') + '</p>';
       app.innerHTML = h;
 
       // One listener flips any card whose trigger (front line or back ✕) is
@@ -262,12 +285,14 @@
 
       if (showFilters) {
         var cards = [].slice.call(app.querySelectorAll('.card'));
-        var fcat = document.getElementById('fcat');
+        var fcats = [].slice.call(app.querySelectorAll('.fcat'));
         var fprice = document.getElementById('fprice');
         var fsale = document.getElementById('fsale');
         var fcount = document.getElementById('fcount');
         function apply() {
-          var cat = fcat ? fcat.value : 'all';
+          // No boxes ticked means no category filter at all — ticking one or
+          // more narrows to just those.
+          var checkedCats = fcats.filter(function (b) { return b.checked; }).map(function (b) { return b.value; });
           var price = fprice.value;
           var saleOnly = fsale.checked;
           var shown = 0;
@@ -275,7 +300,7 @@
             var savings = parseFloat(c.getAttribute('data-savings'));
             var p = parseFloat(c.getAttribute('data-price'));
             var ok = true;
-            if (cat !== 'all' && c.getAttribute('data-cat') !== cat) ok = false;
+            if (checkedCats.length && checkedCats.indexOf(c.getAttribute('data-cat')) === -1) ok = false;
             if (saleOnly && !(savings > 0)) ok = false;
             if (price !== 'any') {
               if (isNaN(p)) ok = false;
@@ -290,10 +315,56 @@
           fcount.textContent = shown + ' of ' + cards.length;
           window.__reportHeight();
         }
-        if (fcat) fcat.addEventListener('change', apply);
+        fcats.forEach(function (b) { b.addEventListener('change', apply); });
         fprice.addEventListener('change', apply);
         fsale.addEventListener('change', apply);
         apply();
+      }
+
+      // Store picks: arrows + auto-advance instead of a scrollbar. Native
+      // horizontal scroll still works underneath (drag, swipe, trackpad) —
+      // this just adds a driver on top and hides the bar.
+      if (isPicks) {
+        var track = app.querySelector('.grid.row');
+        var prevBtn = document.getElementById('pprev');
+        var nextBtn = document.getElementById('pnext');
+        function step() {
+          var card = track.querySelector('.card');
+          return card ? card.getBoundingClientRect().width + 14 : 214;
+        }
+        function atStart() { return track.scrollLeft <= 2; }
+        function atEnd() { return track.scrollLeft + track.clientWidth >= track.scrollWidth - 2; }
+        // Older embedded webviews sometimes lack the object-argument form of
+        // scrollTo/scrollBy — fall back to a plain scrollLeft assignment.
+        function scrollLeftTo(x) {
+          try { track.scrollTo({ left: x, behavior: 'smooth' }); }
+          catch (e) { track.scrollLeft = x; }
+        }
+        function go(dir) {
+          if (dir > 0 && atEnd()) { scrollLeftTo(0); return; }
+          if (dir < 0 && atStart()) { scrollLeftTo(track.scrollWidth); return; }
+          scrollLeftTo(track.scrollLeft + dir * step());
+        }
+        prevBtn.addEventListener('click', function () { go(-1); });
+        nextBtn.addEventListener('click', function () { go(1); });
+
+        var overflows = track.scrollWidth > track.clientWidth + 4;
+        prevBtn.style.display = nextBtn.style.display = overflows ? '' : 'none';
+
+        if (overflows) {
+          var hover = false;
+          var shelf = app.querySelector('.shelf');
+          shelf.addEventListener('mouseenter', function () { hover = true; });
+          shelf.addEventListener('mouseleave', function () { hover = false; });
+          shelf.addEventListener('touchstart', function () { hover = true; }, { passive: true });
+          shelf.addEventListener('touchend', function () { setTimeout(function () { hover = false; }, 2500); }, { passive: true });
+          setInterval(function () {
+            if (hover) return;
+            if (track.querySelector('.card.on')) return;   // recipe open — hold still
+            go(1);
+          }, 4000);
+        }
+        window.addEventListener('resize', window.__reportHeight);
       }
 
       window.__reportHeight();

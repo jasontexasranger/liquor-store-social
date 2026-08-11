@@ -3049,22 +3049,6 @@ function ProductPickerModal({ products, onPick, onClose }) {
             })}
           </div>
         )}
-
-        {multi && (
-          <div className="flex items-center gap-2 mt-4 pt-4" style={{borderTop:'1px solid var(--line)'}}>
-            <span className="lbl mr-auto">
-              {picked.length
-                ? 'Added in the order you tick them — the numbers show the card order.'
-                : 'Tick the images you want. ' + (limit !== Infinity ? 'Room for ' + limit + '.' : '')}
-            </span>
-            <Button size="sm" variant="ghost" onClick={()=>setPicked([])} disabled={!picked.length}>
-              Clear
-            </Button>
-            <Button size="sm" onClick={confirm} disabled={!picked.length}>
-              Add {picked.length || ''}
-            </Button>
-          </div>
-        )}
       </div>
     </div>
     </Portal>

@@ -6611,9 +6611,15 @@ function PostPlanBuilder({ storeId, storeName, period, periodRow, rows, products
         }
         if (!caption) { failed.push(group.map(g=>g.name).join(', ') + ': no copy returned'); continue; }
 
+        // A post with no image at all used to slip through silently on
+        // Facebook-only runs (this check used to only fire for Instagram) —
+        // every scheduled post needs at least one image now, regardless of
+        // channel, so a missing creative shows up as a clear failure instead
+        // of a text-only post nobody meant to publish.
         const imgs = group.map(creativeFor).filter(Boolean).map(c => c.public_url);
-        if (channels.includes('instagram') && !imgs.length) {
-          failed.push(group.map(g=>g.name).join(', ') + ': Instagram needs an image and none is in the library yet');
+        if (!imgs.length) {
+          const missing = group.filter(g => !creativeFor(g)).map(g => g.name).join(', ');
+          failed.push(group.map(g=>g.name).join(', ') + ': no creative image yet for ' + missing + ' — add one in the Creative Library first');
           continue;
         }
 

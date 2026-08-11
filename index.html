@@ -25,8 +25,26 @@
       --amb:#f0a830; --red:#ff4d5e; --grn:#3ff08a; --vio:#a98cf5;
       --txt:#dbe9f2; --txt2:#7d93a8; --txt3:#48596b;
       --line:rgba(212,175,55,.18); --line2:rgba(212,175,55,.34);
+      --menu:#0a121f; --headerbg:rgba(6,11,20,.9); --hudshadow:0 0 34px rgba(0,0,0,.5);
+      --field:rgba(4,8,16,.55); --scanline-op:.45;
       --disp:'Chakra Petch',ui-sans-serif,system-ui,sans-serif;
       --mono:'JetBrains Mono',ui-monospace,monospace;
+    }
+    /* Day theme: same gold-on-warm-neutral brand language, just flipped for
+       daylight use. Deepened the gold/accent hues (the pale HUD gold reads
+       fine on near-black but washes out on white) and switched the CRT
+       scanline overlay off — that's a dark-console detail, not a look this
+       theme is going for. */
+    html[data-theme="light"]{
+      --void:#f7f3ea; --deep:#efe7d3; --panel:rgba(255,255,255,.86);
+      --cy:#a3781e; --cy-dim:#8a6a26; --cy-glow:rgba(163,120,30,.12);
+      --amb:#b5761c; --red:#c23348; --grn:#1f9a5a; --vio:#7457c9;
+      --txt:#241d12; --txt2:#5c5140; --txt3:#948972;
+      --line:rgba(60,45,15,.14); --line2:rgba(60,45,15,.26);
+      --menu:#ffffff; --headerbg:rgba(255,255,255,.92);
+      --hudshadow:0 4px 18px rgba(40,28,5,.10);
+      --field:rgba(0,0,0,.035); --scanline-op:0;
+      color-scheme: light;
     }
     html,body{background:var(--void);color:var(--txt);font-family:var(--disp)}
     body{
@@ -40,7 +58,7 @@
       background-attachment:fixed;
     }
     body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;
-      background:repeating-linear-gradient(0deg,rgba(0,0,0,.15) 0 1px,transparent 1px 3px);opacity:.45}
+      background:repeating-linear-gradient(0deg,rgba(0,0,0,.15) 0 1px,transparent 1px 3px);opacity:var(--scanline-op)}
     ::-webkit-scrollbar{width:7px;height:7px}
     ::-webkit-scrollbar-track{background:rgba(212,175,55,.04)}
     ::-webkit-scrollbar-thumb{background:rgba(212,175,55,.28)}
@@ -49,7 +67,7 @@
     .hud{position:relative;background:var(--panel);border:1px solid var(--line);
       backdrop-filter:blur(7px);
       clip-path:polygon(13px 0,100% 0,100% calc(100% - 13px),calc(100% - 13px) 100%,0 100%,0 13px);
-      box-shadow:inset 0 1px 0 rgba(212,175,55,.09),0 0 34px rgba(0,0,0,.5)}
+      box-shadow:inset 0 1px 0 rgba(212,175,55,.09),var(--hudshadow)}
     .hud::before{content:'';position:absolute;top:0;left:13px;right:0;height:1px;
       background:linear-gradient(90deg,var(--cy),transparent 70%);opacity:.5}
     .hud-brk::after{content:'';position:absolute;top:6px;right:6px;width:9px;height:9px;
@@ -68,13 +86,13 @@
     @keyframes sweep{0%{top:-40%}100%{top:120%}}
     input,textarea,select{font-family:var(--disp)}
     input::placeholder,textarea::placeholder{color:var(--txt3)}
-    select option{background:#0a111e;color:var(--txt)}
+    select option{background:var(--menu);color:var(--txt)}
     ::selection{background:rgba(212,175,55,.3);color:#fff}
 
     html{color-scheme:dark}
     .dark .dark\:bg-gray-900,.dark .dark\:bg-gray-950{background-color:transparent!important}
     .dark .dark\:bg-gray-800{background-color:var(--panel)!important}
-    .dark .dark\:bg-gray-750,.dark .dark\:bg-gray-700{background-color:rgba(4,8,16,.55)!important}
+    .dark .dark\:bg-gray-750,.dark .dark\:bg-gray-700{background-color:var(--field)!important}
     .dark .dark\:hover\:bg-gray-700:hover,.dark .dark\:hover\:bg-gray-600:hover{background-color:rgba(212,175,55,.08)!important}
     .dark .dark\:border-gray-600,.dark .dark\:border-gray-700,.dark .dark\:border-gray-800{border-color:var(--line)!important}
     .dark .dark\:text-white,.dark .dark\:text-gray-100,.dark .dark\:text-gray-200{color:var(--txt)!important}
@@ -97,7 +115,7 @@
     .text-gray-500,.text-gray-400{color:var(--txt3)!important}
     .text-indigo-600,.text-violet-600{color:var(--cy)!important}
     .rounded-xl,.rounded-2xl,.rounded-lg{border-radius:0!important}
-    header.sticky{background:rgba(6,11,20,.9)!important;backdrop-filter:blur(9px);border-color:var(--line)!important}
+    header.sticky{background:var(--headerbg)!important;backdrop-filter:blur(9px);border-color:var(--line)!important}
 
     /* ── Sueño home screen ─────────────────────────────────────────────── */
     .sueno-home { position: relative; min-height: 70vh; }
@@ -3943,7 +3961,7 @@ function ProductLink({ row, products, onLink, onCreated }) {
         <Icon name="image" size={12}/>
       </button>
       {open && (
-        <div className="absolute z-30 left-0 mt-1 w-60 p-2" style={{background:'#0a111e', border:'1px solid var(--line2)'}}>
+        <div className="absolute z-30 left-0 mt-1 w-60 p-2" style={{background:'var(--menu)', border:'1px solid var(--line2)'}}>
           {suggestions.length === 0
             ? <p className="lbl py-2 text-center">No close matches</p>
             : suggestions.map(function(p){
@@ -5485,7 +5503,7 @@ function ToolMenu({ label, icon, items }) {
           <div className="fixed inset-0 z-[240]" onClick={()=>setOpen(false)}/>
           <div className="fixed z-[250] min-w-[190px] py-1"
                style={{top: pos.top + 'px', right: pos.right + 'px',
-                       background:'#0a121f', border:'1px solid var(--line)',
+                       background:'var(--menu)', border:'1px solid var(--line)',
                        boxShadow:'0 10px 30px rgba(0,0,0,.5)'}}>
             {usable.map(function(it, i) {
               if (it.divider) return <div key={i} className="my-1" style={{borderTop:'1px solid var(--line)'}}/>;
@@ -13558,7 +13576,7 @@ function CompanyLogoCard() {
   return (
     <Card>
       <div className="flex items-center gap-4 flex-wrap">
-        <div className="flex items-center justify-center" style={{width:'86px', height:'86px', background:'#0a0a0a', border:'1px solid var(--line)'}}>
+        <div className="flex items-center justify-center" style={{width:'86px', height:'86px', background:'var(--menu)', border:'1px solid var(--line)'}}>
           <img src={SUENO_LOGO_URL + (bust ? '?v=' + bust : '')} alt="" style={{maxWidth:'80%', maxHeight:'80%'}}
                onError={e=>{ e.target.style.display='none'; }}/>
         </div>
@@ -13583,7 +13601,36 @@ function CompanyLogoCard() {
   );
 }
 
-function SettingsPage({ settings, onSave, currentUserId, onViewAs }) {
+function AppearanceCard({ theme, onTheme }) {
+  return (
+    <Card>
+      <h2 className="text-base font-bold text-gray-900 dark:text-white mb-1"><Icon name="sun"/> Appearance</h2>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
+        Applies to this browser only — everyone on the team picks their own.
+      </p>
+      <div className="flex gap-3">
+        {[{ id:'dark', label:'Night', icon:'moon', bg:'#0a0e14', txt:'#dbe9f2', accent:'#e3c565' },
+          { id:'light', label:'Day', icon:'sun', bg:'#f7f3ea', txt:'#241d12', accent:'#a3781e' }].map(function(t) {
+          const active = theme === t.id;
+          return (
+            <button key={t.id} onClick={()=>onTheme(t.id)}
+              className="flex-1 p-3 text-left transition-all"
+              style={{ background:t.bg, border: active ? '2px solid ' + t.accent : '1px solid var(--line)' }}>
+              <div className="flex items-center gap-2 mb-2">
+                <Icon name={t.icon} size={14} style={{color:t.accent}}/>
+                <span className="text-xs font-bold" style={{color:t.txt}}>{t.label}</span>
+                {active && <Icon name="check" size={12} className="ml-auto" style={{color:t.accent}}/>}
+              </div>
+              <div className="h-8" style={{background: t.id==='dark' ? 'rgba(212,175,55,.1)' : 'rgba(163,120,30,.08)', border:'1px solid ' + (t.id==='dark' ? 'rgba(212,175,55,.2)' : 'rgba(60,45,15,.14)')}}/>
+            </button>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+function SettingsPage({ settings, onSave, currentUserId, onViewAs, theme, onTheme }) {
   const toast = useToast();
   const [form,   setForm]   = useState({ ...settings, tokens:{ ...settings.tokens } });
   const [saving, setSaving] = useState(false);
@@ -13600,6 +13647,7 @@ function SettingsPage({ settings, onSave, currentUserId, onViewAs }) {
 
   return (
     <div className="space-y-4 max-w-2xl">
+      <AppearanceCard theme={theme} onTheme={onTheme}/>
       <CompanyLogoCard/>
       <UserAccountsSection currentUserId={currentUserId} onViewAs={onViewAs}/>
       <StoreLocationsSection/>
@@ -16087,7 +16135,7 @@ function BrandPage({ settings }) {
 // ─────────────────────────────────────────────
 // AUTHENTICATED APP (main shell)
 // ─────────────────────────────────────────────
-function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
+function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
   const toast = useToast();
   const hardcodedAdmin = ADMIN_EMAILS.includes((user && user.email ? user.email : '').toLowerCase());
   const [isAdmin,        setIsAdmin]        = useState(hardcodedAdmin);
@@ -16299,6 +16347,14 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
               );
             })}
             
+            {/* Day / night toggle */}
+            <button onClick={()=>onTheme(theme==='light' ? 'dark' : 'light')}
+                    className="p-2 rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                    title={theme==='light' ? 'Switch to dark' : 'Switch to light'}
+                    aria-label={theme==='light' ? 'Switch to dark theme' : 'Switch to light theme'}>
+              <Icon name={theme==='light' ? 'moon' : 'sun'}/>
+            </button>
+
             {/* User menu */}
             <div className="relative ml-1">
               <button onClick={()=>setShowUserMenu(function(v){return !v;})} className="p-2 rounded-xl text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"><Icon name="user"/></button>
@@ -16380,7 +16436,7 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
         {page==='ads'      && granted('ads')      && <AdsPage key={'at-'+(adsTab||'x')} initialTab={adsTab} settings={settings}/>}
         {page==='brand'    && effIsAdmin && <BrandPage        settings={settings}/>}
         {page==='settings' && effIsAdmin && <SettingsPage     settings={settings} onSave={saveSettings} currentUserId={user ? user.id : null}
-                                             onViewAs={isAdmin ? setViewAs : null}/>}
+                                             onViewAs={isAdmin ? setViewAs : null} theme={theme} onTheme={onTheme}/>}
       </main>
       <footer className="text-center py-3 text-xs text-gray-300 dark:text-gray-600">
         Liquor Store Social · Supabase · Graph API v25.0 · {user && user.email ? user.email : ''}
@@ -16393,16 +16449,19 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
 // ROOT APP (auth routing)
 // ─────────────────────────────────────────────
 function App() {
-  const [dark,      setDark]      = useState(()=>ls.get('smm_dark',false));
+  // 'dark' (the HUD look) or 'light' (day). The Tailwind `dark` class stays
+  // on regardless — its dark: variants are remapped to CSS vars in the
+  // stylesheet, and those vars are what actually flip with data-theme.
+  const [theme,     setTheme]     = useState(()=>ls.get('smm_theme','dark'));
   const [authState, setAuthState] = useState('checking');
   const [user,      setUser]      = useState(null);
   const [recovery,  setRecovery]  = useState(false);
 
   useEffect(()=>{
-    // HUD theme is always dark; the `dark` class stays on so Tailwind's
-    // dark: variants resolve to the remapped palette in the stylesheet.
     document.documentElement.classList.add('dark');
-  },[dark]);
+    document.documentElement.setAttribute('data-theme', theme);
+    ls.set('smm_theme', theme);
+  },[theme]);
 
   useEffect(()=>{
     const sb=getSB(); if(!sb) return;
@@ -16439,7 +16498,7 @@ function App() {
 
   return (
     <ToastProvider>
-      <AuthenticatedApp user={user} dark={dark} onDark={setDark} openChangePw={recovery}/>
+      <AuthenticatedApp user={user} theme={theme} onTheme={setTheme} openChangePw={recovery}/>
     </ToastProvider>
   );
 }

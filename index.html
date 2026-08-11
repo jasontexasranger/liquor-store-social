@@ -13640,9 +13640,23 @@ function StoreLocationsSection() {
   const [draft, setDraft] = useState({});
   const [busy,  setBusy]  = useState(null);
 
+  // Website lives on brand_profiles (it also drives ad copy/colours on the
+  // Brand page) — loaded and saved alongside location so it can be edited
+  // from either screen without the two ever disagreeing.
+  const [sites,   setSites]   = useState({});
+  const [sitesLoading, setSitesLoading] = useState(true);
+  const loadSites = useCallback(async function() {
+    const sb = getSB(); if (!sb) return;
+    const { data } = await sb.from('brand_profiles').select('store_id, website');
+    const m = {}; (data || []).forEach(r => { m[r.store_id] = r.website || ''; });
+    setSites(m); setSitesLoading(false);
+  }, []);
+  useEffect(function(){ loadSites(); }, [loadSites]);
+
   const get = (id, key, fallback) => {
     const d = draft[id] || {};
     if (d[key] !== undefined) return d[key];
+    if (key === 'website') return sites[id] != null ? sites[id] : fallback;
     const row = rows.find(r => r.store_id === id) || {};
     return row[key] != null ? row[key] : fallback;
   };
@@ -13662,7 +13676,15 @@ function StoreLocationsSection() {
       const patch = { address: get(st.id, 'address', '') || null, ad_radius_km: radius };
       if (coords) { patch.lat = coords.lat; patch.lng = coords.lng; }
       await save(st.id, patch);
+
+      const website = get(st.id, 'website', '').trim();
+      const sb = getSB();
+      const { error: siteErr } = await sb.from('brand_profiles')
+        .upsert({ store_id: st.id, website: website || null }, { onConflict: 'store_id' });
+      if (siteErr) throw new Error(siteErr.message);
+
       setDraft(prev => Object.assign({}, prev, { [st.id]: {} }));
+      await loadSites();
       toast.success(st.name + ' location saved');
     } catch(e) { toast.error(e.message); }
     finally { setBusy(null); }
@@ -13678,7 +13700,7 @@ function StoreLocationsSection() {
         and click the coordinates to copy them, then paste them in below.
       </p>
 
-      {loading ? <p className="lbl text-center py-6">Loading…</p> : STORES.map(function(st) {
+      {(loading || sitesLoading) ? <p className="lbl text-center py-6">Loading…</p> : STORES.map(function(st) {
         const row = rows.find(r => r.store_id === st.id) || {};
         const hasCoords = row.lat != null && row.lng != null;
         return (
@@ -13709,6 +13731,13 @@ function StoreLocationsSection() {
                 <Input className="text-xs" value={get(st.id,'coords','')}
                        placeholder={hasCoords ? Number(row.lat).toFixed(6)+', '+Number(row.lng).toFixed(6) : '50.6745, -120.3273'}
                        onChange={e=>set(st.id,'coords',e.target.value)}/>
+              </div>
+              <div className="sm:col-span-3">
+                <Label>Website</Label>
+                <Input className="text-xs" type="url" value={get(st.id,'website','')}
+                       placeholder="https://hideawayliquorstore.com"
+                       onChange={e=>set(st.id,'website',e.target.value)}/>
+                <p className="lbl mt-1">Carries over as the destination link when you build an ad for this store.</p>
               </div>
               <div className="flex items-end">
                 <Button size="sm" onClick={()=>commit(st)} loading={busy===st.id}>Save</Button>

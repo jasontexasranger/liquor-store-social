@@ -105,8 +105,8 @@
     /* The logo as a mask over animated gold: a moving highlight passes
        through the metal every few seconds — actual shine, not a static tint. */
     .sueno-logo {
-      -webkit-mask: url('/sueno-logo.png') center / contain no-repeat;
-      mask: url('/sueno-logo.png') center / contain no-repeat;
+      -webkit-mask: url('https://yyveikxfomxmedlxsulh.supabase.co/storage/v1/object/public/creatives/website/sueno-logo.png') center / contain no-repeat;
+      mask: url('https://yyveikxfomxmedlxsulh.supabase.co/storage/v1/object/public/creatives/website/sueno-logo.png') center / contain no-repeat;
       background:
         linear-gradient(110deg, transparent 35%, rgba(255,252,230,.95) 50%, transparent 65%),
         linear-gradient(160deg, #f0d87c, #d4af37 40%, #97741f 78%, #e3c163);
@@ -13338,6 +13338,57 @@ function StoreLocationsSection() {
   );
 }
 
+// Where the company logo lives: our own public storage, uploaded through the
+// app — no repo files, no Finder, replaceable any time from Settings.
+const SUENO_LOGO_URL = 'https://yyveikxfomxmedlxsulh.supabase.co/storage/v1/object/public/creatives/website/sueno-logo.png';
+
+function CompanyLogoCard() {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [bust, setBust] = useState(0);
+  const upload = async function(file) {
+    setBusy(true);
+    try {
+      if (!/png$/i.test(file.type) && !/\.png$/i.test(file.name)) {
+        throw new Error('PNG with a transparent background, please — the gold shine uses its shape');
+      }
+      const sb = getSB();
+      const { error } = await sb.storage.from('creatives')
+        .upload('website/sueno-logo.png', file, { upsert:true, contentType:'image/png', cacheControl:'300' });
+      if (error) throw new Error(error.message);
+      setBust(Date.now());
+      toast.success('Logo uploaded — it appears everywhere within about five minutes (hard refresh to see it now)');
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(false); }
+  };
+  return (
+    <Card>
+      <div className="flex items-center gap-4 flex-wrap">
+        <div className="flex items-center justify-center" style={{width:'86px', height:'86px', background:'#0a0a0a', border:'1px solid var(--line)'}}>
+          <img src={SUENO_LOGO_URL + (bust ? '?v=' + bust : '')} alt="" style={{maxWidth:'80%', maxHeight:'80%'}}
+               onError={e=>{ e.target.style.display='none'; }}/>
+        </div>
+        <div className="flex-1 min-w-[220px]">
+          <p className="text-sm font-bold text-gray-900 dark:text-white">Company logo</p>
+          <p className="text-xs text-gray-400 mt-0.5">
+            The Sueño mark used on the home screen, the header, and anywhere else the
+            brand shows. Upload a PNG with a transparent background — the gold shine
+            effect is cut from its shape.
+          </p>
+        </div>
+        <label>
+          <span className="inline-flex items-center gap-2 px-3 py-2 text-xs cursor-pointer rounded-lg"
+                style={{border:'1px solid var(--cy)', color:'var(--cy)', opacity: busy ? 0.5 : 1}}>
+            <Icon name="up" size={12}/>{busy ? 'Uploading…' : 'Upload logo'}
+          </span>
+          <input type="file" accept="image/png" className="hidden" disabled={busy}
+                 onChange={e=>{ const f=e.target.files[0]; e.target.value=''; if (f) upload(f); }}/>
+        </label>
+      </div>
+    </Card>
+  );
+}
+
 function SettingsPage({ settings, onSave, currentUserId, onViewAs }) {
   const toast = useToast();
   const [form,   setForm]   = useState({ ...settings, tokens:{ ...settings.tokens } });
@@ -13355,6 +13406,7 @@ function SettingsPage({ settings, onSave, currentUserId, onViewAs }) {
 
   return (
     <div className="space-y-4 max-w-2xl">
+      <CompanyLogoCard/>
       <UserAccountsSection currentUserId={currentUserId} onViewAs={onViewAs}/>
       <StoreLocationsSection/>
       <SignageScreensSection/>
@@ -16009,7 +16061,7 @@ function AuthenticatedApp({ user, dark, onDark, openChangePw }) {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 flex items-center justify-between h-14">
           <div className="flex items-center gap-2.5 cursor-pointer" onClick={()=>setPage('home')}
                title="Home">
-            <img src="/sueno-logo.png" alt="The Sueño Company" style={{height:'38px', width:'auto'}}
+            <img src="https://yyveikxfomxmedlxsulh.supabase.co/storage/v1/object/public/creatives/website/sueno-logo.png" alt="The Sueño Company" style={{height:'38px', width:'auto'}}
                  onError={e=>{ e.target.style.display='none'; }}/>
             <div>
               <p className="text-sm font-bold text-gray-900 dark:text-white leading-none">Liquor Store Social</p>

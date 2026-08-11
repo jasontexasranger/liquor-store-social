@@ -16136,6 +16136,140 @@ function BrandPage({ settings }) {
 }
 
 // ─────────────────────────────────────────────
+// HELP BOT — pinned platform guide
+// ─────────────────────────────────────────────
+// Scoped hard on the server: it only talks about using this app, never
+// answers as a general assistant. The client just renders a conversation
+// and, when the model names one, a "take me there" shortcut into the app's
+// own navigation — it never invents its own idea of what pages exist.
+function HelpBot({ go, nav }) {
+  const [open,     setOpen]     = useState(false);
+  const [messages, setMessages] = useState([
+    { role:'assistant',
+      content:"Hi — I'm the guide for Liquor Store Social. Ask me how to do something here, or where to find a screen." },
+  ]);
+  const [input, setInput] = useState('');
+  const [busy,  setBusy]  = useState(false);
+  const listRef = useRef(null);
+
+  const allowedPages = new Set((nav || []).map(n => n.id));
+
+  useEffect(function() {
+    if (open && listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
+  }, [messages, open, busy]);
+
+  // Pulls a trailing "[[nav:page=x;tab=y]]" marker out of the reply and
+  // turns it into a shortcut — but only if that page is one this user can
+  // actually reach, so the bot never points someone at a locked door.
+  function parseNav(text) {
+    const m = text.match(/\[\[nav:page=([a-z]+)(?:;tab=([a-z]+))?\]\]\s*$/i);
+    if (!m) return { text, navTo: null };
+    const page  = m[1].toLowerCase();
+    const tab   = m[2] ? m[2].toLowerCase() : null;
+    const clean = text.slice(0, m.index).trim();
+    if (!allowedPages.has(page)) return { text: clean, navTo: null };
+    return { text: clean, navTo: { page: page, tab: tab } };
+  }
+
+  const send = async function() {
+    const q = input.trim();
+    if (!q || busy) return;
+    const next = messages.concat({ role:'user', content:q });
+    setMessages(next);
+    setInput('');
+    setBusy(true);
+    try {
+      const r = await callEdge('meta-social', 'assistantChat', {
+        messages: next.map(m => ({ role:m.role, content:m.content })),
+      });
+      const parsed = parseNav(r.text || '');
+      setMessages(prev => prev.concat({
+        role:'assistant',
+        content: parsed.text || "Sorry, I didn't catch that — try asking a different way.",
+        navTo: parsed.navTo,
+      }));
+    } catch (e) {
+      setMessages(prev => prev.concat({
+        role:'assistant', content:"Something went wrong reaching the guide — try again in a moment.",
+      }));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div style={{position:'fixed', right:'20px', bottom:'20px', zIndex:9999}}>
+      {open && (
+        <div className="hud hud-brk" style={{
+          width:'340px', maxWidth:'calc(100vw - 40px)', height:'460px', maxHeight:'calc(100vh - 110px)',
+          display:'flex', flexDirection:'column', marginBottom:'12px', boxShadow:'var(--hudshadow)',
+        }}>
+          <div className="flex items-center gap-2 px-4 py-3" style={{borderBottom:'1px solid var(--line)'}}>
+            <Icon name="comment" size={16} style={{color:'var(--cy)'}}/>
+            <span className="ttl" style={{fontSize:'13px'}}>Platform guide</span>
+            <span className="flex-1"/>
+            <button onClick={()=>setOpen(false)} style={{color:'var(--txt2)'}}><Icon name="close" size={15}/></button>
+          </div>
+
+          <div ref={listRef} className="flex-1 overflow-auto px-3 py-3" style={{display:'flex', flexDirection:'column', gap:'10px'}}>
+            {messages.map(function(m, i) {
+              return (
+                <div key={i} style={{display:'flex', justifyContent: m.role==='user' ? 'flex-end' : 'flex-start'}}>
+                  <div style={{
+                    maxWidth:'85%', padding:'8px 11px', fontSize:'13px', lineHeight:1.45,
+                    whiteSpace:'pre-wrap',
+                    background: m.role==='user' ? 'var(--cy)' : 'rgba(var(--sink-rgb),.6)',
+                    color: m.role==='user' ? '#0a0a0a' : 'var(--txt)',
+                    border: m.role==='user' ? 'none' : '1px solid var(--line)',
+                  }}>
+                    {m.content}
+                    {m.navTo && (
+                      <div className="mt-2">
+                        <button onClick={()=>{ go(m.navTo.page, m.navTo.tab); setOpen(false); }}
+                          className="text-xs font-semibold px-2 py-1"
+                          style={{border:'1px solid var(--cy)', color: m.role==='user' ? '#0a0a0a' : 'var(--cy)', background:'transparent'}}>
+                          Take me there →
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            {busy && (
+              <div style={{display:'flex', justifyContent:'flex-start'}}>
+                <div style={{padding:'8px 11px', fontSize:'13px', background:'rgba(var(--sink-rgb),.6)', border:'1px solid var(--line)', color:'var(--txt2)'}}>
+                  …
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2 px-3 py-3" style={{borderTop:'1px solid var(--line)'}}>
+            <input value={input} onChange={e=>setInput(e.target.value)}
+              onKeyDown={e=>{ if (e.key==='Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
+              placeholder="Ask how to do something…" disabled={busy}
+              className="flex-1 text-sm px-3 py-2"
+              style={{background:'rgba(var(--sink-rgb),.55)', border:'1px solid var(--line)', color:'var(--txt)', outline:'none'}}/>
+            <button onClick={send} disabled={busy || !input.trim()} style={{color:'var(--cy)', opacity: (busy || !input.trim()) ? .4 : 1}}>
+              <Icon name="send" size={17}/>
+            </button>
+          </div>
+        </div>
+      )}
+
+      <button onClick={()=>setOpen(v=>!v)} title="Need help finding something?"
+        style={{
+          width:'52px', height:'52px', borderRadius:'50%', display:'flex', alignItems:'center', justifyContent:'center',
+          background:'var(--cy)', color:'#0a0a0a', border:'none', boxShadow:'0 4px 18px rgba(0,0,0,.35)', cursor:'pointer',
+        }}>
+        <Icon name={open ? 'close' : 'comment'} size={22}/>
+      </button>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
 // AUTHENTICATED APP (main shell)
 // ─────────────────────────────────────────────
 function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
@@ -16444,6 +16578,8 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
       <footer className="text-center py-3 text-xs text-gray-300 dark:text-gray-600">
         Liquor Store Social · Supabase · Graph API v25.0 · {user && user.email ? user.email : ''}
       </footer>
+
+      <HelpBot go={goHome} nav={nav}/>
     </div>
   );
 }

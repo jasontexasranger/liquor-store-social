@@ -70,7 +70,10 @@ async function requireAdmin(authHeader: string | null, sb: ReturnType<typeof cre
 
 interface RadarEntry {
   brand: string;
-  region: 'shuswap' | 'cowichan';
+  // 'national' is only ever set by the Ad Library category sweep below
+  // (checkMetaAds discovery mode), for a brand with a live ad but no
+  // regional signal — Claude's own research never tags an entry this way.
+  region: 'shuswap' | 'cowichan' | 'national';
   category: string;
   activity: 'low' | 'medium' | 'high';
   channels: string[];
@@ -89,6 +92,16 @@ treat these as two independent research jobs, not one combined region:
    Valley on Vancouver Island, BC. This is hundreds of km from the Shuswap
    stores — a brand's activity near one market says nothing about the other.
 
+Today's date is ${new Date().toISOString().slice(0, 10)}. This is a WEEKLY
+scan, so it should surface what's current, not a brand's entire history —
+any news article or PR coverage you cite must be dated within the last 30
+days of today. If a news piece is older than that, don't use it to justify
+an entry (an old article surfacing in search results doesn't mean the
+brand is currently active). Ongoing, undated things — an active Meta ad
+that's currently running, a brand's regular social posting, a festival or
+event happening soon — are fine regardless of when you happened to find
+them, since those describe current state rather than a moment in the past.
+
 Research BOTH markets this week. Find which liquor brands are visibly
 advertising or promoting themselves in EACH region, across ANY category —
 beer, wine, whisky, rum, gin, vodka, tequila, other spirits, RTD/coolers,
@@ -101,7 +114,8 @@ Check these sources for each region:
 - Google Ads Transparency Center (adstransparency.google.com)
 - TikTok Creative Center (ads.tiktok.com/business/creativecenter)
 - Local news, event and festival sites, restaurant/bar pages, and sponsor
-  pages for that specific area
+  pages for that specific area — news/PR articles must be within the last
+  30 days
 - Public social posts, brand pages, hashtags, and influencer posts visible
   without logging in
 
@@ -162,7 +176,13 @@ interface MetaAdCheck {
 }
 
 function significantWords(s: string): string[] {
-  return s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 2);
+  // Normalize accented Latin letters (ñ, é, etc.) to their base letter before
+  // stripping punctuation, so "Sueños" becomes the word "suenos" rather than
+  // fracturing into "sue" + "os" — the earlier version did the latter, which
+  // still happened to work by accident but was one stray apostrophe away from
+  // a false match or a false miss.
+  const normalized = s.normalize('NFD').replace(/[̀-ͯ]/g, '');
+  return normalized.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 2);
 }
 
 function looksFrench(text: string): boolean {
@@ -178,7 +198,13 @@ async function checkMetaAds(brand: string, key: string): Promise<MetaAdCheck | n
     url.searchParams.set('query', brand);
     url.searchParams.set('country', 'CA');
     url.searchParams.set('status', 'ACTIVE');
-    url.searchParams.set('search_type', 'keyword_exact_phrase');
+    // keyword_unordered rather than keyword_exact_phrase: exact-phrase was
+    // too strict and produced false negatives on real brands (e.g. brand
+    // "Sueños Tequila" not matching an actual live ad from page "Sueños
+    // Artisan Tequila", because the extra word broke the exact phrase).
+    // Precision is handled on our side instead, via the page-name overlap
+    // and French-language checks below.
+    url.searchParams.set('search_type', 'keyword_unordered');
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
@@ -215,6 +241,141 @@ async function checkMetaAds(brand: string, key: string): Promise<MetaAdCheck | n
   } catch {
     return null; // network error, timeout, or bad JSON — just skip this brand
   }
+}
+
+// ─── Ad Library category sweep (national) ──────────────────────────────────
+// checkMetaAds() above only verifies brands Claude's web search already
+// found — so anything Claude's search missed entirely (no news, no public
+// social post) never gets checked at all, no matter how good the Ad Library
+// check is. This runs the other direction: it queries the Ad Library
+// directly for broad alcohol categories, so a brand running Meta ads gets
+// caught even if it never showed up anywhere else this week.
+//
+// There's still no province/region field on ordinary commercial ads (same
+// limitation as above), so this can only ever be a Canada-wide sweep, not a
+// BC one. Two things make that usable rather than just a firehose of
+// Diageo/Molson-scale national campaigns: (1) it's capped to a handful of
+// results per category term, and (2) any advertiser whose name matches the
+// curated regional-producer lists below gets tagged into the actual
+// shuswap/cowichan region instead of the generic 'national' bucket, so the
+// weekly report can visually separate "a local competitor is advertising"
+// from "national brand X still runs ads, as always."
+const CATEGORY_TERMS: { term: string; category: string }[] = [
+  { term: 'craft beer',       category: 'beer' },
+  { term: 'BC wine',          category: 'wine' },
+  { term: 'canadian whisky',  category: 'whisky' },
+  { term: 'craft distillery', category: 'other spirit' },
+  { term: 'tequila',          category: 'tequila' },
+  { term: 'vodka',            category: 'vodka' },
+  { term: 'hard seltzer',     category: 'RTD/cooler' },
+  { term: 'craft cider',      category: 'cider' },
+  { term: 'liquor store',     category: 'other' },
+];
+
+// Not exhaustive — a lightweight name-match heuristic, not a verified
+// directory. Wrong or missing entries here just mean a producer shows up
+// as 'national' instead of its real region; nothing is lost or misreported,
+// it's just a less specific label.
+const SHUSWAP_PRODUCERS = [
+  'sunnybrae', 'larch hills', 'recline ridge', 'marionette', 'ovino',
+  'celista', 'crannog', 'rockridge', 'shuswap', 'salmon arm', 'sicamous',
+];
+const COWICHAN_PRODUCERS = [
+  'unsworth', 'blue grouse', 'merridale', 'averill creek', 'cherry point',
+  'zanatta', 'deep roots', 'small block', 'riot brewing', '39 days',
+  'craig street', 'cowichan', 'cobble hill', 'duncan',
+];
+
+function guessRegion(pageName: string): 'shuswap' | 'cowichan' | 'national' {
+  const words = significantWords(pageName).join(' ');
+  const lower = pageName.toLowerCase();
+  if (SHUSWAP_PRODUCERS.some(p => lower.includes(p) || words.includes(p))) return 'shuswap';
+  if (COWICHAN_PRODUCERS.some(p => lower.includes(p) || words.includes(p))) return 'cowichan';
+  return 'national';
+}
+
+async function searchAdLibrary(query: string, key: string): Promise<Array<{
+  ad_archive_id?: string;
+  page_name?: string;
+  publisher_platform?: string[];
+  snapshot?: { body?: { text?: string } };
+}>> {
+  try {
+    const url = new URL('https://api.scrapecreators.com/v1/facebook/adLibrary/search/ads');
+    url.searchParams.set('query', query);
+    url.searchParams.set('country', 'CA');
+    url.searchParams.set('status', 'ACTIVE');
+    url.searchParams.set('search_type', 'keyword_unordered');
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(url, { headers: { 'x-api-key': key }, signal: controller.signal });
+    clearTimeout(timeout);
+    if (!res.ok) return [];
+
+    const data = await res.json();
+    return Array.isArray(data.searchResults) ? data.searchResults : [];
+  } catch {
+    return [];
+  }
+}
+
+async function discoverCategoryAds(
+  key: string,
+  alreadyFound: string[], // brand names Claude's research already surfaced this week
+): Promise<Array<RadarEntry & {
+  meta_ads_active: true; meta_ads_count: number;
+  meta_ads_sample_url: string | null; meta_ads_platforms: string[];
+}>> {
+  const alreadyWords = alreadyFound.map(significantWords);
+  const seen = new Set<string>();
+  const out: Array<RadarEntry & {
+    meta_ads_active: true; meta_ads_count: number;
+    meta_ads_sample_url: string | null; meta_ads_platforms: string[];
+  }> = [];
+
+  for (const { term, category } of CATEGORY_TERMS) {
+    const results = await searchAdLibrary(term, key);
+    let addedForTerm = 0;
+    for (const r of results) {
+      if (addedForTerm >= 4) break; // cap per category so this stays a digest, not a firehose
+      const pageName = (r.page_name || '').trim();
+      if (!pageName) continue;
+      const bodyText = r.snapshot?.body?.text || '';
+      if (looksFrench(bodyText)) continue;
+
+      const pageWords = significantWords(pageName);
+      const dupeKey = pageWords.join(' ');
+      if (!dupeKey || seen.has(dupeKey)) continue;
+      // Skip anything that's already one of this week's Claude-found brands
+      // — this sweep is for filling gaps, not creating duplicate entries.
+      const alreadyCovered = alreadyWords.some(bw =>
+        bw.length > 0 && (bw.some(w => pageWords.includes(w)) || pageWords.some(w => bw.includes(w)))
+      );
+      if (alreadyCovered) continue;
+      seen.add(dupeKey);
+
+      out.push({
+        brand: pageName.slice(0, 200),
+        region: guessRegion(pageName),
+        category,
+        activity: 'medium',
+        channels: ['Meta Ads'],
+        summary: bodyText
+          ? `Live Meta ad found via category search ("${term}"): "${bodyText.slice(0, 200)}"`
+          : `Live Meta ad found via category search ("${term}") — no ad copy available.`,
+        sources: r.ad_archive_id
+          ? [{ title: 'Meta Ad Library', url: `https://www.facebook.com/ads/library/?id=${r.ad_archive_id}` }]
+          : [],
+        meta_ads_active: true,
+        meta_ads_count: 1,
+        meta_ads_sample_url: r.ad_archive_id ? `https://www.facebook.com/ads/library/?id=${r.ad_archive_id}` : null,
+        meta_ads_platforms: Array.isArray(r.publisher_platform) ? r.publisher_platform : [],
+      });
+      addedForTerm++;
+    }
+  }
+  return out;
 }
 
 async function runScan(sb: ReturnType<typeof createClient>, triggeredBy: string | null) {
@@ -285,42 +446,51 @@ async function runScan(sb: ReturnType<typeof createClient>, triggeredBy: string 
     .single();
   if (reportErr) throw new Error(reportErr.message);
 
-  if (entries.length) {
-    const cleaned = entries
-      .filter(e => e && typeof e.brand === 'string' && e.brand.trim())
-      .map(e => ({
+  const cleaned = entries
+    .filter(e => e && typeof e.brand === 'string' && e.brand.trim())
+    .map(e => ({
+      report_id: report.id,
+      brand: e.brand.trim().slice(0, 200),
+      region: (REGIONS.some(r => r.id === e.region) ? e.region : 'shuswap'),
+      category: (e.category || 'other').trim().slice(0, 60),
+      activity: (['low', 'medium', 'high'].includes(e.activity) ? e.activity : 'low'),
+      channels: Array.isArray(e.channels) ? e.channels.slice(0, 10).map(String) : [],
+      summary: String(e.summary || '').slice(0, 1000),
+      suggested_action: e.suggested_action ? String(e.suggested_action).slice(0, 500) : null,
+      sources: Array.isArray(e.sources) ? e.sources.slice(0, 8) : [],
+    }));
+
+  // Verify each Claude-found brand against the real Meta Ad Library, if
+  // configured. Best-effort and parallel — a slow/failed lookup just leaves
+  // that one entry without the badge, it never blocks the scan from saving.
+  const scKey = Deno.env.get('SCRAPECREATORS_API_KEY');
+  const verifiedRows = scKey
+    ? await Promise.all(cleaned.map(async row => {
+        const check = await checkMetaAds(row.brand, scKey);
+        return {
+          ...row,
+          meta_ads_active: check?.active ?? null,
+          meta_ads_count: check?.count ?? null,
+          meta_ads_sample_url: check?.sampleUrl ?? null,
+          meta_ads_platforms: check?.platforms ?? [],
+        };
+      }))
+    : cleaned;
+
+  // Separately, sweep the Ad Library directly for broad alcohol categories —
+  // catches brands running live Meta ads that never showed up in Claude's
+  // web-search research at all (no news, no public post to find).
+  const discoveredRows = scKey
+    ? (await discoverCategoryAds(scKey, cleaned.map(r => r.brand))).map(d => ({
         report_id: report.id,
-        brand: e.brand.trim().slice(0, 200),
-        region: (REGIONS.some(r => r.id === e.region) ? e.region : 'shuswap'),
-        category: (e.category || 'other').trim().slice(0, 60),
-        activity: (['low', 'medium', 'high'].includes(e.activity) ? e.activity : 'low'),
-        channels: Array.isArray(e.channels) ? e.channels.slice(0, 10).map(String) : [],
-        summary: String(e.summary || '').slice(0, 1000),
-        suggested_action: e.suggested_action ? String(e.suggested_action).slice(0, 500) : null,
-        sources: Array.isArray(e.sources) ? e.sources.slice(0, 8) : [],
-      }));
+        ...d,
+      }))
+    : [];
 
-    // Verify each brand against the real Meta Ad Library, if configured.
-    // Best-effort and parallel — a slow/failed lookup just leaves that one
-    // entry without the badge, it never blocks the scan from saving.
-    const scKey = Deno.env.get('SCRAPECREATORS_API_KEY');
-    const rows = scKey
-      ? await Promise.all(cleaned.map(async row => {
-          const check = await checkMetaAds(row.brand, scKey);
-          return {
-            ...row,
-            meta_ads_active: check?.active ?? null,
-            meta_ads_count: check?.count ?? null,
-            meta_ads_sample_url: check?.sampleUrl ?? null,
-            meta_ads_platforms: check?.platforms ?? [],
-          };
-        }))
-      : cleaned;
-
-    if (rows.length) {
-      const { error: entriesErr } = await sb.from('market_radar_entries').insert(rows);
-      if (entriesErr) throw new Error(entriesErr.message);
-    }
+  const rows = [...verifiedRows, ...discoveredRows];
+  if (rows.length) {
+    const { error: entriesErr } = await sb.from('market_radar_entries').insert(rows);
+    if (entriesErr) throw new Error(entriesErr.message);
   }
 
   void triggeredBy; // reserved for future audit trail — reports aren't per-user today

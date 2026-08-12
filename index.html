@@ -13985,6 +13985,7 @@ const RADAR_ACTIVITY_COLOR = { low: 'var(--txt3)', medium: 'var(--amb)', high: '
 const RADAR_REGIONS = [
   { id: 'shuswap',  label: 'Shuswap',        sub: 'Hideaway · Downtown · Brothers' },
   { id: 'cowichan', label: 'Cowichan Valley', sub: 'Cobblestone' },
+  { id: 'national', label: 'National',       sub: 'Ad Library sweep — no regional match found' },
 ];
 const RADAR_REGION_LABEL = Object.fromEntries(RADAR_REGIONS.map(r => [r.id, r.label]));
 
@@ -14109,6 +14110,10 @@ function MarketRadarPage() {
           separate markets: Shuswap (Hideaway, Downtown, Brothers) and Cowichan
           Valley on Vancouver Island (Cobblestone) — a brand active near one says
           nothing about the other, so results are tagged and filterable by region.
+          Also sweeps the Meta Ad Library directly for any retail alcohol brand
+          running live ads in Canada, catching ones that never showed up in news
+          or social search — Meta doesn't expose a BC-only filter, so anything
+          without a clear regional match is tagged "National" instead of guessed.
           Creative visibility is a real signal; exact ad spend isn't knowable from
           these sources, so treat this as a starting point, not a hard number.
           Runs automatically every week, or any time with the button above.

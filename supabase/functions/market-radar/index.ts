@@ -20,6 +20,17 @@
 //   CRON_SECRET                — same shared secret social-scheduler uses
 //   SUPABASE_URL               — auto-set
 //   SUPABASE_SERVICE_ROLE_KEY  — auto-set
+//
+// Optional edge function secret:
+//   SCRAPECREATORS_API_KEY     — api.scrapecreators.com key. Web search can
+//                                 only see earned media (news, events, public
+//                                 posts) — it can't see inside Meta's actual
+//                                 Ad Library. If this key is set, every brand
+//                                 Claude finds gets a follow-up check against
+//                                 the real Ad Library to confirm whether it
+//                                 currently has a live paid Meta/Instagram ad
+//                                 running. If unset, the scan still runs —
+//                                 entries just won't have that badge.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
@@ -126,6 +137,52 @@ even if one has less to report. If you genuinely find nothing worth
 reporting in a region, just include fewer entries for it. If nothing at all
 is found across both, reply with an empty JSON array: \`\`\`json\n[]\n\`\`\``;
 
+// ─── Real Ad Library verification (ScrapeCreators) ─────────────────────────
+// Claude's web_search tool can only see earned media — it has no way to look
+// inside Meta's actual Ad Library. This does: a real keyword search against
+// api.scrapecreators.com, scoped to Canada, active ads only. Best-effort —
+// if the key isn't set, or a lookup fails/times out, the entry just goes
+// through without the badge rather than failing the whole scan.
+interface MetaAdCheck {
+  active: boolean;
+  count: number;
+  sampleUrl: string | null;
+  platforms: string[];
+}
+
+async function checkMetaAds(brand: string, key: string): Promise<MetaAdCheck | null> {
+  try {
+    const url = new URL('https://api.scrapecreators.com/v1/facebook/adLibrary/search/ads');
+    url.searchParams.set('query', brand);
+    url.searchParams.set('country', 'CA');
+    url.searchParams.set('status', 'ACTIVE');
+    url.searchParams.set('trim', 'true');
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch(url, { headers: { 'x-api-key': key }, signal: controller.signal });
+    clearTimeout(timeout);
+    if (!res.ok) return null;
+
+    const data = await res.json();
+    const results: Array<{ ad_archive_id?: string; publisher_platform?: string[] }> =
+      Array.isArray(data.searchResults) ? data.searchResults : [];
+    if (!results.length) return { active: false, count: 0, sampleUrl: null, platforms: [] };
+
+    const first = results[0];
+    return {
+      active: true,
+      count: results.length,
+      sampleUrl: first.ad_archive_id
+        ? `https://www.facebook.com/ads/library/?id=${first.ad_archive_id}`
+        : null,
+      platforms: Array.isArray(first.publisher_platform) ? first.publisher_platform : [],
+    };
+  } catch {
+    return null; // network error, timeout, or bad JSON — just skip this brand
+  }
+}
+
 async function runScan(sb: ReturnType<typeof createClient>, triggeredBy: string | null) {
   const key = Deno.env.get('ANTHROPIC_API_KEY');
   if (!key) throw new Error('ANTHROPIC_API_KEY is not configured in Edge Function secrets');
@@ -195,7 +252,7 @@ async function runScan(sb: ReturnType<typeof createClient>, triggeredBy: string 
   if (reportErr) throw new Error(reportErr.message);
 
   if (entries.length) {
-    const rows = entries
+    const cleaned = entries
       .filter(e => e && typeof e.brand === 'string' && e.brand.trim())
       .map(e => ({
         report_id: report.id,
@@ -208,6 +265,24 @@ async function runScan(sb: ReturnType<typeof createClient>, triggeredBy: string 
         suggested_action: e.suggested_action ? String(e.suggested_action).slice(0, 500) : null,
         sources: Array.isArray(e.sources) ? e.sources.slice(0, 8) : [],
       }));
+
+    // Verify each brand against the real Meta Ad Library, if configured.
+    // Best-effort and parallel — a slow/failed lookup just leaves that one
+    // entry without the badge, it never blocks the scan from saving.
+    const scKey = Deno.env.get('SCRAPECREATORS_API_KEY');
+    const rows = scKey
+      ? await Promise.all(cleaned.map(async row => {
+          const check = await checkMetaAds(row.brand, scKey);
+          return {
+            ...row,
+            meta_ads_active: check?.active ?? null,
+            meta_ads_count: check?.count ?? null,
+            meta_ads_sample_url: check?.sampleUrl ?? null,
+            meta_ads_platforms: check?.platforms ?? [],
+          };
+        }))
+      : cleaned;
+
     if (rows.length) {
       const { error: entriesErr } = await sb.from('market_radar_entries').insert(rows);
       if (entriesErr) throw new Error(entriesErr.message);

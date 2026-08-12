@@ -1710,6 +1710,18 @@ ALTER TABLE public.market_radar_entries
   ADD COLUMN IF NOT EXISTS region TEXT NOT NULL DEFAULT 'shuswap';
 NOTIFY pgrst, 'reload schema';
 
+-- Market Radar: real Meta Ad Library verification, via ScrapeCreators.
+-- Web search alone can't see inside Meta's Ad Library, so this holds the
+-- result of a follow-up check on whether a discovered brand currently has a
+-- live paid Meta/Instagram ad running. NULL means the check wasn't run
+-- (SCRAPECREATORS_API_KEY not configured) or failed for that brand.
+ALTER TABLE public.market_radar_entries
+  ADD COLUMN IF NOT EXISTS meta_ads_active boolean,
+  ADD COLUMN IF NOT EXISTS meta_ads_count integer,
+  ADD COLUMN IF NOT EXISTS meta_ads_sample_url text,
+  ADD COLUMN IF NOT EXISTS meta_ads_platforms text[] NOT NULL DEFAULT '{}';
+NOTIFY pgrst, 'reload schema';
+
 
 -- ============================================================================
 -- Tell PostgREST about the new tables.

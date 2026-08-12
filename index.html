@@ -14006,6 +14006,14 @@ function RadarEntryCard({ e }) {
       {!!(e.channels && e.channels.length) && (
         <p className="lbl mb-1.5">{e.channels.join(' · ')}</p>
       )}
+      {e.meta_ads_active === true && (
+        <a href={e.meta_ads_sample_url || undefined} target="_blank" rel="noopener noreferrer"
+           className="inline-flex items-center gap-1 text-xs font-bold uppercase tracking-wide px-1.5 py-0.5 mb-1.5"
+           style={{color:'var(--grn)', border:'1px solid var(--grn)', textDecoration:'none'}}
+           title="Confirmed via Meta Ad Library — this brand has a live paid ad running right now">
+          <Icon name="check" size={11}/> Live Meta ad{e.meta_ads_count > 1 ? ` (${e.meta_ads_count})` : ''}
+        </a>
+      )}
       <p className="text-xs mb-1.5" style={{color:'var(--txt2)'}}>{e.summary}</p>
       {e.suggested_action && (
         <p className="text-xs mb-1.5" style={{color:'var(--cy)'}}>

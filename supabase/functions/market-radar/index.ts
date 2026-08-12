@@ -143,11 +143,33 @@ is found across both, reply with an empty JSON array: \`\`\`json\n[]\n\`\`\``;
 // api.scrapecreators.com, scoped to Canada, active ads only. Best-effort —
 // if the key isn't set, or a lookup fails/times out, the entry just goes
 // through without the badge rather than failing the whole scan.
+//
+// Meta's public Ad Library data has no province/region breakdown for
+// ordinary commercial ads (only political/issue ads expose delivery-by-
+// region), so `country=CA` alone can surface a completely unrelated local
+// advertiser anywhere in Canada whose ad copy just happens to mention the
+// brand word — e.g. a Quebec convenience store's own post about "Corona".
+// Since there's no real geo field to filter on, two cheap proxies stand in:
+// (1) the advertiser's actual page name has to resemble the brand name,
+// not just the ad text, and (2) predominantly-French ad copy is treated as
+// a signal of Quebec-local content and skipped, on the assumption that a
+// BC/Shuswap/Cowichan-relevant brand's own advertising is in English.
 interface MetaAdCheck {
   active: boolean;
   count: number;
   sampleUrl: string | null;
   platforms: string[];
+}
+
+function significantWords(s: string): string[] {
+  return s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 2);
+}
+
+function looksFrench(text: string): boolean {
+  if (!text) return false;
+  const markers = /\b(vous|notre|votre|dépanneur|épicerie|être|avec|pour|chez|magasin|québec|québécois|c'est|nos produits)\b/i;
+  const accented = (text.match(/[éèêàçùûôî]/gi) || []).length;
+  return markers.test(text) || accented > text.length * 0.02;
 }
 
 async function checkMetaAds(brand: string, key: string): Promise<MetaAdCheck | null> {
@@ -156,7 +178,7 @@ async function checkMetaAds(brand: string, key: string): Promise<MetaAdCheck | n
     url.searchParams.set('query', brand);
     url.searchParams.set('country', 'CA');
     url.searchParams.set('status', 'ACTIVE');
-    url.searchParams.set('trim', 'true');
+    url.searchParams.set('search_type', 'keyword_exact_phrase');
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
@@ -165,18 +187,30 @@ async function checkMetaAds(brand: string, key: string): Promise<MetaAdCheck | n
     if (!res.ok) return null;
 
     const data = await res.json();
-    const results: Array<{ ad_archive_id?: string; publisher_platform?: string[] }> =
-      Array.isArray(data.searchResults) ? data.searchResults : [];
+    const results: Array<{
+      ad_archive_id?: string;
+      page_name?: string;
+      publisher_platform?: string[];
+      snapshot?: { body?: { text?: string } };
+    }> = Array.isArray(data.searchResults) ? data.searchResults : [];
     if (!results.length) return { active: false, count: 0, sampleUrl: null, platforms: [] };
 
-    const first = results[0];
+    const brandWords = significantWords(brand);
+    const relevant = results.filter(r => {
+      const pageWords = significantWords(r.page_name || '');
+      const nameMatches = brandWords.some(w => pageWords.includes(w)) || pageWords.some(w => brandWords.includes(w));
+      return nameMatches && !looksFrench(r.snapshot?.body?.text || '');
+    });
+    if (!relevant.length) return { active: false, count: 0, sampleUrl: null, platforms: [] };
+
+    const pick = relevant[0];
     return {
       active: true,
-      count: results.length,
-      sampleUrl: first.ad_archive_id
-        ? `https://www.facebook.com/ads/library/?id=${first.ad_archive_id}`
+      count: relevant.length,
+      sampleUrl: pick.ad_archive_id
+        ? `https://www.facebook.com/ads/library/?id=${pick.ad_archive_id}`
         : null,
-      platforms: Array.isArray(first.publisher_platform) ? first.publisher_platform : [],
+      platforms: Array.isArray(pick.publisher_platform) ? pick.publisher_platform : [],
     };
   } catch {
     return null; // network error, timeout, or bad JSON — just skip this brand

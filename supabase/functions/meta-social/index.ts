@@ -45,6 +45,24 @@ async function gPost(path: string, body: Record<string, unknown>, token: string)
   return data;
 }
 
+// Facebook's attached_media[0], attached_media[1]... bracket-array convention
+// is a classic form-encoding thing — it's parsed by Graph's traditional
+// query/form parser, not by its JSON body parser. Posting it inside a JSON
+// body doesn't error, but Graph doesn't recognize the bracketed keys as an
+// array either: it just ignores them and publishes the caption alone.
+// Form-urlencoding this one call is what actually attaches the photos.
+async function gPostForm(path: string, body: Record<string, string>, token: string) {
+  const params = new URLSearchParams({ ...body, access_token: token });
+  const res = await fetch(`${GRAPH}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message ?? 'Graph API error');
+  return data;
+}
+
 async function gDelete(path: string, token: string) {
   const res = await fetch(`${GRAPH}${path}?access_token=${token}`, { method: 'DELETE' });
   const data = await res.json();
@@ -176,14 +194,10 @@ async function publishToFacebook(
     mediaIds.push(up.id);
   }
 
-  // Facebook expects each attached_media[i] value to be a JSON-encoded
-  // *string*, not a nested object — sending it as an object (which JSON.stringify
-  // on the outer body would otherwise produce as valid-looking JSON) is silently
-  // ignored by Graph, so the post publishes as text-only with no error at all.
-  const body: Record<string, unknown> = { message: fullCaption };
+  const body: Record<string, string> = { message: fullCaption };
   mediaIds.forEach((id, i) => { body[`attached_media[${i}]`] = JSON.stringify({ media_fbid: id }); });
 
-  const r = await gPost(`/${pageId}/feed`, body, pageToken);
+  const r = await gPostForm(`/${pageId}/feed`, body, pageToken);
   return r.id;
 }
 

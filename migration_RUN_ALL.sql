@@ -1703,6 +1703,13 @@ CREATE POLICY market_radar_entries_admin ON public.market_radar_entries
   WITH CHECK (public.is_admin());
 NOTIFY pgrst, 'reload schema';
 
+-- Market Radar now covers two separate, unconnected markets — Shuswap
+-- (Hideaway/Downtown/Brothers) and Cowichan Valley on Vancouver Island
+-- (Cobblestone) — so each entry needs to say which one it's about.
+ALTER TABLE public.market_radar_entries
+  ADD COLUMN IF NOT EXISTS region TEXT NOT NULL DEFAULT 'shuswap';
+NOTIFY pgrst, 'reload schema';
+
 
 -- ============================================================================
 -- Tell PostgREST about the new tables.

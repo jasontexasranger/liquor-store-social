@@ -290,7 +290,7 @@ function Icon({ name, size=16, className='', style={}, ...rest }) {
 const STORES = [
   { id: 'hideaway',    name: 'Hideaway Liquor Store',           pageId: '470483222987070',  lat: 50.6745, lng: -120.3273 },
   { id: 'downtown',   name: 'Downtown Liquor Store',            pageId: '1240518919373546', lat: 50.6733, lng: -120.3267 },
-  { id: 'cobblestone',name: 'Cobblestone Liquor Store',         pageId: '195479573844075',  lat: 50.6721, lng: -120.3255 },
+  { id: 'cobblestone',name: 'Cobblestone Liquor Store',         pageId: '195479573844075',  lat: 48.6799, lng: -123.6015 },
   { id: 'brothers',   name: 'Brothers Liquor Store - Sicamous', pageId: '58258641073',      lat: 50.8449, lng: -118.9742 },
 ];
 
@@ -13982,6 +13982,11 @@ function SettingsPage({ settings, onSave, currentUserId, onViewAs, theme, onThem
 // only. Advisory — nothing on this page publishes or schedules anything;
 // it's a starting point for a person to act on elsewhere in the app.
 const RADAR_ACTIVITY_COLOR = { low: 'var(--txt3)', medium: 'var(--amb)', high: 'var(--red)' };
+const RADAR_REGIONS = [
+  { id: 'shuswap',  label: 'Shuswap',        sub: 'Hideaway · Downtown · Brothers' },
+  { id: 'cowichan', label: 'Cowichan Valley', sub: 'Cobblestone' },
+];
+const RADAR_REGION_LABEL = Object.fromEntries(RADAR_REGIONS.map(r => [r.id, r.label]));
 
 function RadarEntryCard({ e }) {
   return (
@@ -13990,6 +13995,7 @@ function RadarEntryCard({ e }) {
         <div>
           <span className="text-sm font-semibold" style={{color:'var(--txt)'}}>{e.brand}</span>
           <span className="lbl ml-2">{e.category}</span>
+          {e.region && <span className="lbl ml-2">· {RADAR_REGION_LABEL[e.region] || e.region}</span>}
         </div>
         <span className="text-xs font-bold uppercase tracking-wide px-1.5 py-0.5"
               style={{color: RADAR_ACTIVITY_COLOR[e.activity] || 'var(--txt3)',
@@ -14026,6 +14032,7 @@ function MarketRadarPage() {
   const [loading, setLoading] = useState(true);
   const [scanning, setScanning] = useState(false);
   const [selected, setSelected] = useState(null); // report id being viewed; null = latest
+  const [regionFilter, setRegionFilter] = useState('all');
 
   const load = useCallback(async function() {
     setLoading(true);
@@ -14057,16 +14064,26 @@ function MarketRadarPage() {
 
   const current = selected ? reports.find(r => r.id === selected) : reports[0];
 
+  // Two separate, unconnected markets — Shuswap and Cowichan Valley — shown
+  // as a filter rather than mixed together, since a brand active near one
+  // says nothing about the other.
+  const regionCounts = useMemo(function() {
+    const counts = {};
+    (current?.entries || []).forEach(e => { counts[e.region || 'shuswap'] = (counts[e.region || 'shuswap']||0) + 1; });
+    return counts;
+  }, [current]);
+
   // Grouped by category, categories sorted by how much is going on (most
   // brands first) so the busiest part of the shelf is what you see first.
   const grouped = useMemo(function() {
     if (!current) return [];
+    const inRegion = (current.entries || []).filter(e => regionFilter === 'all' || (e.region || 'shuswap') === regionFilter);
     const map = {};
-    (current.entries || []).forEach(e => { (map[e.category] ??= []).push(e); });
+    inRegion.forEach(e => { (map[e.category] ??= []).push(e); });
     const order = { high: 0, medium: 1, low: 2 };
     Object.values(map).forEach(list => list.sort((a,b) => (order[a.activity]??3) - (order[b.activity]??3)));
     return Object.entries(map).sort((a,b) => b[1].length - a[1].length);
-  }, [current]);
+  }, [current, regionFilter]);
 
   return (
     <div className="space-y-4">
@@ -14079,11 +14096,14 @@ function MarketRadarPage() {
           </Button>
         </div>
         <p className="lbl">
-          Which liquor brands are visibly advertising or promoting themselves around
-          Okanagan / Shuswap this week, across any category — beer, wine, spirits,
-          RTD, cider. Creative visibility is a real signal; exact ad spend isn't
-          knowable from these sources, so treat this as a starting point, not a hard
-          number. Runs automatically every week, or any time with the button above.
+          Which liquor brands are visibly advertising or promoting themselves this
+          week, across any category — beer, wine, spirits, RTD, cider. Covers two
+          separate markets: Shuswap (Hideaway, Downtown, Brothers) and Cowichan
+          Valley on Vancouver Island (Cobblestone) — a brand active near one says
+          nothing about the other, so results are tagged and filterable by region.
+          Creative visibility is a real signal; exact ad spend isn't knowable from
+          these sources, so treat this as a starting point, not a hard number.
+          Runs automatically every week, or any time with the button above.
         </p>
       </Card>
 
@@ -14111,6 +14131,23 @@ function MarketRadarPage() {
               <Button size="sm" variant="outline" onClick={()=>toggleReviewed(current)}>
                 <Icon name={current.reviewed_at ? 'check' : 'dot'}/> {current.reviewed_at ? 'Reviewed' : 'Mark reviewed'}
               </Button>
+            </div>
+            <div className="flex items-center gap-1.5 flex-wrap mt-2">
+              <button onClick={()=>setRegionFilter('all')}
+                className="text-xs px-2 py-1"
+                style={{border:'1px solid var(--line)', color: regionFilter==='all' ? 'var(--txt)' : 'var(--txt3)',
+                        background: regionFilter==='all' ? 'rgba(var(--sink-rgb),.5)' : 'transparent'}}>
+                All regions
+              </button>
+              {RADAR_REGIONS.map(r => (
+                <button key={r.id} onClick={()=>setRegionFilter(r.id)}
+                  className="text-xs px-2 py-1"
+                  style={{border:'1px solid var(--line)', color: regionFilter===r.id ? 'var(--txt)' : 'var(--txt3)',
+                          background: regionFilter===r.id ? 'rgba(var(--sink-rgb),.5)' : 'transparent'}}
+                  title={r.sub}>
+                  {r.label} <span className="lbl">· {regionCounts[r.id] || 0}</span>
+                </button>
+              ))}
             </div>
           </Card>
 

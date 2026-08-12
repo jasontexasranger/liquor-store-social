@@ -28,7 +28,15 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-cron-secret',
 };
 
-const REGION = 'Okanagan / Shuswap, British Columbia (around Salmon Arm and Sicamous)';
+// Two separate, unconnected markets — Hideaway/Downtown/Brothers are in the
+// Shuswap, Cobblestone is on Vancouver Island. A brand active near one tells
+// you nothing about the other, so every entry gets tagged with which one it
+// applies to rather than treating this as a single combined region.
+const REGIONS = [
+  { id: 'shuswap',  label: 'Okanagan / Shuswap, BC (around Salmon Arm and Sicamous) — Hideaway, Downtown, Brothers' },
+  { id: 'cowichan', label: 'Cowichan Valley, Vancouver Island, BC (around Cobble Hill) — Cobblestone' },
+];
+const REGION = REGIONS.map(r => r.label).join(' • ');
 
 // ─── Auth helper (admin-authenticated calls only) ──────────────────────────
 
@@ -51,6 +59,7 @@ async function requireAdmin(authHeader: string | null, sb: ReturnType<typeof cre
 
 interface RadarEntry {
   brand: string;
+  region: 'shuswap' | 'cowichan';
   category: string;
   activity: 'low' | 'medium' | 'high';
   channels: string[];
@@ -59,20 +68,29 @@ interface RadarEntry {
   sources?: { title?: string; url: string }[];
 }
 
-const SYSTEM_PROMPT = `You are a market-intelligence researcher for a small liquor-store group
-(The Sueño Company — Hideaway, Downtown, Brothers, and Cobblestone Liquor
-Stores) in ${REGION}. Your job this week is to find which liquor brands are
-visibly advertising or promoting themselves around this region right now,
-across ANY category — beer, wine, whisky, rum, gin, vodka, tequila, other
-spirits, RTD/coolers, cider, liqueurs — not just one category.
+const SYSTEM_PROMPT = `You are a market-intelligence researcher for a small liquor-store group,
+The Sueño Company. It runs four stores in two separate, unconnected markets —
+treat these as two independent research jobs, not one combined region:
 
-Check these sources:
+1. "shuswap" — Hideaway, Downtown, and Brothers Liquor Stores, around Salmon
+   Arm and Sicamous, in the Okanagan / Shuswap region of interior BC.
+2. "cowichan" — Cobblestone Liquor Store, around Cobble Hill, in the Cowichan
+   Valley on Vancouver Island, BC. This is hundreds of km from the Shuswap
+   stores — a brand's activity near one market says nothing about the other.
+
+Research BOTH markets this week. Find which liquor brands are visibly
+advertising or promoting themselves in EACH region, across ANY category —
+beer, wine, whisky, rum, gin, vodka, tequila, other spirits, RTD/coolers,
+cider, liqueurs — not just one category. Tag every entry with which region
+it belongs to.
+
+Check these sources for each region:
 - Meta Ad Library (facebook.com/ads/library) for brand pages advertising
   in Canada / British Columbia
 - Google Ads Transparency Center (adstransparency.google.com)
 - TikTok Creative Center (ads.tiktok.com/business/creativecenter)
 - Local news, event and festival sites, restaurant/bar pages, and sponsor
-  pages for the Shuswap and Okanagan area
+  pages for that specific area
 - Public social posts, brand pages, hashtags, and influencer posts visible
   without logging in
 
@@ -86,24 +104,27 @@ label:
 - medium — active on one channel, or occasional creative
 - low — a single stale or minor sighting, worth noting but not urgent
 
-For "suggested_action", write one short, concrete, in-region idea for how a
-Sueño store could respond — e.g. matching the brand's promotion with a
-feature, price ad, tasting, or shelf placement of a Sueño product that
+For "suggested_action", write one short, concrete, in-region idea for how the
+relevant Sueño store(s) could respond — e.g. matching the brand's promotion
+with a feature, price ad, tasting, or shelf placement of a Sueño product that
 competes or complements. Keep it to one sentence. Leave it out if nothing
 sensible comes to mind for that entry.
 
 When you're done researching, reply with ONLY a fenced JSON code block
 (\`\`\`json ... \`\`\`) containing an array of entries, nothing else before or
 after it. Each entry:
-{"brand":"","category":"beer|wine|whisky|rum|gin|vodka|tequila|other spirit|RTD/cooler|cider|liqueur|other",
+{"brand":"","region":"shuswap|cowichan",
+ "category":"beer|wine|whisky|rum|gin|vodka|tequila|other spirit|RTD/cooler|cider|liqueur|other",
  "activity":"low|medium|high","channels":["Meta Ads","Local news",...],
  "summary":"one or two sentences on what you found and where",
  "suggested_action":"one sentence, or omit",
  "sources":[{"title":"","url":""}]}
 
-Include 6 to 15 entries — whatever the research actually turns up, don't pad
-it out. If you genuinely find nothing worth reporting, reply with an empty
-JSON array: \`\`\`json\n[]\n\`\`\``;
+Aim for roughly 5-10 entries per region (10-20 total) — whatever the research
+actually turns up for each, don't pad it out, and don't skip either region
+even if one has less to report. If you genuinely find nothing worth
+reporting in a region, just include fewer entries for it. If nothing at all
+is found across both, reply with an empty JSON array: \`\`\`json\n[]\n\`\`\``;
 
 async function runScan(sb: ReturnType<typeof createClient>, triggeredBy: string | null) {
   const key = Deno.env.get('ANTHROPIC_API_KEY');
@@ -118,7 +139,7 @@ async function runScan(sb: ReturnType<typeof createClient>, triggeredBy: string 
     },
     body: JSON.stringify({
       model: 'claude-sonnet-5',
-      max_tokens: 4000,
+      max_tokens: 8000,
       system: SYSTEM_PROMPT,
       messages: [{
         role: 'user',
@@ -137,16 +158,34 @@ async function runScan(sb: ReturnType<typeof createClient>, triggeredBy: string 
     .map((b: { text?: string }) => b.text ?? '')
     .join('\n');
 
+  // Debug helper: on any parse failure, save a 'failed' report row with a
+  // snippet of what Claude actually returned + why the API call stopped, so
+  // failures are inspectable from the DB instead of vanishing into a toast.
+  const saveFailure = async (reason: string) => {
+    await sb.from('market_radar_reports').insert({
+      region: REGION,
+      status: 'failed',
+      error_msg: `${reason} | stop_reason=${data.stop_reason ?? 'n/a'} | tail=${text.slice(-1500)}`,
+    });
+  };
+
   const match = text.match(/```json\s*([\s\S]*?)```/) ?? text.match(/(\[[\s\S]*\])/);
-  if (!match) throw new Error('Scan finished but returned no readable results');
+  if (!match) {
+    await saveFailure('no readable JSON block found');
+    throw new Error('Scan finished but returned no readable results');
+  }
 
   let entries: RadarEntry[];
   try {
     entries = JSON.parse(match[1]);
   } catch {
+    await saveFailure('JSON.parse failed');
     throw new Error('Scan finished but the results were not valid JSON');
   }
-  if (!Array.isArray(entries)) throw new Error('Scan results were not a list');
+  if (!Array.isArray(entries)) {
+    await saveFailure('parsed value was not an array');
+    throw new Error('Scan results were not a list');
+  }
 
   const { data: report, error: reportErr } = await sb
     .from('market_radar_reports')
@@ -161,6 +200,7 @@ async function runScan(sb: ReturnType<typeof createClient>, triggeredBy: string 
       .map(e => ({
         report_id: report.id,
         brand: e.brand.trim().slice(0, 200),
+        region: (REGIONS.some(r => r.id === e.region) ? e.region : 'shuswap'),
         category: (e.category || 'other').trim().slice(0, 60),
         activity: (['low', 'medium', 'high'].includes(e.activity) ? e.activity : 'low'),
         channels: Array.isArray(e.channels) ? e.channels.slice(0, 10).map(String) : [],

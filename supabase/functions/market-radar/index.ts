@@ -102,11 +102,17 @@ that's currently running, a brand's regular social posting, a festival or
 event happening soon — are fine regardless of when you happened to find
 them, since those describe current state rather than a moment in the past.
 
-Research BOTH markets this week. Find which liquor brands are visibly
-advertising or promoting themselves in EACH region, across ANY category —
-beer, wine, whisky, rum, gin, vodka, tequila, other spirits, RTD/coolers,
-cider, liqueurs — not just one category. Tag every entry with which region
-it belongs to.
+Research BOTH markets this week. Find which liquor PRODUCT BRANDS — beer,
+wine, whisky, rum, gin, vodka, tequila, other spirits, RTD/coolers, cider,
+liqueurs — are visibly advertising or getting press/PR in EACH region, not
+just one category. Tag every entry with which region it belongs to.
+
+Only include the brand behind the drink itself (a brewery, winery,
+distillery, or the brand name on the bottle) — never other retail liquor
+stores, chains, or grocery/liquor combo retailers, even if they're running
+ads or promotions. The Sueño Company is itself a liquor retailer; a
+competing retailer's ad isn't useful competitive intelligence here, only
+which drink brands are pushing themselves is.
 
 Check these sources for each region:
 - Meta Ad Library (facebook.com/ads/library) for brand pages advertising
@@ -269,8 +275,12 @@ const CATEGORY_TERMS: { term: string; category: string }[] = [
   { term: 'vodka',            category: 'vodka' },
   { term: 'hard seltzer',     category: 'RTD/cooler' },
   { term: 'craft cider',      category: 'cider' },
-  { term: 'liquor store',     category: 'other' },
+  { term: 'canadian rye whisky', category: 'whisky' },
 ];
+// Deliberately no 'liquor store' term here — that surfaces retail chains
+// (Sobeys Liquor, Burnaby Liquor Store, etc), not drink brands. Sueño is
+// itself a retailer; a competing retailer's ad isn't the signal this is
+// after, only which drink brands are pushing themselves is.
 
 // Not exhaustive — a lightweight name-match heuristic, not a verified
 // directory. Wrong or missing entries here just mean a producer shows up
@@ -285,6 +295,40 @@ const COWICHAN_PRODUCERS = [
   'zanatta', 'deep roots', 'small block', 'riot brewing', '39 days',
   'craig street', 'cowichan', 'cobble hill', 'duncan',
 ];
+
+// keyword_unordered can match an ad on loose/partial term overlap (e.g. "BC
+// wine" matching a Victoria-based matcha ad just because it says "BC" and
+// something else fuzzy-matched "wine") — so unlike checkMetaAds(), which is
+// checking a brand name we already trust, this sweep also has to confirm
+// the ad is actually *about* alcohol before accepting it, not just that the
+// search term technically hit.
+const ALCOHOL_KEYWORDS = [
+  'beer', 'ale', 'lager', 'stout', 'ipa', 'brewery', 'brewing', 'brewhouse', 'craft brew',
+  'wine', 'winery', 'vineyard', 'cellar', 'estate wines', 'meadery', 'mead',
+  'whisky', 'whiskey', 'bourbon', 'scotch',
+  'tequila', 'mezcal', 'vodka', 'distillery', 'distilling', 'distilled', 'spirits co',
+  'cider', 'cidery', 'liqueur',
+  // 'liquor' alone is deliberately excluded — it's the word in "XYZ Liquor
+  // Store", which is exactly the retailer noise this is trying to avoid,
+  // not a drink brand. 'liqueur' (the product) stays.
+];
+
+// Sueño is a retailer itself — a competing retail chain isn't useful
+// competitive intel here, only the drink brands are. Page names built
+// around retail-store phrasing get excluded even if an alcohol keyword
+// also matched (e.g. "Sobeys Liquor" contains "liquor" via the store name).
+const RETAILER_PATTERNS = /\b(liquor stores?|liquor mart|beer store|wine ?&? ?spirits|wine store|bottle shop|liquor outlet|off.?sale)\b/i;
+
+// Checking body text too let real brand names through (Baccalieu Trail
+// Brewing, Casamigos) but also let through anything that merely *mentions*
+// a spirit in passing — a pizza chain's tequila-lime special, a butcher's
+// whisky-glazed ham. Restricting to the page name itself is stricter (loses
+// a generically-named real brand here and there) but reliably excludes
+// businesses that aren't actually in the alcohol business.
+function isAboutAlcohol(pageName: string): boolean {
+  if (RETAILER_PATTERNS.test(pageName)) return false;
+  return ALCOHOL_KEYWORDS.some(k => pageName.toLowerCase().includes(k));
+}
 
 function guessRegion(pageName: string): 'shuswap' | 'cowichan' | 'national' {
   const words = significantWords(pageName).join(' ');
@@ -343,6 +387,7 @@ async function discoverCategoryAds(
       if (!pageName) continue;
       const bodyText = r.snapshot?.body?.text || '';
       if (looksFrench(bodyText)) continue;
+      if (!isAboutAlcohol(pageName)) continue;
 
       const pageWords = significantWords(pageName);
       const dupeKey = pageWords.join(' ');

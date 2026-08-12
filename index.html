@@ -194,7 +194,7 @@
 <div id="root"></div>
 
 <script type="text/babel">
-const { useState, useEffect, useCallback, useRef, createContext, useContext } = React;
+const { useState, useEffect, useCallback, useMemo, useRef, createContext, useContext } = React;
 
 // ─────────────────────────────────────────────
 // ICON SYSTEM — stroked SVG, replaces all emoji
@@ -13975,6 +13975,184 @@ function SettingsPage({ settings, onSave, currentUserId, onViewAs, theme, onThem
 }
 
 // ─────────────────────────────────────────────
+// MARKET RADAR
+// ─────────────────────────────────────────────
+// A weekly digest of which liquor brands are visibly advertising or
+// promoting around our region, with a suggested response per brand. Admin
+// only. Advisory — nothing on this page publishes or schedules anything;
+// it's a starting point for a person to act on elsewhere in the app.
+const RADAR_ACTIVITY_COLOR = { low: 'var(--txt3)', medium: 'var(--amb)', high: 'var(--red)' };
+
+function RadarEntryCard({ e }) {
+  return (
+    <div className="p-3" style={{border:'1px solid var(--line)'}}>
+      <div className="flex items-start justify-between gap-2 mb-1.5">
+        <div>
+          <span className="text-sm font-semibold" style={{color:'var(--txt)'}}>{e.brand}</span>
+          <span className="lbl ml-2">{e.category}</span>
+        </div>
+        <span className="text-xs font-bold uppercase tracking-wide px-1.5 py-0.5"
+              style={{color: RADAR_ACTIVITY_COLOR[e.activity] || 'var(--txt3)',
+                      border: '1px solid ' + (RADAR_ACTIVITY_COLOR[e.activity] || 'var(--txt3)')}}>
+          {e.activity}
+        </span>
+      </div>
+      {!!(e.channels && e.channels.length) && (
+        <p className="lbl mb-1.5">{e.channels.join(' · ')}</p>
+      )}
+      <p className="text-xs mb-1.5" style={{color:'var(--txt2)'}}>{e.summary}</p>
+      {e.suggested_action && (
+        <p className="text-xs mb-1.5" style={{color:'var(--cy)'}}>
+          <Icon name="spark" size={11}/> {e.suggested_action}
+        </p>
+      )}
+      {!!(e.sources && e.sources.length) && (
+        <div className="flex flex-wrap gap-2 mt-1.5">
+          {e.sources.map((s, i) => (
+            <a key={i} href={s.url} target="_blank" rel="noopener noreferrer"
+               className="text-xs underline" style={{color:'var(--txt3)'}}>
+              {s.title || 'source'}
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MarketRadarPage() {
+  const toast = useToast();
+  const [reports, setReports] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [scanning, setScanning] = useState(false);
+  const [selected, setSelected] = useState(null); // report id being viewed; null = latest
+
+  const load = useCallback(async function() {
+    setLoading(true);
+    try {
+      const r = await callEdge('market-radar', 'list', { limit: 12 });
+      setReports(r.reports || []);
+    } catch(e) { toast.error(e.message); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(function(){ load(); }, [load]);
+
+  const runScan = async function() {
+    setScanning(true);
+    try {
+      await callEdge('market-radar', 'scan', {});
+      toast.success('Scan complete');
+      setSelected(null);
+      await load();
+    } catch(e) { toast.error(e.message); }
+    finally { setScanning(false); }
+  };
+
+  const toggleReviewed = async function(report) {
+    try {
+      await callEdge('market-radar', 'markReviewed', { id: report.id, reviewed: !report.reviewed_at });
+      await load();
+    } catch(e) { toast.error(e.message); }
+  };
+
+  const current = selected ? reports.find(r => r.id === selected) : reports[0];
+
+  // Grouped by category, categories sorted by how much is going on (most
+  // brands first) so the busiest part of the shelf is what you see first.
+  const grouped = useMemo(function() {
+    if (!current) return [];
+    const map = {};
+    (current.entries || []).forEach(e => { (map[e.category] ??= []).push(e); });
+    const order = { high: 0, medium: 1, low: 2 };
+    Object.values(map).forEach(list => list.sort((a,b) => (order[a.activity]??3) - (order[b.activity]??3)));
+    return Object.entries(map).sort((a,b) => b[1].length - a[1].length);
+  }, [current]);
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <div className="flex items-center gap-3 mb-2 flex-wrap">
+          <span className="ttl"><Icon name="search"/> Market Radar</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          <Button size="sm" onClick={runScan} loading={scanning}>
+            <Icon name="spark"/> Run scan now
+          </Button>
+        </div>
+        <p className="lbl">
+          Which liquor brands are visibly advertising or promoting themselves around
+          Okanagan / Shuswap this week, across any category — beer, wine, spirits,
+          RTD, cider. Creative visibility is a real signal; exact ad spend isn't
+          knowable from these sources, so treat this as a starting point, not a hard
+          number. Runs automatically every week, or any time with the button above.
+        </p>
+      </Card>
+
+      {loading ? (
+        <Card><p className="lbl text-center py-10">Loading…</p></Card>
+      ) : !reports.length ? (
+        <Card>
+          <div className="text-center py-12">
+            <Icon name="search" size={36} style={{color:'var(--cy-dim)'}}/>
+            <p className="lbl mt-3">No scans yet</p>
+            <p className="text-xs mt-2" style={{color:'var(--txt2)'}}>
+              Run the first one above — it usually takes a minute or two.
+            </p>
+          </div>
+        </Card>
+      ) : (
+        <>
+          <Card>
+            <div className="flex items-center gap-2 flex-wrap mb-1">
+              <span className="text-sm font-semibold" style={{color:'var(--txt)'}}>
+                {current === reports[0] ? "This week's report" : 'Report'} — {new Date(current.run_at).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})}
+              </span>
+              <span className="lbl">{(current.entries||[]).length} brand{(current.entries||[]).length===1?'':'s'} · {current.region}</span>
+              <span className="flex-1"/>
+              <Button size="sm" variant="outline" onClick={()=>toggleReviewed(current)}>
+                <Icon name={current.reviewed_at ? 'check' : 'dot'}/> {current.reviewed_at ? 'Reviewed' : 'Mark reviewed'}
+              </Button>
+            </div>
+          </Card>
+
+          {current.status === 'failed' ? (
+            <Card><p className="text-xs" style={{color:'var(--red)'}}>Scan failed: {current.error_msg || 'unknown error'}</p></Card>
+          ) : !grouped.length ? (
+            <Card><p className="lbl text-center py-8">Nothing worth reporting this week.</p></Card>
+          ) : grouped.map(([category, entries]) => (
+            <Card key={category}>
+              <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-3 uppercase tracking-wide">
+                {category} <span className="lbl">· {entries.length}</span>
+              </h3>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
+                {entries.map(e => <RadarEntryCard key={e.id} e={e}/>)}
+              </div>
+            </Card>
+          ))}
+
+          {reports.length > 1 && (
+            <Card>
+              <p className="lbl mb-2">Past reports</p>
+              <div className="space-y-1.5">
+                {reports.map(r => (
+                  <button key={r.id} onClick={()=>setSelected(r.id)}
+                    className="w-full flex items-center gap-2 px-2.5 py-2 text-xs text-left"
+                    style={{border:'1px solid var(--line)', background: (current===r) ? 'rgba(var(--sink-rgb),.5)' : 'transparent'}}>
+                    <span style={{color:'var(--txt)'}}>{new Date(r.run_at).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})}</span>
+                    <span className="lbl">{(r.entries||[]).length} brands</span>
+                    {r.status === 'failed' && <span style={{color:'var(--red)'}}>failed</span>}
+                    {r.reviewed_at && <span style={{color:'var(--grn)'}}><Icon name="check" size={11}/> reviewed</span>}
+                  </button>
+                ))}
+              </div>
+            </Card>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
 // SCHEDULED POSTS PANEL
 // ─────────────────────────────────────────────
 // Rows written before multi-image support only carry image_url.
@@ -16868,12 +17046,13 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
     prices:    { id:'prices',    icon:'search',  label:'Price Check' },
     products:  { id:'products',  icon:'package', label:'Products' },
     brand:     { id:'brand',     icon:'palette', label:'Brand' },
+    radar:     { id:'radar',     icon:'search',  label:'Market Radar' },
     settings:  { id:'settings',  icon:'gear',    label:'Settings' },
   };
   const pick = ids => ids.map(i => NAV_ITEMS[i]).filter(t =>
     navAllowed(t.id)
     && (['signage','products','ads'].includes(t.id) ? granted(t.id) : true)
-    && (['brand','settings'].includes(t.id) ? effIsAdmin : true));
+    && (['brand','settings','radar'].includes(t.id) ? effIsAdmin : true));
 
   const navGroups = [
     { kind:'link',  item: NAV_ITEMS.home },
@@ -16881,7 +17060,7 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
     { kind:'menu', id:'create',  icon:'palette', label:'Create',  items: pick(['shelf','creatives','recipes']) },
     { kind:'menu', id:'publish', icon:'globe',   label:'Publish', items: pick(['website','signage','ads']) },
     { kind:'menu', id:'catalog', icon:'package', label:'Catalogue', items: pick(['prices','products']) },
-    { kind:'menu', id:'admin',   icon:'gear',    label:'Admin',   items: pick(['brand','settings']) },
+    { kind:'menu', id:'admin',   icon:'gear',    label:'Admin',   items: pick(['brand','radar','settings']) },
   ].filter(g => g.kind === 'link' || g.items.length > 0);
   const [openMenu, setOpenMenu] = useState(null);
 
@@ -17042,6 +17221,7 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
         {page==='products' && granted('products') && <ProductLibrary/>}
         {page==='ads'      && granted('ads')      && <AdsPage key={'at-'+(adsTab||'x')} initialTab={adsTab} settings={settings}/>}
         {page==='brand'    && effIsAdmin && <BrandPage        settings={settings}/>}
+        {page==='radar'    && effIsAdmin && <MarketRadarPage/>}
         {page==='settings' && effIsAdmin && <SettingsPage     settings={settings} onSave={saveSettings} currentUserId={user ? user.id : null}
                                              onViewAs={isAdmin ? setViewAs : null} theme={theme} onTheme={onTheme}/>}
       </main>

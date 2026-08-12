@@ -1662,6 +1662,49 @@ NOTIFY pgrst, 'reload schema';
 
 
 -- ============================================================================
+-- Market Radar
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS public.market_radar_reports (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  region       TEXT NOT NULL DEFAULT 'Okanagan / Shuswap',
+  status       TEXT NOT NULL DEFAULT 'complete' CHECK (status IN ('running','complete','failed')),
+  error_msg    TEXT,
+  reviewed_at  TIMESTAMPTZ,
+  reviewed_by  UUID REFERENCES auth.users(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS public.market_radar_entries (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  report_id         UUID NOT NULL REFERENCES public.market_radar_reports(id) ON DELETE CASCADE,
+  brand             TEXT NOT NULL,
+  category          TEXT NOT NULL,
+  activity          TEXT NOT NULL CHECK (activity IN ('low','medium','high')),
+  channels          TEXT[] NOT NULL DEFAULT '{}',
+  summary           TEXT NOT NULL,
+  suggested_action  TEXT,
+  sources           JSONB NOT NULL DEFAULT '[]'
+);
+
+CREATE INDEX IF NOT EXISTS market_radar_reports_run_at_idx ON public.market_radar_reports (run_at DESC);
+CREATE INDEX IF NOT EXISTS market_radar_entries_report_idx ON public.market_radar_entries (report_id);
+
+ALTER TABLE public.market_radar_reports ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.market_radar_entries ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS market_radar_reports_admin ON public.market_radar_reports;
+DROP POLICY IF EXISTS market_radar_entries_admin ON public.market_radar_entries;
+CREATE POLICY market_radar_reports_admin ON public.market_radar_reports
+  FOR ALL TO authenticated
+  USING      (public.is_admin())
+  WITH CHECK (public.is_admin());
+CREATE POLICY market_radar_entries_admin ON public.market_radar_entries
+  FOR ALL TO authenticated
+  USING      (public.is_admin())
+  WITH CHECK (public.is_admin());
+NOTIFY pgrst, 'reload schema';
+
+
+-- ============================================================================
 -- Tell PostgREST about the new tables.
 -- "Could not find the table in the schema cache" means this step was missed.
 -- ============================================================================

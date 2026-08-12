@@ -176,8 +176,12 @@ async function publishToFacebook(
     mediaIds.push(up.id);
   }
 
+  // Facebook expects each attached_media[i] value to be a JSON-encoded
+  // *string*, not a nested object — sending it as an object (which JSON.stringify
+  // on the outer body would otherwise produce as valid-looking JSON) is silently
+  // ignored by Graph, so the post publishes as text-only with no error at all.
   const body: Record<string, unknown> = { message: fullCaption };
-  mediaIds.forEach((id, i) => { body[`attached_media[${i}]`] = { media_fbid: id }; });
+  mediaIds.forEach((id, i) => { body[`attached_media[${i}]`] = JSON.stringify({ media_fbid: id }); });
 
   const r = await gPost(`/${pageId}/feed`, body, pageToken);
   return r.id;

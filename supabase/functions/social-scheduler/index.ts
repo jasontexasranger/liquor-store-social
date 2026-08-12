@@ -78,8 +78,11 @@ async function publishFB(pageId: string, token: string, caption: string, images:
     if (!up.id) throw new Error('Facebook rejected one of the images');
     mediaIds.push(up.id);
   }
+  // Facebook expects each attached_media[i] value to be a JSON-encoded
+  // *string*, not a nested object — sending it as an object is silently
+  // ignored by Graph, so the post publishes as text-only with no error at all.
   const body: Record<string, unknown> = { message: full };
-  mediaIds.forEach((id, i) => { body[`attached_media[${i}]`] = { media_fbid: id }; });
+  mediaIds.forEach((id, i) => { body[`attached_media[${i}]`] = JSON.stringify({ media_fbid: id }); });
   const r = await gPost(`/${pageId}/feed`, body, token);
   return r.id;
 }

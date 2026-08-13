@@ -1722,6 +1722,65 @@ ALTER TABLE public.market_radar_entries
   ADD COLUMN IF NOT EXISTS meta_ads_platforms text[] NOT NULL DEFAULT '{}';
 NOTIFY pgrst, 'reload schema';
 
+-- ####################################################################
+-- Google Reviews — daily rating/review-count leaderboard + recent reviews
+-- source: migration_google_reviews.sql
+-- ####################################################################
+-- Daily-synced Google rating + review count per store, plus each store's
+-- most recent reviews — visible to everyone (not admin-gated), because the
+-- point is a friendly leaderboard every manager sees, not a private report.
+--
+-- Source is the Places API (New), never scraping — scraping Google Maps
+-- pages is against Google's terms and the markup shifts without warning.
+-- The trade-off: Places API only exposes a store's 5 most recent reviews,
+-- not full history. That's fine here — this isn't trying to replace the
+-- one-time manual report, just keep a live rating/count leaderboard current.
+--
+-- store_review_snapshots is append-only (one row per store per sync) so a
+-- "yesterday vs. today" trend arrow is possible later without a schema
+-- change. store_review_recent is replace-on-sync — Google only ever gives
+-- us the current top 5, so keeping old ones around would be misleading.
+
+ALTER TABLE public.meta_accounts
+  ADD COLUMN IF NOT EXISTS google_place_id TEXT;
+
+CREATE TABLE IF NOT EXISTS public.store_review_snapshots (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  store_id      TEXT NOT NULL,
+  rating        NUMERIC(2,1) NOT NULL,
+  review_count  INTEGER NOT NULL,
+  fetched_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS store_review_snapshots_store_time_idx
+  ON public.store_review_snapshots (store_id, fetched_at DESC);
+
+CREATE TABLE IF NOT EXISTS public.store_review_recent (
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  store_id       TEXT NOT NULL,
+  author_name    TEXT,
+  rating         INTEGER NOT NULL,
+  relative_time  TEXT,
+  review_time    BIGINT,
+  review_text    TEXT,
+  fetched_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS store_review_recent_store_idx
+  ON public.store_review_recent (store_id, review_time DESC);
+
+ALTER TABLE public.store_review_snapshots ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.store_review_recent    ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS store_review_snapshots_read ON public.store_review_snapshots;
+DROP POLICY IF EXISTS store_review_recent_read    ON public.store_review_recent;
+
+CREATE POLICY store_review_snapshots_read ON public.store_review_snapshots
+  FOR SELECT TO authenticated USING (true);
+
+CREATE POLICY store_review_recent_read ON public.store_review_recent
+  FOR SELECT TO authenticated USING (true);
+
+NOTIFY pgrst, 'reload schema';
+
 
 -- ============================================================================
 -- Tell PostgREST about the new tables.

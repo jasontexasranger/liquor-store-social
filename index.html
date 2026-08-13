@@ -188,6 +188,21 @@
       color: #120e05; font-size: 11px; font-weight: 800; padding: 3px 9px; border-radius: 99px !important; }
     .sueno-foot { text-align: center; font-size: 11px; letter-spacing: .2em;
       text-transform: uppercase; color: rgba(212,175,55,.5); padding-bottom: 24px; }
+
+    /* Google rating leaderboard — a quick, friendly-competition readout
+       above the action grid. Stays quiet (renders nothing) until there's
+       real synced data, so it never shows as a broken placeholder. */
+    .sueno-leaderboard { display: flex; flex-wrap: wrap; justify-content: center;
+      gap: 10px; max-width: 1100px; margin: 0 auto 28px; padding: 0 8px;
+      opacity: 0; animation: suenoIn .5s ease forwards; }
+    .sueno-lb-item { display: flex; align-items: center; gap: 7px; padding: 7px 14px;
+      border-radius: 999px !important; border: 1px solid rgba(212,175,55,.3);
+      background: rgba(212,175,55,.06); color: #e7cd7f; cursor: pointer;
+      font-size: 12.5px; font-weight: 600; transition: background .15s, border-color .15s; }
+    .sueno-lb-item:hover { background: rgba(212,175,55,.16); border-color: rgba(212,175,55,.6); }
+    .sueno-lb-rank { display: inline-flex; align-items: center; justify-content: center;
+      font-weight: 800; color: #d4af37; min-width: 1.3em; }
+    .sueno-lb-count { color: rgba(231,205,127,.55); }
   </style>
 </head>
 <body>
@@ -14204,6 +14219,178 @@ function MarketRadarPage() {
 }
 
 // ─────────────────────────────────────────────
+// GOOGLE REVIEWS
+// ─────────────────────────────────────────────
+// A row of stars, filled gold up to the (rounded) rating. Used both for the
+// per-store aggregate (fractional, e.g. 4.5 — rounds to nearest star for
+// display) and for individual reviews (already a whole number 1-5).
+function StarRow({ rating, size=13 }) {
+  const full = Math.round(rating || 0);
+  return (
+    <span className="inline-flex items-center" style={{gap:1}}>
+      {[1,2,3,4,5].map(i => (
+        <Icon key={i} name="star" size={size}
+          style={i <= full ? {fill:'var(--cy)', color:'var(--cy)'} : {color:'var(--line2)'}}/>
+      ))}
+    </span>
+  );
+}
+
+function ReviewsPage({ isAdmin }) {
+  const toast = useToast();
+  const [snapshots, setSnapshots] = useState({});   // store_id -> latest snapshot row
+  const [recent,    setRecent]    = useState({});   // store_id -> [review rows]
+  const [loading,   setLoading]   = useState(true);
+  const [syncing,   setSyncing]   = useState(false);
+  const [settingUp, setSettingUp] = useState(false);
+
+  const load = useCallback(async function() {
+    setLoading(true);
+    try {
+      const sb = getSB();
+      // Latest snapshot per store — pull recent history and keep the first
+      // (newest, since sorted desc) row seen per store_id.
+      const { data: snapRows } = await sb.from('store_review_snapshots')
+        .select('*').order('fetched_at', { ascending:false }).limit(40);
+      const bySnap = {};
+      (snapRows || []).forEach(r => { if (!bySnap[r.store_id]) bySnap[r.store_id] = r; });
+      setSnapshots(bySnap);
+
+      const { data: recentRows } = await sb.from('store_review_recent')
+        .select('*').order('review_time', { ascending:false });
+      const byRecent = {};
+      (recentRows || []).forEach(r => { (byRecent[r.store_id] ??= []).push(r); });
+      setRecent(byRecent);
+    } catch(e) { toast.error(e.message); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(function(){ load(); }, [load]);
+
+  const reportResults = (label, results) => {
+    const failed = (results || []).filter(x => !x.ok);
+    if (failed.length) toast.error(label + ' — ' + failed.map(f => f.store_id + ': ' + f.error).join('; '));
+    else toast.success(label + ' — done');
+  };
+
+  const runSync = async function() {
+    setSyncing(true);
+    try {
+      const r = await callEdge('google-reviews', 'sync', {});
+      reportResults('Sync', r.results);
+      await load();
+    } catch(e) { toast.error(e.message); }
+    finally { setSyncing(false); }
+  };
+
+  const runSetup = async function() {
+    setSettingUp(true);
+    try {
+      const r = await callEdge('google-reviews', 'setupPlaceIds', {});
+      reportResults('Store match', r.results);
+    } catch(e) { toast.error(e.message); }
+    finally { setSettingUp(false); }
+  };
+
+  // Ranked by rating first, review count as tiebreaker — stores with no
+  // snapshot yet sink to the bottom rather than being hidden.
+  const ranked = useMemo(function() {
+    return STORES.map(s => ({ ...s, snap: snapshots[s.id] || null }))
+      .sort((a, b) => {
+        const ar = a.snap ? a.snap.rating : -1, br = b.snap ? b.snap.rating : -1;
+        if (br !== ar) return br - ar;
+        const ac = a.snap ? a.snap.review_count : 0, bc = b.snap ? b.snap.review_count : 0;
+        return bc - ac;
+      });
+  }, [snapshots]);
+
+  const haveAnyData = Object.keys(snapshots).length > 0;
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <div className="flex items-center gap-3 mb-2 flex-wrap">
+          <span className="ttl"><Icon name="star"/> Google Reviews</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          {isAdmin && (
+            <>
+              <Button size="sm" variant="outline" onClick={runSetup} loading={settingUp}>
+                <Icon name="search"/> Set up store matches
+              </Button>
+              <Button size="sm" onClick={runSync} loading={syncing}>
+                <Icon name="refresh"/> Sync now
+              </Button>
+            </>
+          )}
+        </div>
+        <p className="lbl">
+          Each store's live Google rating, review count, and most recent reviews —
+          synced automatically once a day via Google's Places API, never scraped.
+          A friendly leaderboard everyone can see, not a full report: Google's API
+          only ever hands back a store's 5 most recent reviews, not its full
+          history.
+        </p>
+      </Card>
+
+      {loading ? (
+        <Card><p className="lbl text-center py-10">Loading…</p></Card>
+      ) : !haveAnyData ? (
+        <Card>
+          <div className="text-center py-12">
+            <Icon name="star" size={36} style={{color:'var(--cy-dim)'}}/>
+            <p className="lbl mt-3">No data yet</p>
+            <p className="text-xs mt-2" style={{color:'var(--txt2)'}}>
+              {isAdmin ? 'Run "Set up store matches", then "Sync now" above.' : 'Ask an admin to run the first sync.'}
+            </p>
+          </div>
+        </Card>
+      ) : ranked.map((s, i) => (
+        <Card key={s.id}>
+          <div className="flex items-start justify-between gap-3 flex-wrap mb-2">
+            <div className="flex items-center gap-2.5">
+              <span className="text-base font-bold text-center" style={{color: i===0 ? 'var(--cy)' : 'var(--txt3)', minWidth:'1.6em'}}>
+                {i===0 && s.snap ? <Icon name="spark" size={18}/> : ('#'+(i+1))}
+              </span>
+              <div>
+                <span className="text-sm font-semibold" style={{color:'var(--txt)'}}>{s.name}</span>
+                {s.snap ? (
+                  <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                    <StarRow rating={s.snap.rating}/>
+                    <span className="text-sm font-bold" style={{color:'var(--cy)'}}>{Number(s.snap.rating).toFixed(1)}</span>
+                    <span className="lbl">· {s.snap.review_count} review{s.snap.review_count===1?'':'s'}</span>
+                  </div>
+                ) : (
+                  <p className="lbl mt-0.5">Not synced yet</p>
+                )}
+              </div>
+            </div>
+            {s.snap && (
+              <span className="lbl">Updated {new Date(s.snap.fetched_at).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</span>
+            )}
+          </div>
+          {!!(recent[s.id] && recent[s.id].length) ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
+              {recent[s.id].slice(0,5).map(r => (
+                <div key={r.id} className="p-2.5" style={{border:'1px solid var(--line)'}}>
+                  <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
+                    <StarRow rating={r.rating} size={11}/>
+                    <span className="lbl">{r.author_name || 'Anonymous'} · {r.relative_time || ''}</span>
+                  </div>
+                  <p className="text-xs" style={{color:'var(--txt2)'}}>
+                    {r.review_text ? '"' + r.review_text + '"' : 'No written comment'}
+                  </p>
+                </div>
+              ))}
+            </div>
+          ) : s.snap && (
+            <p className="text-xs mt-1" style={{color:'var(--txt3)'}}>No recent review text on file.</p>
+          )}
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
 // SCHEDULED POSTS PANEL
 // ─────────────────────────────────────────────
 // Rows written before multi-image support only carry image_url.
@@ -15502,6 +15689,49 @@ function SocialInboxPanel({ visibleStores }) {
 // Sueño gold on black. Cards are filtered to what this user can actually do,
 // so a store clerk sees five big obvious choices and an admin sees the lot.
 // On arrival, a bright band of light sweeps the screen — once per session.
+// A quick "who's on top" readout of live Google ratings, above the action
+// grid. Renders nothing until real synced data exists — a missing or
+// pre-launch leaderboard should be invisible, never a broken-looking gap.
+function HomeLeaderboard({ go }) {
+  const [snaps, setSnaps] = useState(null); // null = not loaded yet, {} = loaded, nothing synced
+
+  useEffect(function() {
+    let alive = true;
+    getSB().from('store_review_snapshots').select('*')
+      .order('fetched_at', { ascending:false }).limit(40)
+      .then(function(res) {
+        if (!alive) return;
+        const bySnap = {};
+        (res.data || []).forEach(r => { if (!bySnap[r.store_id]) bySnap[r.store_id] = r; });
+        setSnaps(bySnap);
+      })
+      .catch(function(){ setSnaps({}); }); // a quiet miss — this is a bonus, not a promise
+    return function(){ alive = false; };
+  }, []);
+
+  if (!snaps || !Object.keys(snaps).length) return null;
+
+  const ranked = STORES.map(s => ({ ...s, snap: snaps[s.id] || null }))
+    .filter(s => s.snap)
+    .sort((a, b) => b.snap.rating - a.snap.rating || b.snap.review_count - a.snap.review_count);
+
+  return (
+    <div className="sueno-leaderboard">
+      {ranked.map((s, i) => (
+        <button key={s.id} className="sueno-lb-item" onClick={()=>go('reviews')} title="See full reviews">
+          <span className="sueno-lb-rank">
+            {i===0 ? <Icon name="spark" size={13} style={{fill:'currentColor'}}/> : ('#'+(i+1))}
+          </span>
+          <span>{s.name.replace(' Liquor Store','').replace(' - Sicamous','')}</span>
+          <Icon name="star" size={11} style={{fill:'currentColor'}}/>
+          <span>{Number(s.snap.rating).toFixed(1)}</span>
+          <span className="sueno-lb-count">({s.snap.review_count})</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function HomePage({ granted, isAdmin, go }) {
   const [pending, setPending] = useState(null);
   // The opening plays once per session: logo alone on black, sinking to the
@@ -15554,6 +15784,7 @@ function HomePage({ granted, isAdmin, go }) {
       <h1 className="sueno-title" style={{opacity:0, animation:'suenoIn .6s ease forwards', animationDelay: base + 's'}}>
         I WANT TO<span className="sueno-dots">...</span>
       </h1>
+      <HomeLeaderboard go={go}/>
       <div className="sueno-grid">
         {CARDS.map(function(c, i) {
           return (
@@ -17088,6 +17319,7 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
     home:      { id:'home',      icon:'star',    label:'Home' },
     posts:     { id:'posts',     icon:'note',    label:'Social' },
     features:  { id:'features',  icon:'tag',     label:'Features' },
+    reviews:   { id:'reviews',   icon:'star',    label:'Reviews' },
     shelf:     { id:'shelf',     icon:'print',   label:'Shelf Talkers' },
     creatives: { id:'creatives', icon:'image',   label:'Creatives' },
     recipes:   { id:'recipes',   icon:'cocktail',label:'Recipes' },
@@ -17107,7 +17339,7 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
 
   const navGroups = [
     { kind:'link',  item: NAV_ITEMS.home },
-    ...pick(['posts','features']).map(item => ({ kind:'link', item })),
+    ...pick(['posts','features','reviews']).map(item => ({ kind:'link', item })),
     { kind:'menu', id:'create',  icon:'palette', label:'Create',  items: pick(['shelf','creatives','recipes']) },
     { kind:'menu', id:'publish', icon:'globe',   label:'Publish', items: pick(['website','signage','ads']) },
     { kind:'menu', id:'catalog', icon:'package', label:'Catalogue', items: pick(['prices','products']) },
@@ -17273,6 +17505,7 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
         {page==='ads'      && granted('ads')      && <AdsPage key={'at-'+(adsTab||'x')} initialTab={adsTab} settings={settings}/>}
         {page==='brand'    && effIsAdmin && <BrandPage        settings={settings}/>}
         {page==='radar'    && effIsAdmin && <MarketRadarPage/>}
+        {page==='reviews'                && <ReviewsPage isAdmin={effIsAdmin}/>}
         {page==='settings' && effIsAdmin && <SettingsPage     settings={settings} onSave={saveSettings} currentUserId={user ? user.id : null}
                                              onViewAs={isAdmin ? setViewAs : null} theme={theme} onTheme={onTheme}/>}
       </main>

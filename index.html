@@ -15732,7 +15732,7 @@ function HomeLeaderboard({ go }) {
   );
 }
 
-function HomePage({ granted, isAdmin, go }) {
+function HomePage({ granted, isAdmin, go, onOpenHelp }) {
   const [pending, setPending] = useState(null);
   // The opening plays once per session: logo alone on black, sinking to the
   // bottom as the cards arrive. Revisits go straight to the cards.
@@ -15772,6 +15772,7 @@ function HomePage({ granted, isAdmin, go }) {
     { id:'adsdash',   label:'See how the ads are doing',  icon:'chart',   page:'ads', tab:'dash', need:'ads' },
     { id:'ad',        label:'Run an ad',                  icon:'mega',    page:'ads', tab:'build', need:'ads' },
     { id:'users',     label:'Manage the team',            icon:'users',   page:'settings', admin:true },
+    { id:'help',      label:'Help me find what I need',   icon:'comment', action:'help' },
   ].filter(c => (!c.need || granted(c.need)) && (!c.admin || isAdmin));
 
   return (
@@ -15789,7 +15790,7 @@ function HomePage({ granted, isAdmin, go }) {
         {CARDS.map(function(c, i) {
           return (
             <button key={c.id} className="sueno-card" style={{animationDelay: (base + 0.15 + i * 0.06) + 's'}}
-                    onClick={()=>go(c.page, c.tab)}>
+                    onClick={()=> c.action==='help' ? onOpenHelp && onOpenHelp() : go(c.page, c.tab)}>
               <Icon name={c.icon} size={30}/>
               <span className="sueno-card-label">{c.label}</span>
               {c.badge && <span className="sueno-badge">{c.badge}</span>}
@@ -16889,9 +16890,8 @@ function BrandPage({ settings }) {
 // answers as a general assistant. The client just renders a conversation
 // and, when the model names one, a "take me there" shortcut into the app's
 // own navigation — it never invents its own idea of what pages exist.
-function HelpBot({ go, nav, user, page }) {
+function HelpBot({ go, nav, user, page, open, setOpen }) {
   const toast = useToast();
-  const [open,     setOpen]     = useState(false);
   const [messages, setMessages] = useState([
     { role:'assistant',
       content:"Hi — I'm the guide for Liquor Store Social. Ask me how to do something here, or where to find a screen." },
@@ -17212,6 +17212,9 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
   // Deep links from the home cards into a specific tab of a page.
   const [postsTab, setPostsTab] = useState(null);
   const [adsTab,   setAdsTab]   = useState(null);
+  // Lifted out of HelpBot so the "Help me find what I need" home card can
+  // pop the same chat window open, not a second one.
+  const [helpOpen, setHelpOpen] = useState(false);
   const goHome = (p, t) => {
     if (p === 'posts') setPostsTab(t || null);
     if (p === 'ads')   setAdsTab(t || null);
@@ -17486,7 +17489,7 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
       )}
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
-        {page==='home'                   && <HomePage granted={granted} isAdmin={effIsAdmin} go={goHome}/>}
+        {page==='home'                   && <HomePage granted={granted} isAdmin={effIsAdmin} go={goHome} onOpenHelp={()=>setHelpOpen(true)}/>}
         {page==='posts'                  && <PostsPage       key={'pt-'+(postsTab||'x')+'-'+(composePrefill?composePrefill.at:0)}
                                              initialTab={postsTab} prefill={composePrefill}
                                              settings={settings} userStoreIds={effIsAdmin ? [] : effStoreIds} isAdmin={effIsAdmin}/>}
@@ -17513,7 +17516,7 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
         Liquor Store Social · Supabase · Graph API v25.0 · {user && user.email ? user.email : ''}
       </footer>
 
-      <HelpBot go={goHome} nav={nav} user={user} page={page}/>
+      <HelpBot go={goHome} nav={nav} user={user} page={page} open={helpOpen} setOpen={setHelpOpen}/>
     </div>
   );
 }

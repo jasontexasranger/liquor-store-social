@@ -156,15 +156,27 @@ Deno.serve(async (req) => {
 
           // Recent reviews are always a full refresh — Google only ever
           // hands us its current top 5, so old rows would just be stale.
+          //
+          // Google picks those 5 by its own "most relevant" ranking, not
+          // recency — a glowing review from two years ago can outrank one
+          // from last week. We don't want stale reviews propping up the
+          // leaderboard's "recent" section, so anything older than 60 days
+          // gets dropped here rather than shown. That can mean a store
+          // shows fewer than 5, or none, if nothing recent made Google's
+          // top 5 — a real limit of the API, not a bug.
           await sb.from('store_review_recent').delete().eq('store_id', storeId);
-          const reviews = details.reviews ?? [];
+          const cutoff = Math.floor(Date.now() / 1000) - 60 * 24 * 60 * 60; // 60 days ago
+          const reviews = (details.reviews ?? []).filter(r => {
+            if (!r.publishTime) return false;
+            return Math.floor(new Date(r.publishTime).getTime() / 1000) >= cutoff;
+          });
           if (reviews.length) {
             const rows = reviews.map(r => ({
               store_id: storeId,
               author_name: r.authorAttribution?.displayName ?? null,
               rating: r.rating,
               relative_time: r.relativePublishTimeDescription ?? null,
-              review_time: r.publishTime ? Math.floor(new Date(r.publishTime).getTime() / 1000) : null,
+              review_time: Math.floor(new Date(r.publishTime!).getTime() / 1000),
               review_text: r.text?.text ?? null,
               fetched_at: fetchedAt,
             }));

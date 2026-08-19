@@ -15770,7 +15770,7 @@ function HomePage({ granted, isAdmin, go, onOpenHelp }) {
     { id:'post',      label:'Generate a social post',     icon:'edit',    page:'posts', tab:'compose' },
     { id:'approve',   label:'Approve waiting posts',      icon:'check',   page:'posts', tab:'scheduled',
       badge: pending > 0 ? pending + ' waiting' : null },
-    { id:'inbox',     label:'Answer comments & messages', icon:'comment', page:'posts', tab:'inbox' },
+    { id:'inbox',     label:'Answer comments & messages', icon:'comment', page:'posts', tab:'inbox', admin:true },
     { id:'features',  label:"Update this month's features", icon:'tag',   page:'features' },
     { id:'shelf',     label:'Print shelf talkers',        icon:'print',   page:'shelf' },
     { id:'website',   label:'Update the website',         icon:'globe',   page:'website' },
@@ -15818,7 +15818,10 @@ function HomePage({ granted, isAdmin, go, onOpenHelp }) {
 // PAGE CONTAINERS
 // ─────────────────────────────────────────────
 function PostsPage({ settings, userStoreIds, isAdmin, initialTab, prefill }) {
-  const [tab,          setTab]          = useState(initialTab || 'compose');
+  // Inbox is admin-only for now (Messenger scope issue on the page token —
+  // pulled from managers' screens until that's sorted, not a permanent cut).
+  const safeInitialTab = (initialTab === 'inbox' && !isAdmin) ? 'compose' : (initialTab || 'compose');
+  const [tab,          setTab]          = useState(safeInitialTab);
   const [pendingImage, setPendingImage] = useState(prefill ? prefill.image : null);
   const pendingCaption = prefill ? prefill.caption : null;
 
@@ -15834,7 +15837,7 @@ function PostsPage({ settings, userStoreIds, isAdmin, initialTab, prefill }) {
   return (
     <div>
       <div className="flex border-b border-gray-200 dark:border-gray-700 mb-5">
-        {[{id:'compose',icon:'edit', label:'Compose'},{id:'inbox',icon:'comment', label:'Inbox'},{id:'history',icon:'note', label:'History'},{id:'scheduled',icon:'cal', label:'Scheduled'},{id:'images',icon:'image', label:'Image Generator'},{id:'analytics',icon:'chart', label:'Analytics'}].map(t=>(
+        {[{id:'compose',icon:'edit', label:'Compose'},{id:'inbox',icon:'comment', label:'Inbox'},{id:'history',icon:'note', label:'History'},{id:'scheduled',icon:'cal', label:'Scheduled'},{id:'images',icon:'image', label:'Image Generator'},{id:'analytics',icon:'chart', label:'Analytics'}].filter(t=>t.id!=='inbox'||isAdmin).map(t=>(
           <button key={t.id} onClick={()=>setTab(t.id)} className={`px-4 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}>
             <Icon name={t.icon} size={14} className="mr-2"/>{t.label}{t.id==='compose'&&pendingImage?' \u2022':''}
           </button>
@@ -15846,7 +15849,7 @@ function PostsPage({ settings, userStoreIds, isAdmin, initialTab, prefill }) {
           <PostHistory  settings={settings} visibleStores={visibleStores}/>
         </div>
       )}
-      {tab==='inbox'      && <SocialInboxPanel visibleStores={visibleStores}/>}
+      {tab==='inbox'      && isAdmin && <SocialInboxPanel visibleStores={visibleStores}/>}
       {tab==='scheduled'  && <ScheduledPostsPanel/>}
       {tab==='history'    && <PostHistory settings={settings} visibleStores={visibleStores}/>}
       {tab==='images'     && <ImageGenerator settings={settings} onUseInPost={handleUseInPost}/>}

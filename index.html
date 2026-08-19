@@ -7177,15 +7177,23 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
                 { label:'Import CSV',       icon:'folder', onClick:()=>setShowCsv(v=>!v) },
                 { label:'Paste from Excel', icon:'down',   onClick:()=>setShowPaste(v=>!v) },
               ]}/>
-              <ToolMenu label="Make" icon="image" items={[
-                { label:'Price creatives',   icon:'image',    onClick:()=>setShowBatch(true), disabled: rows.length===0 },
-                { label:'Cocktail recipes',  icon:'cocktail', onClick:()=>setShowCocktails(true), disabled: rows.length===0 },
-              ]}/>
-              <ToolMenu label="Publish" icon="rocket" items={[
-                { label:'To social — plan posts', icon:'cal',   onClick:()=>setShowPlan(true), disabled: rows.length===0 },
-                { label:'To the TVs',             icon:'grid',  onClick:()=>setShowSign(true) },
-                { label:'To the website',         icon:'globe', onClick:()=>setShowWeb(true), disabled: rows.length===0 },
-              ]}/>
+              {/* Batch creative/post generation from the feature sheet is
+                  admin-only — a manager can still post one-off from Social,
+                  just not spin up a whole month's worth of assets or a
+                  scheduled group of posts on their own. */}
+              {isAdmin && (
+                <React.Fragment>
+                  <ToolMenu label="Make" icon="image" items={[
+                    { label:'Price creatives',   icon:'image',    onClick:()=>setShowBatch(true), disabled: rows.length===0 },
+                    { label:'Cocktail recipes',  icon:'cocktail', onClick:()=>setShowCocktails(true), disabled: rows.length===0 },
+                  ]}/>
+                  <ToolMenu label="Publish" icon="rocket" items={[
+                    { label:'To social — plan posts', icon:'cal',   onClick:()=>setShowPlan(true), disabled: rows.length===0 },
+                    { label:'To the TVs',             icon:'grid',  onClick:()=>setShowSign(true) },
+                    { label:'To the website',         icon:'globe', onClick:()=>setShowWeb(true), disabled: rows.length===0 },
+                  ]}/>
+                </React.Fragment>
+              )}
             </React.Fragment>
           )}
         </div>
@@ -7310,7 +7318,7 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
         )}
       </Card>
 
-      {showBatch && (
+      {isAdmin && showBatch && (
         <FeatureCreativeBatch
           storeId={storeId}
           storeName={(myStores.find(s=>s.id===storeId)||{}).name || ''}
@@ -7319,7 +7327,7 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
           onClose={()=>setShowBatch(false)} onDone={reload}/>
       )}
 
-      {showSign && (
+      {isAdmin && showSign && (
         <SignagePushModal
           storeId={storeId}
           storeName={(myStores.find(s=>s.id===storeId)||{}).name || ''}
@@ -7327,7 +7335,7 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
           onClose={()=>setShowSign(false)}/>
       )}
 
-      {showWeb && (
+      {isAdmin && showWeb && (
         <WebsitePushModal
           storeId={storeId}
           storeName={(myStores.find(s=>s.id===storeId)||{}).name || ''}
@@ -7335,13 +7343,13 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
           onClose={()=>setShowWeb(false)}/>
       )}
 
-      {showCocktails && (
+      {isAdmin && showCocktails && (
         <FeatureCocktailBatch
           storeId={storeId} period={period} rows={rows} products={products}
           onClose={()=>setShowCocktails(false)} onDone={reload}/>
       )}
 
-      {showPlan && (
+      {isAdmin && showPlan && (
         <PostPlanBuilder
           storeId={storeId}
           storeName={(myStores.find(s=>s.id===storeId)||{}).name || ''}
@@ -17337,7 +17345,7 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
   };
   const pick = ids => ids.map(i => NAV_ITEMS[i]).filter(t =>
     navAllowed(t.id)
-    && (['signage','products','ads'].includes(t.id) ? granted(t.id) : true)
+    && (['signage','ads'].includes(t.id) ? granted(t.id) : true)
     && (['brand','settings','radar'].includes(t.id) ? effIsAdmin : true));
 
   const navGroups = [
@@ -17504,7 +17512,7 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
         {page==='signage' && granted('signage') && <SignagePage/>}
         {page==='recipes'                && <RecipesPage isAdmin={effIsAdmin} onCompose={composeWith}
                                              myStores={effIsAdmin ? STORES : STORES.filter(st=>effStoreIds.includes(st.id))}/>}
-        {page==='products' && granted('products') && <ProductLibrary/>}
+        {page==='products'                && <ProductLibrary/>}
         {page==='ads'      && granted('ads')      && <AdsPage key={'at-'+(adsTab||'x')} initialTab={adsTab} settings={settings}/>}
         {page==='brand'    && effIsAdmin && <BrandPage        settings={settings}/>}
         {page==='radar'    && effIsAdmin && <MarketRadarPage/>}

@@ -7163,7 +7163,7 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
         <div className="flex items-center gap-2 mb-4 flex-wrap" style={!canEdit ? {display:'none'} : undefined}>
           <span className="lbl">Runs</span>
           <Input type="date" className="w-auto text-xs"
-            value={(periodRow && periodRow.starts_on) || monthKey(period).slice(0,8) + '01'}
+            value={(periodRow && periodRow.starts_on) || period.slice(0,7) + '-01'}
             onChange={async function(e){
               try {
                 const p = await ensurePeriod();

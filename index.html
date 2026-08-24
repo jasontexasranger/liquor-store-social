@@ -3768,10 +3768,15 @@ function ReadinessBar({ label, pct, tone }) {
   );
 }
 
-function FeaturePasteBox({ onImport, onClose }) {
+function FeaturePasteBox({ products, onImport, onClose }) {
   const toast = useToast();
   const [text, setText] = useState('');
   const preview = parseFeaturePaste(text);
+  // Auto-link a product photo by name+size where the match is unambiguous —
+  // see autoMatchProductId. Rows with no confident match go in unlinked,
+  // same as before, ready to pick by hand on the grid.
+  const withMatches = preview.map(r => ({ ...r, product_id: autoMatchProductId(r.name, r.size, products) }));
+  const matchedCount = withMatches.filter(r => r.product_id).length;
 
   return (
     <div className="p-4 mb-4" style={{border:'1px solid var(--line)', background:'rgba(var(--sink-rgb),.45)'}}>
@@ -3788,11 +3793,16 @@ function FeaturePasteBox({ onImport, onClose }) {
                 style={{fontFamily:'var(--mono)', fontSize:'11px'}}/>
       {preview.length > 0 && (
         <div className="mt-3">
-          <p className="lbl mb-2">{preview.length} row{preview.length===1?'':'s'} detected</p>
+          <p className="lbl mb-2">
+            {preview.length} row{preview.length===1?'':'s'} detected
+            {matchedCount ? ' · ' + matchedCount + ' photo' + (matchedCount===1?'':'s') + ' matched' : ''}
+          </p>
           <div className="max-h-40 overflow-auto" style={{border:'1px solid var(--line)'}}>
             {preview.slice(0,8).map(function(r,i){
+              const matched = !!withMatches[i].product_id;
               return (
-                <div key={i} className="mono flex gap-3 px-2 py-1" style={{fontSize:'10.5px', color:'var(--txt2)'}}>
+                <div key={i} className="mono flex gap-3 px-2 py-1 items-center" style={{fontSize:'10.5px', color:'var(--txt2)'}}>
+                  <Icon name={matched?'check':'image'} size={10} style={{color: matched ? 'var(--grn)' : 'var(--txt3)', flex:'none'}}/>
                   <span className="flex-1 truncate" style={{color:'var(--txt)'}}>{r.name}</span>
                   <span style={{width:'52px'}}>{r.size}</span>
                   <span style={{width:'56px'}}>{money(r.reg_price)}</span>
@@ -3808,7 +3818,12 @@ function FeaturePasteBox({ onImport, onClose }) {
       <div className="flex gap-2 mt-3">
         <Button size="sm" disabled={!preview.length}
           onClick={async function(){
-            try { await onImport(preview); toast.success('Imported ' + preview.length + ' rows'); setText(''); onClose(); }
+            try {
+              await onImport(withMatches);
+              toast.success('Imported ' + withMatches.length + ' rows'
+                + (matchedCount ? ' — ' + matchedCount + ' photo' + (matchedCount===1?'':'s') + ' auto-matched' : ''));
+              setText(''); onClose();
+            }
             catch(e){ toast.error(e.message); }
           }}>
           <Icon name="down"/> Import {preview.length || ''} rows
@@ -3943,28 +3958,54 @@ function QuickProductCreate({ seedName, seedSize, onCreated, onClose }) {
   );
 }
 
+// Shared name(+size) matching, used both when a human picks a photo from the
+// suggestion list and when an import tries to guess automatically. Products
+// often share a name across pack sizes ("Corona Extra" 6-pack vs 12-pack vs
+// 24-pack) — size is what makes those safe to tell apart instead of guessing.
+function normSizeKey(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+function matchProducts(name, size, products) {
+  const q = (name || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
+  if (!q) return [];
+  const words = q.split(/\s+/).filter(w => w.length > 2);
+  const qSize = normSizeKey(size);
+  return (products || []).map(function(p) {
+    const n = (p.product_name || '').toLowerCase().replace(/[^a-z0-9 ]/g, '');
+    let score = 0;
+    if (n === q) score = 100;
+    else if (n.includes(q) || q.includes(n)) score = 70;
+    else score = words.filter(w => n.includes(w)).length * 20;
+    const sizeMatch = !!(qSize && normSizeKey(p.size) === qSize);
+    if (score > 0 && sizeMatch) score += 15;   // nudge a size-matching product to the top
+    return { p, score, sizeMatch };
+  }).filter(x => x.score > 0).sort((a, b) => b.score - a.score);
+}
+
+// Only auto-links when confident: a strong name match that's either unique,
+// or — when several products share that name — the one clearly picked out by
+// a matching pack size. Anything still ambiguous is left for a human to pick;
+// a wrong photo on a batch import is worse than no photo.
+function autoMatchProductId(name, size, products) {
+  const ranked = matchProducts(name, size, products);
+  if (!ranked.length || ranked[0].score < 70) return null;
+  const tied = ranked.filter(x => x.score === ranked[0].score);
+  if (tied.length === 1) return tied[0].p.id;
+  const bySize = tied.filter(x => x.sizeMatch);
+  return bySize.length === 1 ? bySize[0].p.id : null;
+}
+
 function ProductLink({ row, products, onLink, onCreated }) {
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const linked = products.find(p => p.id === row.product_id);
 
-  const suggestions = (function(){
-    const q = (row.name || '').toLowerCase().replace(/[^a-z0-9 ]/g,'');
-    if (!q) return [];
-    const words = q.split(/\s+/).filter(w => w.length > 2);
-    return products.map(function(p){
-      const n = (p.product_name||'').toLowerCase().replace(/[^a-z0-9 ]/g,'');
-      let score = 0;
-      if (n === q) score = 100;
-      else if (n.includes(q) || q.includes(n)) score = 70;
-      else score = words.filter(w => n.includes(w)).length * 20;
-      return { p, score };
-    }).filter(x => x.score > 0).sort((a,b)=>b.score-a.score).slice(0,5).map(x=>x.p);
-  })();
+  const suggestions = matchProducts(row.name, row.size, products).slice(0, 5);
 
   if (linked) {
     return (
-      <button onClick={()=>onLink(row.id, null)} title={'Linked to ' + linked.product_name + ' — click to unlink'}
+      <button onClick={()=>onLink(row.id, null)}
+              title={'Linked to ' + linked.product_name + (linked.size ? ' (' + linked.size + ')' : '') + ' — click to unlink'}
               className="flex items-center gap-1.5">
         <img src={prodSrc(linked)} alt="" className="w-7 h-7 object-cover" style={{border:'1px solid var(--cy)'}}/>
       </button>
@@ -3978,16 +4019,25 @@ function ProductLink({ row, products, onLink, onCreated }) {
         <Icon name="image" size={12}/>
       </button>
       {open && (
-        <div className="absolute z-30 left-0 mt-1 w-60 p-2" style={{background:'var(--menu)', border:'1px solid var(--line2)'}}>
+        <div className="absolute z-30 left-0 mt-1 w-64 p-2" style={{background:'var(--menu)', border:'1px solid var(--line2)'}}>
+          {row.size && (
+            <p className="lbl pb-1.5" style={{color:'var(--txt3)'}}>
+              Feature size: <span style={{color:'var(--cy)'}}>{row.size}</span>
+            </p>
+          )}
           {suggestions.length === 0
             ? <p className="lbl py-2 text-center">No close matches</p>
-            : suggestions.map(function(p){
+            : suggestions.map(function(s){
+                const p = s.p;
                 return (
                   <button key={p.id} onClick={()=>{ onLink(row.id, p.id); setOpen(false); }}
                           className="flex items-center gap-2 w-full p-1.5 text-left"
                           style={{color:'var(--txt2)'}}>
                     <img src={prodSrc(p)} alt="" className="w-7 h-7 object-cover flex-none"/>
-                    <span className="text-xs truncate">{p.product_name}</span>
+                    <span className="text-xs truncate flex-1">{p.product_name}</span>
+                    <span className="lbl flex-none" style={{color: s.sizeMatch ? 'var(--grn)' : 'var(--txt3)'}}>
+                      {p.size || '—'}
+                    </span>
                   </button>
                 );
               })}
@@ -7201,13 +7251,13 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
 
       {showCsv && (
         <Card>
-          <FeatureCsvImport onDone={reload} onClose={()=>setShowCsv(false)}/>
+          <FeatureCsvImport products={products} onDone={reload} onClose={()=>setShowCsv(false)}/>
         </Card>
       )}
 
       {showPaste && (
         <Card>
-          <FeaturePasteBox onImport={addRows} onClose={()=>setShowPaste(false)}/>
+          <FeaturePasteBox products={products} onImport={addRows} onClose={()=>setShowPaste(false)}/>
         </Card>
       )}
 
@@ -7514,7 +7564,7 @@ function matchStoreId(label) {
   return hit ? hit.id : null;
 }
 
-async function importFeatureCsv(blocks, period, { replace = false } = {}) {
+async function importFeatureCsv(blocks, period, products, { replace = false } = {}) {
   const sb = getSB();
   const { data:{ user } } = await sb.auth.getUser();
   const result = [];
@@ -7540,14 +7590,22 @@ async function importFeatureCsv(blocks, period, { replace = false } = {}) {
       .select('id', { count:'exact', head:true }).eq('period_id', p.id);
     const base = count || 0;
 
-    const payload = b.rows.map((r,i) => ({ ...r, period_id:p.id, position:base+i }));
+    // Auto-link a product photo by name+size where the match is unambiguous —
+    // see autoMatchProductId. Anything uncertain comes in unlinked, same as
+    // before, ready to pick by hand on the grid.
+    let matched = 0;
+    const payload = b.rows.map(function(r, i) {
+      const productId = autoMatchProductId(r.name, r.size, products);
+      if (productId) matched += 1;
+      return { ...r, period_id:p.id, position:base+i, product_id: productId };
+    });
     const { error } = await sb.from('features').insert(payload);
-    result.push(error ? { store:storeId, skipped:error.message } : { store:storeId, added:payload.length });
+    result.push(error ? { store:storeId, skipped:error.message } : { store:storeId, added:payload.length, matched });
   }
   return result;
 }
 
-function FeatureCsvImport({ onDone, onClose }) {
+function FeatureCsvImport({ products, onDone, onClose }) {
   const toast = useToast();
   const [blocks, setBlocks] = useState(null);
   const [period, setPeriod] = useState(monthKey(new Date()));
@@ -7569,10 +7627,12 @@ function FeatureCsvImport({ onDone, onClose }) {
   const run = async function() {
     setBusy(true);
     try {
-      const res = await importFeatureCsv(blocks, period, { replace });
+      const res = await importFeatureCsv(blocks, period, products, { replace });
       const added = res.reduce((a,r)=>a+(r.added||0), 0);
+      const matched = res.reduce((a,r)=>a+(r.matched||0), 0);
       const bad = res.filter(r=>r.skipped);
-      toast.success('Imported ' + added + ' rows for ' + monthLabel(period));
+      toast.success('Imported ' + added + ' rows for ' + monthLabel(period)
+        + (matched ? ' — ' + matched + ' photo' + (matched===1?'':'s') + ' auto-matched' : ''));
       if (bad.length) toast.error(bad.map(b=>b.store+': '+b.skipped).join(' · '));
       if (onDone) onDone();
       onClose();
@@ -15769,7 +15829,7 @@ function HomePage({ granted, isAdmin, go, onOpenHelp }) {
   const CARDS = [
     { id:'post',      label:'Generate a social post',     icon:'edit',    page:'posts', tab:'compose' },
     { id:'approve',   label:'Approve waiting posts',      icon:'check',   page:'posts', tab:'scheduled',
-      badge: pending > 0 ? pending + ' waiting' : null },
+      badge: pending > 0 ? pending + ' waiting' : null, admin:true },
     { id:'inbox',     label:'Answer comments & messages', icon:'comment', page:'posts', tab:'inbox', admin:true },
     { id:'features',  label:"Update this month's features", icon:'tag',   page:'features' },
     { id:'shelf',     label:'Print shelf talkers',        icon:'print',   page:'shelf' },
@@ -15820,7 +15880,10 @@ function HomePage({ granted, isAdmin, go, onOpenHelp }) {
 function PostsPage({ settings, userStoreIds, isAdmin, initialTab, prefill }) {
   // Inbox is admin-only for now (Messenger scope issue on the page token —
   // pulled from managers' screens until that's sorted, not a permanent cut).
-  const safeInitialTab = (initialTab === 'inbox' && !isAdmin) ? 'compose' : (initialTab || 'compose');
+  // Scheduled/approval is admin-only by design — approving what goes out is
+  // an admin call, not a manager one.
+  const ADMIN_ONLY_TABS = ['inbox', 'scheduled'];
+  const safeInitialTab = (ADMIN_ONLY_TABS.includes(initialTab) && !isAdmin) ? 'compose' : (initialTab || 'compose');
   const [tab,          setTab]          = useState(safeInitialTab);
   const [pendingImage, setPendingImage] = useState(prefill ? prefill.image : null);
   const pendingCaption = prefill ? prefill.caption : null;
@@ -15837,7 +15900,7 @@ function PostsPage({ settings, userStoreIds, isAdmin, initialTab, prefill }) {
   return (
     <div>
       <div className="flex border-b border-gray-200 dark:border-gray-700 mb-5">
-        {[{id:'compose',icon:'edit', label:'Compose'},{id:'inbox',icon:'comment', label:'Inbox'},{id:'history',icon:'note', label:'History'},{id:'scheduled',icon:'cal', label:'Scheduled'},{id:'images',icon:'image', label:'Image Generator'},{id:'analytics',icon:'chart', label:'Analytics'}].filter(t=>t.id!=='inbox'||isAdmin).map(t=>(
+        {[{id:'compose',icon:'edit', label:'Compose'},{id:'inbox',icon:'comment', label:'Inbox'},{id:'history',icon:'note', label:'History'},{id:'scheduled',icon:'cal', label:'Scheduled'},{id:'images',icon:'image', label:'Image Generator'},{id:'analytics',icon:'chart', label:'Analytics'}].filter(t=>!ADMIN_ONLY_TABS.includes(t.id)||isAdmin).map(t=>(
           <button key={t.id} onClick={()=>setTab(t.id)} className={`px-4 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}>
             <Icon name={t.icon} size={14} className="mr-2"/>{t.label}{t.id==='compose'&&pendingImage?' \u2022':''}
           </button>
@@ -15850,7 +15913,7 @@ function PostsPage({ settings, userStoreIds, isAdmin, initialTab, prefill }) {
         </div>
       )}
       {tab==='inbox'      && isAdmin && <SocialInboxPanel visibleStores={visibleStores}/>}
-      {tab==='scheduled'  && <ScheduledPostsPanel/>}
+      {tab==='scheduled'  && isAdmin && <ScheduledPostsPanel/>}
       {tab==='history'    && <PostHistory settings={settings} visibleStores={visibleStores}/>}
       {tab==='images'     && <ImageGenerator settings={settings} onUseInPost={handleUseInPost}/>}
       {tab==='analytics'  && <StoreAnalytics visibleStores={visibleStores}/>}

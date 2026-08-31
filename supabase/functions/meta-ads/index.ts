@@ -1,11 +1,21 @@
 // supabase/functions/meta-ads/index.ts
 // Admin-only Meta Ads edge function
 // Actions: createCampaign | listCampaigns | toggleCampaign | getInsights
-//          analyzeWithAI | generateAdCopy
+//          analyzeWithAI | generateAdCopy | checkSpendCaps
+//
+// checkSpendCaps is the exception to "admin-only": it's also callable by
+// pg_cron with no user session, via the x-cron-secret header — same pattern
+// google-reviews' sync action uses. Every other action still requires a real
+// admin session.
 //
 // Required edge function secrets:
 //   META_SYSTEM_USER_TOKEN       — Meta Business system-user token
 //   ANTHROPIC_API_KEY            — For AI copy generation and analysis
+//   CRON_SECRET                  — same shared secret market-radar/social-scheduler/
+//                                   google-reviews use, for checkSpendCaps' cron call
+//   RESEND_API_KEY               — optional; without it, spend-cap alerts still pause
+//                                   the campaign and log to ad_spend_alerts, just skip
+//                                   the email
 //   SUPABASE_URL                 — auto-set
 //   SUPABASE_SERVICE_ROLE_KEY    — auto-set
 
@@ -15,7 +25,7 @@ const GRAPH = 'https://graph.facebook.com/v25.0';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-cron-secret',
 };
 
 // ─── Graph helpers ────────────────────────────────────────────────────────────
@@ -125,6 +135,45 @@ async function requireAdmin(authHeader: string | null, sb: ReturnType<typeof cre
   return user.id;
 }
 
+// ─── Spend-cap alert email ────────────────────────────────────────────────────
+
+// RESEND_API_KEY may not be set yet — Jason still needs to sign up and paste
+// it in as a secret. Until then this just returns false: the pause and the
+// ad_spend_alerts row still happen, the email is the only thing skipped.
+async function sendSpendAlertEmail(
+  storeId: string,
+  campaignName: string,
+  spend: number,
+  cap: number,
+  paused: boolean,
+  pauseError: string | null,
+): Promise<boolean> {
+  const key = Deno.env.get('RESEND_API_KEY');
+  if (!key) return false;
+  const to = Deno.env.get('ALERT_EMAIL') || 'jasontexasranger@gmail.com';
+
+  const subject = `Ad spend alert: "${campaignName}" hit $${cap} — ${paused ? 'paused automatically' : 'COULD NOT PAUSE'}`;
+  const html = `
+    <p><strong>${storeId}</strong> campaign "<strong>${campaignName}</strong>" has spent $${spend.toFixed(2)}, over the $${cap} cap.</p>
+    <p>${paused
+      ? 'It has been paused automatically.'
+      : `It was <strong>not</strong> paused automatically (${pauseError ?? 'unknown error'}) — pause it manually in Ads Manager.`
+    }</p>
+  `.trim();
+
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      from: 'LRS Alerts <onboarding@resend.dev>',
+      to: [to],
+      subject,
+      html,
+    }),
+  });
+  return res.ok;
+}
+
 // ─── AI helper ───────────────────────────────────────────────────────────────
 
 async function callClaude(prompt: string, maxTokens = 800): Promise<string> {
@@ -160,7 +209,20 @@ Deno.serve(async (req) => {
     );
 
     const { action, ...params } = await req.json() as Record<string, unknown> & { action: string };
-    await requireAdmin(req.headers.get('Authorization'), sb);
+
+    // checkSpendCaps is the one action pg_cron calls with no user session —
+    // it's authorized by the shared x-cron-secret header instead, same as
+    // google-reviews' sync action. Every other action keeps the unconditional
+    // admin check it always had.
+    if (action === 'checkSpendCaps') {
+      const cronSecret = Deno.env.get('CRON_SECRET');
+      const provided = req.headers.get('x-cron-secret');
+      if (!(cronSecret && provided === cronSecret)) {
+        await requireAdmin(req.headers.get('Authorization'), sb);
+      }
+    } else {
+      await requireAdmin(req.headers.get('Authorization'), sb);
+    }
 
     // ── createCampaign ───────────────────────────────────────────────────────
     if (action === 'createCampaign') {
@@ -658,6 +720,98 @@ BODY: [max 125 chars — engaging, no price promises, no alcohol health claims]`
 
       const copy = await callClaude(prompt, 200);
       return Response.json({ copy }, { headers: corsHeaders });
+    }
+
+    // ── checkSpendCaps ───────────────────────────────────────────────────────
+    // Run hourly by pg_cron. Walks every store's ad account, and for any
+    // ACTIVE campaign whose lifetime spend has crossed $500, pauses it and
+    // logs one row to ad_spend_alerts. The table's unique index on
+    // campaign_id is what makes this idempotent across hourly runs — a
+    // campaign only ever gets one alert, even if it stays ACTIVE (someone
+    // reactivating it on purpose won't re-trigger a pause).
+    if (action === 'checkSpendCaps') {
+      const CAP = 500;
+      const token = getSystemToken();
+
+      const { data: accounts, error: acctErr } = await sb
+        .from('meta_accounts')
+        .select('store_id, ad_account_id')
+        .not('ad_account_id', 'is', null);
+      if (acctErr) throw acctErr;
+
+      const results: Array<Record<string, unknown>> = [];
+
+      for (const acct of accounts ?? []) {
+        const accountId = acct.ad_account_id as string;
+        const storeId = acct.store_id as string;
+
+        let campaigns: Array<{
+          id: string; name?: string; effective_status?: string;
+          insights?: { data?: Array<{ spend?: string }> };
+        }> = [];
+        try {
+          const data = await gGet(`/${accountId}/campaigns`, {
+            fields: 'name,effective_status,insights.date_preset(maximum){spend}',
+            limit: '200',
+          }, token);
+          campaigns = data.data ?? [];
+        } catch (e) {
+          results.push({ storeId, error: e instanceof Error ? e.message : String(e) });
+          continue;
+        }
+
+        for (const c of campaigns) {
+          if (c.effective_status !== 'ACTIVE') continue;
+          const spend = Number(c.insights?.data?.[0]?.spend ?? 0);
+          if (!(spend >= CAP)) continue;
+
+          // Claim this campaign before touching anything. The unique index on
+          // campaign_id means a second concurrent/hourly run that finds the
+          // same over-cap campaign just fails this insert and moves on,
+          // rather than pausing (or emailing) twice.
+          const { data: claimed, error: insErr } = await sb
+            .from('ad_spend_alerts')
+            .insert({ store_id: storeId, campaign_id: c.id, campaign_name: c.name ?? '', spend, cap: CAP })
+            .select('id')
+            .single();
+
+          if (insErr || !claimed) {
+            // Already claimed by an earlier run — not an error, just done.
+            if (insErr && !/duplicate|unique/i.test(insErr.message || '')) {
+              results.push({ storeId, campaignId: c.id, error: insErr.message });
+            }
+            continue;
+          }
+
+          let paused = false;
+          let pauseError: string | null = null;
+          try {
+            await gPost(`/${c.id}`, { status: 'PAUSED' }, token);
+            paused = true;
+          } catch (e) {
+            pauseError = e instanceof Error ? e.message : String(e);
+          }
+
+          let emailSent = false;
+          try {
+            emailSent = await sendSpendAlertEmail(storeId, c.name ?? c.id, spend, CAP, paused, pauseError);
+          } catch {
+            // Email failing shouldn't take down the alert record — it's
+            // already logged either way, and the in-app banner will show it.
+          }
+
+          await sb.from('ad_spend_alerts')
+            .update({ paused, pause_error: pauseError, email_sent: emailSent })
+            .eq('id', claimed.id);
+
+          results.push({
+            storeId, campaignId: c.id, campaignName: c.name ?? '',
+            spend, paused, pauseError, emailSent,
+          });
+        }
+      }
+
+      return Response.json({ checked: true, alerts: results }, { headers: corsHeaders });
     }
 
     throw new Error(`Unknown action: ${action}`);

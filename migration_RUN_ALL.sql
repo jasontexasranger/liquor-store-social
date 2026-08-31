@@ -1783,6 +1783,58 @@ NOTIFY pgrst, 'reload schema';
 
 
 -- ============================================================================
+-- Ad Spend Alerts
+-- ============================================================================
+-- A safety net for Meta ad campaigns: if any campaign's lifetime spend hits
+-- $500, an hourly cron job pauses it via the Graph API and logs a row here.
+-- One row per campaign — a campaign that's already tripped the cap doesn't
+-- alert again even if it stays active, so this is a one-time guardrail per
+-- campaign, not a recurring nag. If someone reactivates a paused campaign on
+-- purpose, this table won't try to pause it again.
+--
+-- Admin-only, unlike the Google Reviews tables: this is spend/business data,
+-- and only admins have the Ads section at all.
+
+CREATE TABLE IF NOT EXISTS public.ad_spend_alerts (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  store_id        TEXT NOT NULL,
+  campaign_id     TEXT NOT NULL,
+  campaign_name   TEXT,
+  spend           NUMERIC(10,2) NOT NULL,
+  cap             NUMERIC(10,2) NOT NULL DEFAULT 500,
+  paused          BOOLEAN NOT NULL DEFAULT false,
+  pause_error     TEXT,
+  email_sent      BOOLEAN NOT NULL DEFAULT false,
+  acknowledged_at TIMESTAMPTZ,
+  acknowledged_by UUID,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS ad_spend_alerts_campaign_uidx
+  ON public.ad_spend_alerts (campaign_id);
+CREATE INDEX IF NOT EXISTS ad_spend_alerts_unacked_idx
+  ON public.ad_spend_alerts (acknowledged_at) WHERE acknowledged_at IS NULL;
+
+ALTER TABLE public.ad_spend_alerts ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS ad_spend_alerts_admin_read ON public.ad_spend_alerts;
+DROP POLICY IF EXISTS ad_spend_alerts_admin_ack  ON public.ad_spend_alerts;
+
+CREATE POLICY ad_spend_alerts_admin_read ON public.ad_spend_alerts
+  FOR SELECT TO authenticated USING (true);
+
+CREATE POLICY ad_spend_alerts_admin_ack ON public.ad_spend_alerts
+  FOR UPDATE TO authenticated
+  USING (EXISTS (
+    SELECT 1 FROM public.user_roles ur WHERE ur.user_id = auth.uid() AND ur.role = 'admin'
+  ))
+  WITH CHECK (EXISTS (
+    SELECT 1 FROM public.user_roles ur WHERE ur.user_id = auth.uid() AND ur.role = 'admin'
+  ));
+
+NOTIFY pgrst, 'reload schema';
+
+-- ============================================================================
 -- Tell PostgREST about the new tables.
 -- "Could not find the table in the schema cache" means this step was missed.
 -- ============================================================================

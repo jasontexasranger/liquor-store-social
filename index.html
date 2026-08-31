@@ -11448,6 +11448,74 @@ function TokenStatusBar() {
   );
 }
 
+// A campaign that hit its $500 spend cap gets paused automatically by an
+// hourly cron job, which logs a row to ad_spend_alerts. This is the in-app
+// side of that alert — admins only, since only admins have the Ads section.
+// Polls rather than pushes: the cron job is the one hitting the table, this
+// just checks in on it periodically so a person who leaves the tab open
+// finds out without a refresh.
+function AdSpendAlertBanner({ isAdmin }) {
+  const toast = useToast();
+  const [alerts,  setAlerts]  = useState([]);
+  const [ackingId,setAckingId]= useState(null);
+
+  useEffect(function() {
+    if (!isAdmin) return;
+    var sb = getSB(); if (!sb) return;
+    var alive = true;
+    const load = () => {
+      sb.from('ad_spend_alerts')
+        .select('id, store_id, campaign_name, spend, cap, paused, pause_error, created_at')
+        .is('acknowledged_at', null)
+        .order('created_at', { ascending: false })
+        .then(function(result) { if (alive && result.data) setAlerts(result.data); });
+    };
+    load();
+    var t = setInterval(load, 5 * 60 * 1000);
+    return function(){ alive = false; clearInterval(t); };
+  }, [isAdmin]);
+
+  const acknowledge = async (id) => {
+    setAckingId(id);
+    try {
+      var sb = getSB();
+      var { data: userData } = await sb.auth.getUser();
+      const { error } = await sb.from('ad_spend_alerts')
+        .update({ acknowledged_at: new Date().toISOString(), acknowledged_by: userData.user ? userData.user.id : null })
+        .eq('id', id);
+      if (error) throw error;
+      setAlerts(function(list) { return list.filter(a => a.id !== id); });
+    } catch(e) { toast.error(e.message); }
+    finally { setAckingId(null); }
+  };
+
+  if (!isAdmin || !alerts.length) return null;
+  const storeName = id => (STORES.find(s => s.id === id) || {}).name || id;
+
+  return (
+    <div className="sticky z-40 px-4 py-2 space-y-1"
+         style={{top:'56px', background:'rgba(255,77,94,.12)', borderBottom:'1px solid var(--red)'}}>
+      {alerts.map(function(a) {
+        return (
+          <div key={a.id} className="flex items-center gap-3 flex-wrap">
+            <Icon name="warn" size={13} style={{color:'var(--red)'}}/>
+            <span className="text-xs" style={{color:'var(--red)'}}>
+              {storeName(a.store_id)} — "{a.campaign_name || 'campaign'}" hit ${Number(a.spend).toFixed(2)} (cap ${Number(a.cap).toFixed(0)})
+              {a.paused ? ' — paused automatically' : (a.pause_error ? ' — could NOT pause automatically: ' + a.pause_error : '')}
+            </span>
+            <span className="flex-1"/>
+            <button onClick={()=>acknowledge(a.id)} disabled={ackingId===a.id}
+                    className="text-xs font-semibold px-2 py-1"
+                    style={{border:'1px solid var(--red)', color:'var(--red)'}}>
+              {ackingId===a.id ? 'Acknowledging…' : 'Acknowledge'}
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────
 // MODULE 2 — CAMPAIGN DASHBOARD
 // ─────────────────────────────────────────────
@@ -17561,6 +17629,8 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
           </button>
         </div>
       )}
+
+      <AdSpendAlertBanner isAdmin={effIsAdmin}/>
 
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
         {page==='home'                   && <HomePage granted={granted} isAdmin={effIsAdmin} go={goHome} onOpenHelp={()=>setHelpOpen(true)}/>}

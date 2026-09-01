@@ -13048,8 +13048,13 @@ function STAdminLibrary({ onEditTemplate }) {
 
   const duplicateTemplate = async (tpl) => {
     const sb=getSB();
+    // tpl was loaded with `.select('*, shelf_talker_template_brands(store_id)')`,
+    // so it carries the joined brands array alongside the real columns.
+    // Spreading it straight into an insert sends that array along as if it
+    // were a column, which Supabase rejects — pull it out first.
+    const { shelf_talker_template_brands, id, created_at, updated_at, ...rest } = tpl;
     const { data:newTpl, error } = await sb.from('shelf_talker_templates')
-      .insert({ ...tpl, id:undefined, name:tpl.name+' (copy)', created_at:undefined, updated_at:undefined })
+      .insert({ ...rest, name:tpl.name+' (copy)' })
       .select().single();
     if (error) { toast.error(error.message); return; }
     // Copy brands

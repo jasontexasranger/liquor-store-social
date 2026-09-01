@@ -11608,8 +11608,18 @@ function CampaignDashboard({ settings }) {
   const storeOf = function(name) { return STORES.find(function(s) { return (name||'').startsWith('['+s.name+']'); }); };
   // The dashboard is for what's actually running — paused/stopped/archived
   // campaigns still live in listCampaigns' 60-day window (so toggling one back
-  // on works), but they clutter this view. Only ACTIVE ones show here.
-  const activeOnly = campaigns.filter(function(c) { return c.status === 'ACTIVE'; });
+  // on works), but they clutter this view. Only truly-live ones show here.
+  //
+  // Meta never flips a campaign's `status` away from ACTIVE just because its
+  // ad set's scheduled end_time passed — status is "did anyone pause this,"
+  // not "is this still delivering." So a campaign scheduled Aug 7–31 still
+  // reads status: ACTIVE in September. stop_time is what actually tells you
+  // whether it's still running.
+  const activeOnly = campaigns.filter(function(c) {
+    if (c.status !== 'ACTIVE') return false;
+    if (c.stop_time && new Date(c.stop_time).getTime() <= Date.now()) return false;
+    return true;
+  });
   const filtered = filter==='all' ? activeOnly : activeOnly.filter(function(c) { var s=storeOf(c.name); return s && s.id===filter; });
   const insight  = function(c,f) { return c.insights && c.insights.data && c.insights.data[0] ? (c.insights.data[0][f] || null) : null; };
   // Engagement lives in the insights "actions" list, one row per action type.

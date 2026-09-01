@@ -11606,7 +11606,11 @@ function CampaignDashboard({ settings }) {
   };
 
   const storeOf = function(name) { return STORES.find(function(s) { return (name||'').startsWith('['+s.name+']'); }); };
-  const filtered = filter==='all' ? campaigns : campaigns.filter(function(c) { var s=storeOf(c.name); return s && s.id===filter; });
+  // The dashboard is for what's actually running — paused/stopped/archived
+  // campaigns still live in listCampaigns' 60-day window (so toggling one back
+  // on works), but they clutter this view. Only ACTIVE ones show here.
+  const activeOnly = campaigns.filter(function(c) { return c.status === 'ACTIVE'; });
+  const filtered = filter==='all' ? activeOnly : activeOnly.filter(function(c) { var s=storeOf(c.name); return s && s.id===filter; });
   const insight  = function(c,f) { return c.insights && c.insights.data && c.insights.data[0] ? (c.insights.data[0][f] || null) : null; };
   // Engagement lives in the insights "actions" list, one row per action type.
   const engage = function(c, type) {
@@ -11645,7 +11649,7 @@ function CampaignDashboard({ settings }) {
         </Select>
         <Button variant="secondary" size="sm" onClick={load} loading={loading}>Refresh</Button>
       </div>
-      {!loading&&filtered.length===0 && <div className="text-center py-12 text-gray-400 dark:text-gray-500 text-sm">No campaigns running or recently finished.</div>}
+      {!loading&&filtered.length===0 && <div className="text-center py-12 text-gray-400 dark:text-gray-500 text-sm">No active campaigns right now.</div>}
       <div className="space-y-4">
         {filtered.map(c => {
           const s=storeOf(c.name);

@@ -16167,6 +16167,7 @@ const PAGE_H = Math.round(11  * PX_PER_IN); // 1650
 const MARGIN  = Math.round(0.25 * PX_PER_IN); // 37px = 0.25"
 const CROP_LEN = 18;  // px length of crop mark lines
 const CROP_GAP = 6;   // px gap between artwork and crop mark
+const LAYOUT_PER_PAGE = { '2up':2, '4up':4, '6up':6 };
 
 // Evaluate a formula string like "{PRICE 1}+{PRICE 2}+{PRICE 3}"
 // using the current field values. Returns a string result or ''.
@@ -16196,11 +16197,22 @@ function evaluateFormula(formula, fields, values) {
 }
 
 // Render completed shelf-talker to an off-screen canvas.
-// Returns a canvas element at (widthIn×heightIn×PX_PER_IN) px.
-async function renderSTCanvas(template, fields, values) {
+// By default renders at the template's own native size (widthIn×heightIn×
+// PX_PER_IN px) — the resolution the admin designed field boxes and font
+// caps against in the field editor. Pass opts.targetW/targetH to render at
+// a *different* physical size instead (a bigger cell for a 2-up sheet, a
+// smaller one for 6-up): field box positions are already percentages so
+// they scale for free, but max_font_size/min_font_size are stored as literal
+// px against the native size, so they're scaled by the same factor here —
+// otherwise text would stay pinned at its native size instead of growing or
+// shrinking along with the rest of the tag.
+async function renderSTCanvas(template, fields, values, opts) {
   const { file_data, width_in, height_in } = template;
-  const W = Math.round(width_in  * PX_PER_IN);
-  const H = Math.round(height_in * PX_PER_IN);
+  const nativeW = Math.round(width_in  * PX_PER_IN);
+  const nativeH = Math.round(height_in * PX_PER_IN);
+  const W = (opts && opts.targetW) ? Math.round(opts.targetW) : nativeW;
+  const H = (opts && opts.targetH) ? Math.round(opts.targetH) : nativeH;
+  const fontScale = W / nativeW;
 
   const canvas = document.createElement('canvas');
   canvas.width = W; canvas.height = H;
@@ -16228,7 +16240,8 @@ async function renderSTCanvas(template, fields, values) {
       align: f.align, valign: f.valign, color: f.color,
       bold: f.bold, lineSpacing: f.line_spacing,
       wrap: f.wrap, maxLines: f.multiline ? f.max_lines : 1,
-      maxFontSize: f.max_font_size, minFontSize: f.min_font_size,
+      maxFontSize: Math.max(4, (f.max_font_size||200) * fontScale),
+      minFontSize: Math.max(4, (f.min_font_size||8)  * fontScale),
       suffix: f.suffix || '',
     });
   }
@@ -16256,138 +16269,155 @@ function rotateCanvas90(canvas) {
   return r;
 }
 
-// Arrange shelf-talker canvases into a print page. Returns array of page canvases.
-function buildPrintPages(stCanvas, layout, qty, isLandscape=false) {
-  const perPage = layout==='4up' ? 4 : layout==='6up' ? 6 : 2;
-  const totalPages = Math.ceil(qty / perPage);
-  const pages = [];
+// ── Layout geometry ──────────────────────────────────────────────────────
+// These three functions are the whole "2-up = large, 4-up = medium, 6-up =
+// small" contract: given a page split into a grid, and a tag's own aspect
+// ratio, they find the biggest that tag can be drawn inside one cell — no
+// cap at the tag's native pixel size, so a 2-up tag actually grows to fill
+// its half-page cell instead of sitting undersized in the middle of it.
+// Every print path (single product ×N copies, or a queue of different
+// products) funnels through the same geometry, so a page always looks the
+// same physical layout no matter which path built it.
 
-  // Rotate landscape tags 90° for 4-up so each fills its quarter-page cell
-  const src = (layout === '4up' && isLandscape)
-    ? rotateCanvas90(stCanvas) : stCanvas;
-  const stW = src.width, stH = src.height;
-  // Compute cell size
-  let cols, rows, cellW, cellH, useMargin;
-  if (layout==='4up') {
-    cols=2; rows=2; useMargin=true;
-  } else if (layout==='6up') {
-    // 6-up: 2 cols × 3 rows, no margin — fills page edge to edge (4.25" × 3.667" each at 150dpi)
-    cols=2; rows=3; useMargin=false;
-  } else {
-    // 2-up: pick orientation that maximises shelf talker size
-    const horizW = (PAGE_W - MARGIN*3) / 2;
-    const horizH = PAGE_H - MARGIN*2;
-    const vertW  = PAGE_W - MARGIN*2;
-    const vertH  = (PAGE_H - MARGIN*3) / 2;
-    const hScale = Math.min(horizW/stW, horizH/stH);
-    const vScale = Math.min(vertW/stW,  vertH/stH);
-    if (hScale >= vScale) { cols=2; rows=1; } else { cols=1; rows=2; }
-    useMargin=true;
-  }
-
-  if (useMargin) {
-    cellW = (PAGE_W - MARGIN*(cols+1)) / cols;
-    cellH = (PAGE_H - MARGIN*(rows+1)) / rows;
-  } else {
-    cellW = PAGE_W / cols;
-    cellH = PAGE_H / rows;
-  }
-
-  const scale = Math.min(cellW/stW, cellH/stH, 1); // never upscale beyond natural
-  const dw = Math.round(stW * scale);
-  const dh = Math.round(stH * scale);
-
-  for (let p=0; p<totalPages; p++) {
-    const page = document.createElement('canvas');
-    page.width=PAGE_W; page.height=PAGE_H;
-    const ctx=page.getContext('2d');
-    ctx.fillStyle='#ffffff';
-    ctx.fillRect(0,0,PAGE_W,PAGE_H);
-
-    ctx.save();
-    ctx.strokeStyle='#999999';
-    ctx.lineWidth=0.75;
-
-    // 6-up: draw full-page dashed cut guides before images
-    if (layout==='6up') {
-      ctx.save();
-      ctx.strokeStyle='#bbbbbb';
-      ctx.lineWidth=0.5;
-      ctx.setLineDash([5, 5]);
-      // vertical cut guide at centre
-      ctx.beginPath(); ctx.moveTo(cellW, 0); ctx.lineTo(cellW, PAGE_H); ctx.stroke();
-      // horizontal cut guides at 1/3 and 2/3
-      ctx.beginPath(); ctx.moveTo(0, cellH); ctx.lineTo(PAGE_W, cellH); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(0, cellH*2); ctx.lineTo(PAGE_W, cellH*2); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.restore();
-    }
-
-    const startIdx = p*perPage;
-    const endIdx   = Math.min(startIdx+perPage, qty);
-
-    for (let i=0; i<(endIdx-startIdx); i++) {
-      const col=i%cols, row=Math.floor(i/cols);
-      const cellX = useMargin ? MARGIN + col*(cellW+MARGIN) : col*cellW;
-      const cellY = useMargin ? MARGIN + row*(cellH+MARGIN) : row*cellH;
-      const cx = cellX + (cellW-dw)/2;
-      const cy = cellY + (cellH-dh)/2;
-
-      // Draw shelf talker
-      ctx.drawImage(src, cx, cy, dw, dh);
-
-      // Crop marks at 4 corners
-      drawCropMark(ctx, cx,    cy,    -1, -1);
-      drawCropMark(ctx, cx+dw, cy,     1, -1);
-      drawCropMark(ctx, cx,    cy+dh, -1,  1);
-      drawCropMark(ctx, cx+dw, cy+dh,  1,  1);
-    }
-    ctx.restore();
-    pages.push(page);
-  }
-  return { pages, dw, dh };
+// Best orientation (normal or rotated 90°) for a nativeW×nativeH tag inside
+// a cellW×cellH box. Trying the rotation here — rather than relying on a
+// stored "is this template landscape" flag — means every layout benefits,
+// not just the one case that used to special-case it.
+function bestFitInCell(nativeW, nativeH, cellW, cellH) {
+  let best = null;
+  [false, true].forEach(function(rotated) {
+    const tw = rotated ? nativeH : nativeW;
+    const th = rotated ? nativeW : nativeH;
+    const scale = Math.min(cellW / tw, cellH / th);
+    const dw = tw * scale, dh = th * scale;
+    const area = dw * dh;
+    if (!best || area > best.area) best = { rotated: rotated, scale: scale, dw: dw, dh: dh, area: area };
+  });
+  return best;
 }
 
-// Build ONE print page from an array of different canvases (mixed layout)
-function buildMixedPrintPage(canvases) {
-  const count = canvases.length;
-  let cols, rows;
-  if (count === 1)      { cols=1; rows=1; }
-  else if (count === 2) { cols=2; rows=1; }
-  else                  { cols=2; rows=2; }
+// The page-level grid for a layout: how many cells, what size each is. 4-up
+// and 6-up are fixed grids; 2-up can run side-by-side or stacked, so this
+// picks whichever arrangement lets the tags actually on this page (there
+// may be 1 or 2, and they can be different products) sit largest overall.
+function pickGridArrangement(layout, items) {
+  if (layout === '4up') {
+    return { cols:2, rows:2, useMargin:true,
+      cellW:(PAGE_W-MARGIN*3)/2, cellH:(PAGE_H-MARGIN*3)/2 };
+  }
+  if (layout === '6up') {
+    // 2 cols × 3 rows, no margin — fills page edge to edge.
+    return { cols:2, rows:3, useMargin:false, cellW:PAGE_W/2, cellH:PAGE_H/3 };
+  }
+  const opts = [{ cols:2, rows:1 }, { cols:1, rows:2 }];
+  const probe = items && items.length ? items : [{ nativeW:1, nativeH:1 }];
+  let best = null;
+  opts.forEach(function(o) {
+    const cellW = (PAGE_W - MARGIN*(o.cols+1)) / o.cols;
+    const cellH = (PAGE_H - MARGIN*(o.rows+1)) / o.rows;
+    const total = probe.reduce(function(sum, it) {
+      return sum + bestFitInCell(it.nativeW, it.nativeH, cellW, cellH).area;
+    }, 0);
+    if (!best || total > best.total) best = { cols:o.cols, rows:o.rows, useMargin:true, cellW:cellW, cellH:cellH, total:total };
+  });
+  return best;
+}
 
-  const cellW = (PAGE_W - MARGIN*(cols+1)) / cols;
-  const cellH = (PAGE_H - MARGIN*(rows+1)) / rows;
+// Render one tag crisply at the exact size its cell fit decided on —
+// drawn fresh at that resolution (see renderSTCanvas's fontScale), then
+// physically rotated 90° after the fact if that orientation won.
+async function renderFittedTag(template, fields, values, fit) {
+  const nativeW = Math.round(template.width_in  * PX_PER_IN);
+  const nativeH = Math.round(template.height_in * PX_PER_IN);
+  const canvas = await renderSTCanvas(template, fields, values, {
+    targetW: nativeW * fit.scale, targetH: nativeH * fit.scale,
+  });
+  return fit.rotated ? rotateCanvas90(canvas) : canvas;
+}
 
+// Draw one page: background, 6-up cut guides, then each already-rendered
+// { canvas, dw, dh } item centred in its cell with crop marks.
+function composePage(layout, arr, rendered) {
+  const { cols, rows, useMargin, cellW, cellH } = arr;
   const page = document.createElement('canvas');
-  page.width=PAGE_W; page.height=PAGE_H;
-  const ctx=page.getContext('2d');
-  ctx.fillStyle='#ffffff';
-  ctx.fillRect(0,0,PAGE_W,PAGE_H);
+  page.width = PAGE_W; page.height = PAGE_H;
+  const ctx = page.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, PAGE_W, PAGE_H);
   ctx.save();
-  ctx.strokeStyle='#999999';
-  ctx.lineWidth=0.75;
+  ctx.strokeStyle = '#999999';
+  ctx.lineWidth = 0.75;
 
-  canvases.forEach((rawCanvas, i) => {
-    // Rotate landscape canvases 90° when placing in a 2×2 grid (4 items)
-    const stCanvas = (count === 4 && rawCanvas.width > rawCanvas.height)
-      ? rotateCanvas90(rawCanvas) : rawCanvas;
-    const col=i%cols, row=Math.floor(i/cols);
-    const cellX = MARGIN + col*(cellW+MARGIN);
-    const cellY = MARGIN + row*(cellH+MARGIN);
-    const scale = Math.min(cellW/stCanvas.width, cellH/stCanvas.height, 1);
-    const dw = Math.round(stCanvas.width*scale);
-    const dh = Math.round(stCanvas.height*scale);
-    const cx = cellX + (cellW-dw)/2;
-    const cy = cellY + (cellH-dh)/2;
-    ctx.drawImage(stCanvas, cx, cy, dw, dh);
-    drawCropMark(ctx, cx,    cy,    -1, -1);
-    drawCropMark(ctx, cx+dw, cy,     1, -1);
-    drawCropMark(ctx, cx,    cy+dh, -1,  1);
-    drawCropMark(ctx, cx+dw, cy+dh,  1,  1);
+  if (layout === '6up') {
+    ctx.save();
+    ctx.strokeStyle = '#bbbbbb';
+    ctx.lineWidth = 0.5;
+    ctx.setLineDash([5, 5]);
+    ctx.beginPath(); ctx.moveTo(cellW, 0); ctx.lineTo(cellW, PAGE_H); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, cellH); ctx.lineTo(PAGE_W, cellH); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, cellH*2); ctx.lineTo(PAGE_W, cellH*2); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  rendered.forEach(function(item, i) {
+    if (!item) return;
+    const col = i % cols, row = Math.floor(i / cols);
+    const cellX = useMargin ? MARGIN + col*(cellW+MARGIN) : col*cellW;
+    const cellY = useMargin ? MARGIN + row*(cellH+MARGIN) : row*cellH;
+    const cx = cellX + (cellW - item.dw) / 2;
+    const cy = cellY + (cellH - item.dh) / 2;
+    ctx.drawImage(item.canvas, cx, cy, item.dw, item.dh);
+    drawCropMark(ctx, cx,          cy,          -1, -1);
+    drawCropMark(ctx, cx+item.dw,  cy,           1, -1);
+    drawCropMark(ctx, cx,          cy+item.dh,  -1,  1);
+    drawCropMark(ctx, cx+item.dw,  cy+item.dh,   1,  1);
   });
   ctx.restore();
   return page;
+}
+
+// The one function behind every print/preview path in this tool. `items`
+// is a flat list of { template, fields, values } — one entry per physical
+// tag slot. Call it with the same item repeated `qty` times for "one
+// product, N copies", or with one entry per queued product for a mixed
+// sheet; either way it paginates at `layout`'s per-page capacity (2/4/6)
+// and — because each tag is rendered fresh at the size its own cell needs,
+// never scaled after the fact from a fixed-size raster — the page you see
+// in preview is pixel-for-pixel what prints or exports.
+async function buildTagPrintPages(items, layout) {
+  const perPage = LAYOUT_PER_PAGE[layout] || 4;
+  const totalPages = Math.max(1, Math.ceil(items.length / perPage));
+  const pages = [];
+  let lastFit = null;
+  const cache = new Map(); // re-rendering an identical (template,values,size) is wasted work
+
+  for (let p = 0; p < totalPages; p++) {
+    const chunk = items.slice(p*perPage, p*perPage + perPage);
+    const arr = pickGridArrangement(layout, chunk.map(function(it) {
+      return {
+        nativeW: Math.round(it.template.width_in  * PX_PER_IN),
+        nativeH: Math.round(it.template.height_in * PX_PER_IN),
+      };
+    }));
+
+    const rendered = [];
+    for (const it of chunk) {
+      const nativeW = Math.round(it.template.width_in  * PX_PER_IN);
+      const nativeH = Math.round(it.template.height_in * PX_PER_IN);
+      const fit = bestFitInCell(nativeW, nativeH, arr.cellW, arr.cellH);
+      const key = it.template.id + '|' + JSON.stringify(it.values) + '|' + fit.rotated + '|' + Math.round(fit.dw);
+      let canvas = cache.get(key);
+      if (!canvas) {
+        canvas = await renderFittedTag(it.template, it.fields, it.values, fit);
+        cache.set(key, canvas);
+      }
+      rendered.push({ canvas: canvas, dw: fit.dw, dh: fit.dh });
+      lastFit = fit;
+    }
+    pages.push(composePage(layout, arr, rendered));
+  }
+  return { pages: pages, dw: lastFit ? lastFit.dw : 0, dh: lastFit ? lastFit.dh : 0 };
 }
 
 // Export pages as a jsPDF document and trigger download
@@ -16429,9 +16459,14 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
   const [printPages,    setPrintPages]    = useState([]);
   const [printDims,     setPrintDims]     = useState(null);
   const [printMode,     setPrintMode]     = useState('single'); // 'single'|'queue'
-  const [printQueue,    setPrintQueue]    = useState([]);       // [{id,label,canvas}]
+  const [printQueue,    setPrintQueue]    = useState([]);       // [{id,label,template,fields,values,previewSrc}]
   const [addingToQueue, setAddingToQueue] = useState(false);
   const [queuePrinting, setQueuePrinting] = useState(false);
+  const [queuePdfBusy,  setQueuePdfBusy]  = useState(false);
+  // Set while editing an existing queue entry from compose — "Add to Queue"
+  // becomes "Update Queue Item" and replaces that entry in place instead of
+  // appending a new one. Cleared on any navigation away that isn't a save.
+  const [editingQueueId, setEditingQueueId] = useState(null);
   const { fields, loading:fLoading } = useSTFields(selected?.id);
   const [catFilter,  setCatFilter]  = useState('all');
   const [search,     setSearch]     = useState('');
@@ -16445,6 +16480,7 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
       setSelected(tpl);
       setValues(pendingLoad.values || {});
       setStep('compose');
+      setEditingQueueId(null);
       if (onLoadComplete) onLoadComplete();
     } else {
       toast.error('Template no longer available');
@@ -16491,45 +16527,91 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
   }).map(f=>f.id);
   const canPrint = overflowIds.length===0 && missingRequired.length===0 && selected;
 
-  const selectTemplate = (tpl) => { setSelected(tpl); setValues({}); setStep('compose'); };
+  const selectTemplate = (tpl) => { setSelected(tpl); setValues({}); setStep('compose'); setEditingQueueId(null); };
+
+  const layoutLabel = layout==='6up' ? '6-up' : layout==='4up' ? '4-up' : '2-up';
+  const perPageNow = LAYOUT_PER_PAGE[layout] || 4;
 
   const buildPreview = async () => {
     if (!canPrint) return;
     setPrinting(true);
     try {
-      const stCanvas = await renderSTCanvas(selected, fields, computedValues);
-      const { pages, dw, dh } = buildPrintPages(stCanvas, layout, qty, !!selected.is_landscape);
+      const items = new Array(qty).fill({ template: selected, fields, values: computedValues });
+      const { pages, dw, dh } = await buildTagPrintPages(items, layout);
       setPrintPages(pages);
       setPrintDims({ dw, dh, scale: PX_PER_IN });
+      setPrintMode('single');
       setStep('preview');
     } catch(e) { toast.error('Preview failed: '+e.message); }
     finally { setPrinting(false); }
   };
 
+  // Adds (or, if editingQueueId is set, updates in place) the current
+  // template + field values as one queue entry. Only the "recipe" is
+  // stored — the actual pixels are rendered fresh at print time, at
+  // whatever size that layout's cells turn out to be — plus a one-off
+  // preview snapshot at native size just for the little thumbnail below,
+  // so re-rendering isn't needed on every keystroke while composing.
   const addToQueue = async () => {
-    if (!canPrint || printQueue.length >= 4) return;
+    if (!canPrint) return;
     setAddingToQueue(true);
     try {
-      const stCanvas = await renderSTCanvas(selected, fields, computedValues);
+      const previewCanvas = await renderSTCanvas(selected, fields, computedValues);
       const firstVal = computedValues[fields[0]?.id] || '';
       const label = selected.name + (firstVal ? ` – ${firstVal.substring(0,18)}` : '');
-      setPrintQueue(q => [...q, { id: Date.now(), canvas: stCanvas, label }]);
-      toast.success(`Added to queue (${printQueue.length+1}/4)`);
+      const entry = {
+        id: editingQueueId || (Date.now() + Math.random()),
+        label, template: selected, fields, values: computedValues,
+        previewSrc: previewCanvas.toDataURL('image/png'),
+      };
+      const wasEditing = !!editingQueueId;
+      setPrintQueue(q => wasEditing ? q.map(it => it.id===entry.id ? entry : it) : [...q, entry]);
+      toast.success(wasEditing ? 'Queue item updated' : `Added to queue (${printQueue.length+1})`);
+      setEditingQueueId(null);
     } catch(e) { toast.error('Error: '+e.message); }
     finally { setAddingToQueue(false); }
   };
+
+  const moveQueueItem = (i, dir) => {
+    setPrintQueue(q => {
+      const j = i + dir;
+      if (j < 0 || j >= q.length) return q;
+      const next = q.slice();
+      const tmp = next[i]; next[i] = next[j]; next[j] = tmp;
+      return next;
+    });
+  };
+
+  const editQueueItem = (item) => {
+    setSelected(item.template);
+    setValues(item.values);
+    setEditingQueueId(item.id);
+    setStep('compose');
+  };
+
+  const queueItemsForPrint = () => printQueue.map(q => ({ template:q.template, fields:q.fields, values:q.values }));
 
   const printQueueSheet = async () => {
     if (!printQueue.length) return;
     setQueuePrinting(true);
     try {
-      const page = buildMixedPrintPage(printQueue.map(q=>q.canvas));
-      setPrintPages([page]);
-      setPrintDims({ dw: PAGE_W, dh: PAGE_H });
+      const { pages, dw, dh } = await buildTagPrintPages(queueItemsForPrint(), layout);
+      setPrintPages(pages);
+      setPrintDims({ dw, dh, scale: PX_PER_IN });
       setPrintMode('queue');
       setStep('preview');
     } catch(e) { toast.error('Error: '+e.message); }
     finally { setQueuePrinting(false); }
+  };
+
+  const downloadQueuePdf = async () => {
+    if (!printQueue.length) return;
+    setQueuePdfBusy(true);
+    try {
+      const { pages } = await buildTagPrintPages(queueItemsForPrint(), layout);
+      exportPDF(pages, 'queue-sheet.pdf');
+    } catch(e) { toast.error('PDF failed: '+e.message); }
+    finally { setQueuePdfBusy(false); }
   };
 
   const printSheet = () => {
@@ -16574,18 +16656,21 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
   });
 
   // ── Print Queue Panel (shown on browse + compose steps) ───
+  // No cap on how many go in — the sheet just gains another page once the
+  // queue outgrows the current layout's per-page capacity.
+  const queuePages = Math.ceil(printQueue.length / perPageNow);
   const queuePanel = printQueue.length > 0 && (
     <div className="rounded-2xl border border-indigo-200 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-950 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
         <h3 className="text-sm font-bold text-indigo-900 dark:text-indigo-200">
-          <Icon name="note"/> Print Queue — {printQueue.length} of 4 tags
+          <Icon name="note"/> Print Queue — {printQueue.length} tag{printQueue.length===1?'':'s'} · {queuePages} page{queuePages===1?'':'s'} at {layoutLabel}
         </h3>
         <div className="flex gap-2">
-          <button onClick={()=>setPrintQueue([])} className="text-xs text-indigo-500 hover:text-red-500 underline">Clear all</button>
+          <button onClick={()=>{ setPrintQueue([]); setEditingQueueId(null); }} className="text-xs text-indigo-500 hover:text-red-500 underline">Clear all</button>
           <Button size="sm" onClick={printQueueSheet} loading={queuePrinting}>
-            <Icon name="print"/> Print Sheet ({printQueue.length}-up)
+            <Icon name="print"/> Print Sheet
           </Button>
-          <Button size="sm" variant="secondary" onClick={()=>{ const p=buildMixedPrintPage(printQueue.map(q=>q.canvas)); exportPDF([p],'queue-sheet.pdf'); }}>
+          <Button size="sm" variant="secondary" onClick={downloadQueuePdf} loading={queuePdfBusy}>
             <Icon name="down"/> PDF
           </Button>
         </div>
@@ -16593,17 +16678,27 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
       <div className="flex gap-3 flex-wrap">
         {printQueue.map((item,i)=>(
           <div key={item.id} className="relative group">
-            <div className="w-16 h-20 rounded-lg overflow-hidden border border-indigo-200 dark:border-indigo-600 bg-white flex items-center justify-center">
-              <canvas ref={el=>{ if(el){ el.width=item.canvas.width; el.height=item.canvas.height; el.getContext('2d').drawImage(item.canvas,0,0); }}} className="w-full h-full object-contain"/>
+            <div className={`w-16 h-20 rounded-lg overflow-hidden border bg-white flex items-center justify-center ${editingQueueId===item.id ? 'border-indigo-500 ring-2 ring-indigo-300' : 'border-indigo-200 dark:border-indigo-600'}`}>
+              <img src={item.previewSrc} alt="" className="w-full h-full object-contain"/>
             </div>
-            <p className="text-xs text-indigo-700 dark:text-indigo-300 mt-1 w-16 truncate">{item.label}</p>
-            <button onClick={()=>setPrintQueue(q=>q.filter((_,j)=>j!==i))}
-              className="absolute -top-1 -right-1 w-5 h-5 rounded-full bg-red-500 text-white text-xs leading-none flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">×</button>
+            <p className="text-xs text-indigo-700 dark:text-indigo-300 mt-1 w-16 truncate" title={item.label}>{item.label}</p>
+            <div className="flex items-center gap-1 mt-0.5">
+              <button onClick={()=>moveQueueItem(i,-1)} disabled={i===0}
+                title="Move earlier" className="text-[10px] leading-none text-indigo-400 hover:text-indigo-600 disabled:opacity-20 disabled:hover:text-indigo-400">◀</button>
+              <span className="text-[10px] text-indigo-300 flex-1 text-center">{i+1}</span>
+              <button onClick={()=>moveQueueItem(i,1)} disabled={i===printQueue.length-1}
+                title="Move later" className="text-[10px] leading-none text-indigo-400 hover:text-indigo-600 disabled:opacity-20 disabled:hover:text-indigo-400">▶</button>
+            </div>
+            <div className="absolute -top-1 -right-1 flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button onClick={()=>editQueueItem(item)}
+                title="Edit this tag" className="w-5 h-5 rounded-full bg-indigo-500 text-white text-[10px] leading-none flex items-center justify-center">
+                <Icon name="edit" size={9}/>
+              </button>
+              <button onClick={()=>{ setPrintQueue(q=>q.filter((_,j)=>j!==i)); if(editingQueueId===item.id) setEditingQueueId(null); }}
+                title="Remove" className="w-5 h-5 rounded-full bg-red-500 text-white text-xs leading-none flex items-center justify-center">×</button>
+            </div>
           </div>
         ))}
-        {printQueue.length < 4 && (
-          <div className="w-16 h-20 rounded-lg border-2 border-dashed border-indigo-300 dark:border-indigo-600 flex items-center justify-center text-indigo-300 text-2xl select-none">+</div>
-        )}
       </div>
     </div>
   );
@@ -16696,10 +16791,11 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
     <div className="space-y-4">
       {queuePanel}
       <div className="flex items-center gap-3">
-        <button onClick={()=>setStep('browse')} className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline">← Back to Templates</button>
+        <button onClick={()=>{ setStep('browse'); setEditingQueueId(null); }} className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline">← Back to Templates</button>
         <Badge color="indigo">{selected?.category}</Badge>
         <span className="font-semibold text-gray-900 dark:text-white text-sm">{selected?.name}</span>
         <span className="text-xs text-gray-400">{selected?.width_in}″ × {selected?.height_in}″</span>
+        {editingQueueId && <Badge color="yellow">Editing queue item</Badge>}
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
@@ -16750,28 +16846,28 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
               <div className="flex gap-2 mt-1">
                 {['2up','4up','6up'].map(l=>(
                   <label key={l} className="flex items-center gap-1.5 text-sm cursor-pointer">
-                    <input type="radio" checked={layout===l} onChange={()=>{ setLayout(l); setQty(l==='6up'?6:l==='4up'?4:2); }} className="accent-indigo-600"/>
-                    {l==='2up'?'2-up':l==='4up'?'4-up':'6-up (Small)'}
+                    <input type="radio" checked={layout===l} onChange={()=>{ setLayout(l); setQty(LAYOUT_PER_PAGE[l]); }} className="accent-indigo-600"/>
+                    {l==='2up'?'2-up (Large)':l==='4up'?'4-up (Medium)':'6-up (Small)'}
                   </label>
                 ))}
               </div>
             </div>
             <div>
               <Label>Qty</Label>
-              <Input type="number" value={qty} min={1} max={100} onChange={e=>setQty(Math.max(1,+e.target.value))} className="w-20"/>
+              <Input type="number" value={qty} min={1} max={200} onChange={e=>setQty(Math.max(1,+e.target.value))} className="w-20"/>
             </div>
           </div>
           <p className="text-xs text-gray-400 mt-2">
-            {Math.ceil(qty/(layout==='6up'?6:layout==='4up'?4:2))} page{Math.ceil(qty/(layout==='6up'?6:layout==='4up'?4:2))>1?'s':''} · ¼″ margin · disable headers &amp; footers
+            {Math.ceil(qty/perPageNow)} page{Math.ceil(qty/perPageNow)>1?'s':''} · ¼″ margin · disable headers &amp; footers
           </p>
           <div className="flex gap-2 mt-4 flex-wrap">
             <Button onClick={buildPreview} loading={printing} disabled={!canPrint} className="flex-1">
               <Icon name="eye"/> Preview Copies
             </Button>
             <Button variant="secondary" onClick={addToQueue} loading={addingToQueue}
-              disabled={!canPrint || printQueue.length >= 4}
-              title={printQueue.length>=4?'Queue is full (4/4)':'Add this tag to the mixed print queue'}>
-              <Icon name="note"/> {printQueue.length>=4 ? 'Queue Full' : `Add to Queue (${printQueue.length}/4)`}
+              disabled={!canPrint}
+              title={editingQueueId?'Save changes to this queue item':'Add this tag to the print queue'}>
+              <Icon name="note"/> {editingQueueId ? 'Update Queue Item' : `Add to Queue (${printQueue.length})`}
             </Button>
             <Button variant="secondary" loading={savingTag} disabled={!selected}
               onClick={async () => {
@@ -16810,12 +16906,14 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
         <button onClick={()=>{ setStep(printMode==='queue'?'browse':'compose'); setPrintMode('single'); }} className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline">← Back</button>
         <span className="text-sm font-semibold text-gray-900 dark:text-white">
           {printMode==='queue'
-            ? `Mixed Sheet · ${printQueue.length} different tags`
-            : `${selected?.name} · ${layout==='4up'?'4-up':'2-up'} · ${qty} copies`}
+            ? `Mixed Sheet · ${printQueue.length} tag${printQueue.length===1?'':'s'} · ${printPages.length} page${printPages.length===1?'':'s'} · ${layoutLabel}`
+            : `${selected?.name} · ${layoutLabel} · ${qty} copies · ${printPages.length} page${printPages.length===1?'':'s'}`}
         </span>
         {printDims && (
           <span className="text-xs text-gray-400">
-            Actual print size: {(printDims.dw/PX_PER_IN).toFixed(2)}″ × {(printDims.dh/PX_PER_IN).toFixed(2)}″
+            {printMode==='queue'
+              ? 'Each tag sized to fit its own product proportions'
+              : `Actual print size: ${(printDims.dw/PX_PER_IN).toFixed(2)}″ × ${(printDims.dh/PX_PER_IN).toFixed(2)}″`}
           </span>
         )}
       </div>

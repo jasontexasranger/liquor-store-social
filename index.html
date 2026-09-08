@@ -6256,7 +6256,7 @@ function FeatureCreativeBatch({ storeId, storeName, period, rows, products, camp
             <Icon name="image" size={34} style={{color:'var(--cy-dim)'}}/>
             <p className="lbl mt-3">No price ad templates for this store</p>
             <p className="text-xs mt-2" style={{color:'var(--txt2)'}}>
-              Upload one under Ad Templates and position its fields first.
+              Upload one under Admin → Brand → Price Templates and position its fields first.
             </p>
           </div>
         ) : done ? (
@@ -10120,7 +10120,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated, seedFeature }) {
           .select('*').eq('template_id', selectedTpl.id).order('field_order');
         const tplFields = withFieldDefaults(rawFields);
         if (!tplFields || tplFields.length === 0) {
-          toast.error('That template has no fields yet — set them up under Ad Templates');
+          toast.error('That template has no fields yet — set them up under Brand → Price Templates');
           return;
         }
         const rendered = await renderFieldTemplate(
@@ -10280,7 +10280,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated, seedFeature }) {
                 </div>
               )}
               <p className="text-xs text-gray-400 mt-1.5 italic">
-                {selectedTpl ? `Using: ${selectedTpl.name} (${selectedTpl.canvas_w}×${selectedTpl.canvas_h})` : 'Upload templates in Brand → Ad Templates'}
+                {selectedTpl ? `Using: ${selectedTpl.name} (${selectedTpl.canvas_w}×${selectedTpl.canvas_h})` : 'Upload templates in Brand → Price Templates'}
               </p>
             </>
           ) : (
@@ -10297,7 +10297,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated, seedFeature }) {
                   </button>
                 ))}
               </div>
-              <p className="text-xs text-indigo-500 dark:text-indigo-400 mt-1.5"><Icon name="bulb"/> Upload your own brand templates under Brand → Ad Templates</p>
+              <p className="text-xs text-indigo-500 dark:text-indigo-400 mt-1.5"><Icon name="bulb"/> Upload your own brand templates under Brand → Price Templates</p>
             </>
           )}
         </div>
@@ -15979,6 +15979,7 @@ function HomePage({ granted, isAdmin, go, onOpenHelp }) {
     { id:'price',     label:'Check a price',              icon:'search',  page:'prices' },
     { id:'recipe',    label:'Make a cocktail post',       icon:'cocktail', page:'recipes' },
     { id:'signage',   label:'Put it on the TVs',          icon:'grid',    page:'signage', need:'signage' },
+    { id:'templates', label:'Edit price templates',       icon:'image',   page:'brand', tab:'templates', admin:true },
     { id:'adsdash',   label:'See how the ads are doing',  icon:'chart',   page:'ads', tab:'dash', need:'ads' },
     { id:'ad',        label:'Run an ad',                  icon:'mega',    page:'ads', tab:'build', need:'ads' },
     { id:'users',     label:'Manage the team',            icon:'users',   page:'settings', admin:true },
@@ -17648,12 +17649,12 @@ function ShelfTalkerPage({ isAdmin, userStoreIds, userId }) {
   );
 }
 
-function BrandPage({ settings }) {
-  const [tab,     setTab]     = useState('profile');
+function BrandPage({ settings, initialTab }) {
+  const [tab,     setTab]     = useState(initialTab || 'profile');
   const [storeId, setStoreId] = useState(STORES[0].id);
   const tabs = [
     {id:'profile',   icon:'palette', label:'Brand Profile'},
-    {id:'templates', icon:'image', label:'Ad Templates'},
+    {id:'templates', icon:'image', label:'Price Templates'},
   ];
   return (
     <div>
@@ -18000,12 +18001,14 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
   // Deep links from the home cards into a specific tab of a page.
   const [postsTab, setPostsTab] = useState(null);
   const [adsTab,   setAdsTab]   = useState(null);
+  const [brandTab, setBrandTab] = useState(null);
   // Lifted out of HelpBot so the "Help me find what I need" home card can
   // pop the same chat window open, not a second one.
   const [helpOpen, setHelpOpen] = useState(false);
   const goHome = (p, t) => {
     if (p === 'posts') setPostsTab(t || null);
     if (p === 'ads')   setAdsTab(t || null);
+    if (p === 'brand') setBrandTab(t || null);
     setPage(p);
   };
   // A recipe (or anything else) handing the composer a ready image + caption.
@@ -18297,7 +18300,7 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
                                              myStores={effIsAdmin ? STORES : STORES.filter(st=>effStoreIds.includes(st.id))}/>}
         {page==='products'                && <ProductLibrary/>}
         {page==='ads'      && granted('ads')      && <AdsPage key={'at-'+(adsTab||'x')} initialTab={adsTab} settings={settings}/>}
-        {page==='brand'    && effIsAdmin && <BrandPage        settings={settings}/>}
+        {page==='brand'    && effIsAdmin && <BrandPage key={'bt-'+(brandTab||'x')} initialTab={brandTab} settings={settings}/>}
         {page==='radar'    && effIsAdmin && <MarketRadarPage/>}
         {page==='weather'  && effIsAdmin && <WeatherAdsPage/>}
         {page==='reviews'                && <ReviewsPage isAdmin={effIsAdmin}/>}

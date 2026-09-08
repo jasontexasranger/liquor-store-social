@@ -16023,6 +16023,480 @@ function AdsPage({ settings, initialTab }) {
 }
 
 // ─────────────────────────────────────────────
+// WEATHER-TRIGGERED AD AUTOMATION
+// Admin-only. Rule builder + pending approvals + live status + reporting
+// over the automation_rules/control/events/runs/approvals/periods tables.
+// Reads go straight through the authenticated Supabase client (RLS already
+// restricts these six tables to admins); anything that touches Meta goes
+// through weather-execute so the ten safeguards in that function are the
+// only place a write can happen. A manual run from this page always calls
+// weather-rules-check with an admin session (no x-cron-secret), which the
+// engine treats as preview-only — nothing here can auto-execute or
+// auto-rollback a live campaign; only the pg_cron-scheduled job can.
+// ─────────────────────────────────────────────
+const WEATHER_CONDITIONS = [
+  { value:'temp_above',          label:'Current temperature above',        unit:'°C', days:false, lead:false },
+  { value:'temp_below',          label:'Current temperature below',        unit:'°C', days:false, lead:false },
+  { value:'forecast_high_above', label:'Forecast high above',              unit:'°C', days:false, lead:true  },
+  { value:'forecast_low_below',  label:'Forecast low below',               unit:'°C', days:false, lead:true  },
+  { value:'consecutive_above',   label:'N consecutive days with high above', unit:'°C', days:true,  lead:false },
+  { value:'consecutive_below',   label:'N consecutive days with low below',  unit:'°C', days:true,  lead:false },
+  { value:'precip_prob_above',   label:'Precipitation probability above',  unit:'%',  days:false, lead:true  },
+  { value:'snow_expected',       label:'Snow expected (any amount)',       unit:'',   days:false, lead:true  },
+];
+const WEATHER_ACTIONS = [
+  { value:'raise_budget_pct', label:'Raise ad set budget by %' },
+  { value:'set_budget',       label:'Set ad set budget to $' },
+  { value:'toggle_on',        label:'Turn campaign ON' },
+];
+const WEATHER_DECISION_COLOR = {
+  recommend:'yellow', auto_executed:'green', rolled_back:'blue', ceiling_rolled_back:'red',
+  holding:'green', no_change:'gray', preview_only:'indigo', error:'red',
+};
+const emptyWeatherRule = () => ({
+  id:null, name:'', store_id: STORES[0]?.id||'', target_campaign_id:'', target_campaign_name:'',
+  weather_condition:'temp_below', threshold:0, consecutive_days:2, lead_time_hours:0,
+  action_type:'raise_budget_pct', action_value:25,
+  daily_budget_dollars:'50', max_incremental_spend_dollars:'150',
+  active:false, approval_required:true,
+});
+
+function WeatherRuleForm({ rule, campaignsByStore, loadCampaigns, onSave, onCancel, saving }) {
+  const [r, setR] = useState(rule);
+  const set = (k,v) => setR(prev => Object.assign({}, prev, { [k]: v }));
+  const cond = WEATHER_CONDITIONS.find(c => c.value === r.weather_condition) || WEATHER_CONDITIONS[0];
+  const camps = campaignsByStore[r.store_id] || null;
+
+  useEffect(function(){ if (!camps) loadCampaigns(r.store_id); }, [r.store_id]);
+
+  const canSave = r.name.trim() && r.store_id && r.target_campaign_id
+    && Number(r.daily_budget_dollars) > 0 && Number(r.max_incremental_spend_dollars) > 0
+    && (r.action_type === 'toggle_on' || Number(r.action_value) > 0);
+
+  return (
+    <Card className="mb-5">
+      <h3 className="text-sm font-bold mb-4 uppercase tracking-wide" style={{color:'var(--txt)'}}>
+        {r.id ? 'Edit Rule' : 'New Weather Rule'}
+      </h3>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div>
+          <Label>Rule name</Label>
+          <Input value={r.name} onChange={e=>set('name', e.target.value)} placeholder="e.g. Cold snap → boost warm spirits"/>
+        </div>
+        <div>
+          <Label>Store (weather source)</Label>
+          <Select value={r.store_id} onChange={e=>{ set('store_id', e.target.value); set('target_campaign_id',''); set('target_campaign_name',''); }}>
+            {STORES.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </Select>
+        </div>
+
+        <div className="md:col-span-2">
+          <Label>Campaign this rule is allowed to touch</Label>
+          {camps === 'loading' && <p className="text-xs" style={{color:'var(--txt2)'}}>Loading campaigns…</p>}
+          {camps && camps !== 'loading' && camps.length === 0 && <p className="text-xs" style={{color:'var(--txt2)'}}>No campaigns found for this store in the last 60 days.</p>}
+          {camps && camps !== 'loading' && camps.length > 0 && (
+            <Select value={r.target_campaign_id} onChange={e=>{
+              const c = camps.find(c=>c.id===e.target.value);
+              set('target_campaign_id', e.target.value);
+              set('target_campaign_name', c ? c.name : '');
+            }}>
+              <option value="">Select a campaign…</option>
+              {camps.map(c => <option key={c.id} value={c.id}>{c.name} ({c.status})</option>)}
+            </Select>
+          )}
+        </div>
+
+        <div>
+          <Label>Weather condition</Label>
+          <Select value={r.weather_condition} onChange={e=>set('weather_condition', e.target.value)}>
+            {WEATHER_CONDITIONS.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+          </Select>
+        </div>
+        {cond.value !== 'snow_expected' && (
+          <div>
+            <Label>Threshold {cond.unit ? `(${cond.unit})` : ''}</Label>
+            <Input type="number" value={r.threshold} onChange={e=>set('threshold', e.target.value)}/>
+          </div>
+        )}
+        {cond.days && (
+          <div>
+            <Label>Consecutive days</Label>
+            <Input type="number" min="1" max="7" value={r.consecutive_days} onChange={e=>set('consecutive_days', e.target.value)}/>
+          </div>
+        )}
+        {cond.lead && (
+          <div>
+            <Label>Look ahead (hours, 0 = today)</Label>
+            <Input type="number" min="0" max="168" value={r.lead_time_hours} onChange={e=>set('lead_time_hours', e.target.value)}/>
+          </div>
+        )}
+
+        <div>
+          <Label>Action</Label>
+          <Select value={r.action_type} onChange={e=>set('action_type', e.target.value)}>
+            {WEATHER_ACTIONS.map(a => <option key={a.value} value={a.value}>{a.label}</option>)}
+          </Select>
+        </div>
+        {r.action_type !== 'toggle_on' && (
+          <div>
+            <Label>{r.action_type === 'raise_budget_pct' ? 'Raise by (%)' : 'New daily budget ($)'}</Label>
+            <Input type="number" value={r.action_value} onChange={e=>set('action_value', e.target.value)}/>
+          </div>
+        )}
+
+        <div>
+          <Label>Maximum daily budget while active ($)</Label>
+          <Input type="number" value={r.daily_budget_dollars} onChange={e=>set('daily_budget_dollars', e.target.value)}/>
+          <p className="text-xs mt-1" style={{color:'var(--txt2)'}}>A hard cap — the action above can never push the budget past this, no matter what it computes.</p>
+        </div>
+        <div>
+          <Label>Stop automatically after spending ($)</Label>
+          <Input type="number" value={r.max_incremental_spend_dollars} onChange={e=>set('max_incremental_spend_dollars', e.target.value)}/>
+          <p className="text-xs mt-1" style={{color:'var(--txt2)'}}>Real spend while this rule is active, tracked from Meta Insights every 2 hours.</p>
+        </div>
+
+        <label className="flex items-center gap-2 text-sm" style={{color:'var(--txt)'}}>
+          <input type="checkbox" checked={r.approval_required} onChange={e=>set('approval_required', e.target.checked)}/>
+          Require approval before executing (recommended)
+        </label>
+        <label className="flex items-center gap-2 text-sm" style={{color:'var(--txt)'}}>
+          <input type="checkbox" checked={r.active} onChange={e=>set('active', e.target.checked)}/>
+          Active (the engine checks this rule every 2 hours)
+        </label>
+      </div>
+
+      <div className="flex gap-2 mt-5">
+        <Button onClick={()=>onSave(r)} loading={saving} disabled={!canSave}><Icon name="save" size={13}/> Save Rule</Button>
+        <Button variant="secondary" onClick={onCancel}>Cancel</Button>
+      </div>
+    </Card>
+  );
+}
+
+function WeatherAdsPage() {
+  const toast = useToast();
+  const [tab, setTab] = useState('rules');
+  const [rules, setRules] = useState([]);
+  const [controls, setControls] = useState([]);
+  const [lastRuns, setLastRuns] = useState({});     // rule_id -> latest automation_runs row
+  const [approvals, setApprovals] = useState([]);
+  const [periods, setPeriods] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(null);      // rule object being created/edited, or null
+  const [saving, setSaving] = useState(false);
+  const [checking, setChecking] = useState(null);    // rule id being manually checked, or 'all'
+  const [campaignsByStore, setCampaignsByStore] = useState({});
+  const [busyApprovalId, setBusyApprovalId] = useState(null);
+
+  const loadCampaigns = async (storeId) => {
+    setCampaignsByStore(prev => Object.assign({}, prev, { [storeId]: 'loading' }));
+    try {
+      const r = await callEdge('meta-ads', 'listCampaigns', { storeId });
+      setCampaignsByStore(prev => Object.assign({}, prev, { [storeId]: r.campaigns || [] }));
+    } catch(e) {
+      toast.error('Could not load campaigns: ' + e.message);
+      setCampaignsByStore(prev => Object.assign({}, prev, { [storeId]: [] }));
+    }
+  };
+
+  const loadAll = async () => {
+    setLoading(true);
+    try {
+      const sb = getSB();
+      const [ruleRes, ctrlRes, apprRes, perRes] = await Promise.all([
+        sb.from('automation_rules').select('*').order('created_at', { ascending:false }),
+        sb.from('automation_control').select('*'),
+        sb.from('automation_approvals').select('*').eq('status','pending').order('created_at', { ascending:false }),
+        sb.from('automation_periods').select('*').order('started_at', { ascending:false }).limit(60),
+      ]);
+      setRules(ruleRes.data || []);
+      setControls(ctrlRes.data || []);
+      setApprovals(apprRes.data || []);
+      setPeriods(perRes.data || []);
+
+      // One most-recent run per rule, for the "why" column on the rules list.
+      const ruleIds = (ruleRes.data || []).map(r => r.id);
+      if (ruleIds.length) {
+        const { data: runs } = await sb.from('automation_runs').select('*')
+          .in('rule_id', ruleIds).order('created_at', { ascending:false }).limit(ruleIds.length * 3);
+        const byRule = {};
+        (runs || []).forEach(run => { if (!byRule[run.rule_id]) byRule[run.rule_id] = run; });
+        setLastRuns(byRule);
+      } else {
+        setLastRuns({});
+      }
+    } catch(e) { toast.error('Failed to load: ' + e.message); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(function(){ loadAll(); }, []);
+
+  const saveRule = async (r) => {
+    setSaving(true);
+    try {
+      const payload = {
+        name: r.name.trim(), store_id: r.store_id,
+        target_campaign_id: r.target_campaign_id, target_campaign_name: r.target_campaign_name || null,
+        weather_condition: r.weather_condition,
+        threshold: r.weather_condition === 'snow_expected' ? 0 : Number(r.threshold),
+        consecutive_days: Number(r.consecutive_days) || 1,
+        lead_time_hours: Number(r.lead_time_hours) || 0,
+        action_type: r.action_type,
+        action_value: r.action_type === 'toggle_on' ? null : Number(r.action_value),
+        daily_budget_cents: Math.round(Number(r.daily_budget_dollars) * 100),
+        max_incremental_spend_cents: Math.round(Number(r.max_incremental_spend_dollars) * 100),
+        active: !!r.active, approval_required: !!r.approval_required,
+      };
+      const sb = getSB();
+      if (r.id) {
+        const { error } = await sb.from('automation_rules').update(payload).eq('id', r.id);
+        if (error) throw error;
+      } else {
+        const { data: { user } } = await sb.auth.getUser();
+        const { error } = await sb.from('automation_rules').insert(Object.assign({ created_by: user?.id || null }, payload));
+        if (error) throw error;
+      }
+      toast.success('Rule saved');
+      setEditing(null);
+      loadAll();
+    } catch(e) { toast.error('Save failed: ' + e.message); }
+    finally { setSaving(false); }
+  };
+
+  const toggleActive = async (rule) => {
+    try {
+      const { error } = await getSB().from('automation_rules').update({ active: !rule.active }).eq('id', rule.id);
+      if (error) throw error;
+      setRules(prev => prev.map(r => r.id===rule.id ? Object.assign({}, r, { active: !rule.active }) : r));
+      toast.success(rule.active ? 'Rule paused' : 'Rule activated');
+    } catch(e) { toast.error(e.message); }
+  };
+
+  const deleteRule = async (rule) => {
+    if (!confirm(`Delete rule "${rule.name}"? This cannot be undone.`)) return;
+    try {
+      const { error } = await getSB().from('automation_rules').delete().eq('id', rule.id);
+      if (error) throw error;
+      toast.success('Rule deleted');
+      loadAll();
+    } catch(e) { toast.error(e.message); }
+  };
+
+  const editRule = (rule) => {
+    setEditing({
+      id: rule.id, name: rule.name, store_id: rule.store_id,
+      target_campaign_id: rule.target_campaign_id, target_campaign_name: rule.target_campaign_name || '',
+      weather_condition: rule.weather_condition, threshold: rule.threshold,
+      consecutive_days: rule.consecutive_days, lead_time_hours: rule.lead_time_hours,
+      action_type: rule.action_type, action_value: rule.action_value ?? 25,
+      daily_budget_dollars: String(rule.daily_budget_cents/100),
+      max_incremental_spend_dollars: String(rule.max_incremental_spend_cents/100),
+      active: rule.active, approval_required: rule.approval_required,
+    });
+  };
+
+  // Manual "check now" — always goes through an admin session, so the
+  // engine's canAct is false and this can only preview or raise an
+  // approval, never touch Meta directly. See weather-rules-check.
+  const checkNow = async (ruleId) => {
+    setChecking(ruleId || 'all');
+    try {
+      const r = await callEdge('weather-rules-check', 'check', ruleId ? { ruleId } : {});
+      toast.success(`Checked ${r.checked} rule(s)`);
+      loadAll();
+    } catch(e) { toast.error('Check failed: ' + e.message); }
+    finally { setChecking(null); }
+  };
+
+  const approve = async (appr) => {
+    setBusyApprovalId(appr.id);
+    try {
+      const r = await callEdge('weather-execute', 'apply', { approvalId: appr.id });
+      if (!r.ok) throw new Error(r.error || 'Execute failed');
+      toast.success('Approved and executed');
+      loadAll();
+    } catch(e) { toast.error(e.message); }
+    finally { setBusyApprovalId(null); }
+  };
+
+  const reject = async (appr) => {
+    setBusyApprovalId(appr.id);
+    try {
+      const sb = getSB();
+      const { data: { user } } = await sb.auth.getUser();
+      const { error } = await sb.from('automation_approvals').update({
+        status:'ignored', reviewed_by: user?.id || null, reviewed_at: new Date().toISOString(),
+      }).eq('id', appr.id);
+      if (error) throw error;
+      toast.success('Recommendation dismissed');
+      loadAll();
+    } catch(e) { toast.error(e.message); }
+    finally { setBusyApprovalId(null); }
+  };
+
+  const ruleById = id => rules.find(r => r.id === id);
+  const controlFor = campaignId => controls.find(c => c.target_id === campaignId);
+  const fmtWhen = iso => iso ? new Date(iso).toLocaleString(undefined,
+    { month:'short', day:'numeric', hour:'numeric', minute:'2-digit' }) : '—';
+  const centsFmt = c => c == null ? '—' : money(Number(c)/100);
+
+  const TABS = [
+    { id:'rules',     icon:'tag', label:`Rules (${rules.length})` },
+    { id:'approvals', icon:'check', label:`Approvals (${approvals.length})` },
+    { id:'reports',   icon:'chart', label:'Reporting' },
+  ];
+
+  return (
+    <div>
+      <div className="mb-5">
+        <h2 className="text-lg font-bold" style={{color:'var(--txt)'}}><Icon name="drop" size={17} className="mr-2"/>Weather-Triggered Ads</h2>
+        <p className="text-xs mt-1" style={{color:'var(--txt2)'}}>
+          Rules watch live weather per store and adjust one campaign's budget or status when conditions hit.
+          Every write is logged, capped, and reversible — see the architecture notes in the rule form for what's enforced automatically.
+        </p>
+      </div>
+
+      <div className="flex border-b mb-5" style={{borderColor:'var(--line)'}}>
+        {TABS.map(t=>(
+          <button key={t.id} onClick={()=>setTab(t.id)}
+            className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors`}
+            style={tab===t.id ? {borderColor:'var(--cy)', color:'var(--cy)'} : {borderColor:'transparent', color:'var(--txt2)'}}>
+            <Icon name={t.icon} size={14} className="mr-2"/>{t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab==='rules' && (
+        <div>
+          <div className="flex justify-between items-center mb-4">
+            <Button variant="secondary" onClick={()=>checkNow(null)} loading={checking==='all'}>
+              <Icon name="refresh" size={13}/> Check all rules now
+            </Button>
+            {!editing && <Button onClick={()=>setEditing(emptyWeatherRule())}><Icon name="spark" size={13}/> New Rule</Button>}
+          </div>
+
+          {editing && (
+            <WeatherRuleForm rule={editing} campaignsByStore={campaignsByStore} loadCampaigns={loadCampaigns}
+              onSave={saveRule} onCancel={()=>setEditing(null)} saving={saving}/>
+          )}
+
+          {loading ? <p className="text-sm" style={{color:'var(--txt2)'}}>Loading…</p> :
+           rules.length === 0 ? <p className="text-sm" style={{color:'var(--txt2)'}}>No weather rules yet.</p> :
+          <div className="space-y-3">
+            {rules.map(rule => {
+              const lock = controlFor(rule.target_campaign_id);
+              const lastRun = lastRuns[rule.id];
+              const storeName = (STORES.find(s=>s.id===rule.store_id)||{}).name || rule.store_id;
+              return (
+                <Card key={rule.id}>
+                  <div className="flex justify-between items-start gap-3">
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="text-sm font-bold" style={{color:'var(--txt)'}}>{rule.name}</p>
+                        <Badge color={rule.active ? 'green' : 'gray'}>{rule.active ? 'Active' : 'Paused'}</Badge>
+                        {rule.approval_required && <Badge color="yellow">Approval required</Badge>}
+                        {lock && <Badge color="blue">Currently boosted</Badge>}
+                        {lastRun && <Badge color={WEATHER_DECISION_COLOR[lastRun.decision]||'gray'}>{lastRun.decision.replace(/_/g,' ')}</Badge>}
+                      </div>
+                      <p className="text-xs mt-1.5" style={{color:'var(--txt2)'}}>
+                        {storeName} · {(WEATHER_CONDITIONS.find(c=>c.value===rule.weather_condition)||{}).label} {rule.threshold}{(WEATHER_CONDITIONS.find(c=>c.value===rule.weather_condition)||{}).unit}
+                        {rule.weather_condition.startsWith('consecutive') ? ` for ${rule.consecutive_days} days` : ''}
+                        {' → '}{(WEATHER_ACTIONS.find(a=>a.value===rule.action_type)||{}).label}
+                        {rule.action_type==='raise_budget_pct' ? ` ${rule.action_value}%` : rule.action_type==='set_budget' ? ` ${centsFmt(rule.action_value*100)}` : ''}
+                        {' on '}<span className="font-mono">{rule.target_campaign_name || rule.target_campaign_id}</span>
+                      </p>
+                      <p className="text-xs mt-1" style={{color:'var(--txt2)'}}>
+                        Cap {centsFmt(rule.daily_budget_cents)}/day · stops after {centsFmt(rule.max_incremental_spend_cents)} spent
+                        {lock ? ` · ${centsFmt(lock.incremental_spend_cents)} spent so far, since ${fmtWhen(lock.started_at)}` : ''}
+                      </p>
+                      {lastRun && <p className="text-xs mt-1" style={{color:'var(--txt2)'}}>Last checked {fmtWhen(lastRun.created_at)}: {lastRun.detail}</p>}
+                    </div>
+                    <div className="flex flex-col gap-1.5 items-end flex-none">
+                      <div className="flex gap-1.5">
+                        <Button size="sm" variant="secondary" onClick={()=>checkNow(rule.id)} loading={checking===rule.id}><Icon name="refresh" size={12}/></Button>
+                        <Button size="sm" variant="secondary" onClick={()=>editRule(rule)}><Icon name="edit" size={12}/></Button>
+                        <Button size="sm" variant={rule.active?'secondary':'success'} onClick={()=>toggleActive(rule)}>{rule.active?'Pause':'Activate'}</Button>
+                        <Button size="sm" variant="danger" onClick={()=>deleteRule(rule)}><Icon name="trash" size={12}/></Button>
+                      </div>
+                    </div>
+                  </div>
+                </Card>
+              );
+            })}
+          </div>}
+        </div>
+      )}
+
+      {tab==='approvals' && (
+        loading ? <p className="text-sm" style={{color:'var(--txt2)'}}>Loading…</p> :
+        approvals.length === 0 ? <p className="text-sm" style={{color:'var(--txt2)'}}>No pending recommendations.</p> :
+        <div className="space-y-3">
+          {approvals.map(appr => {
+            const rule = ruleById(appr.rule_id);
+            const plan = appr.planned_change || {};
+            return (
+              <Card key={appr.id}>
+                <div className="flex justify-between items-start gap-3">
+                  <div>
+                    <p className="text-sm font-bold" style={{color:'var(--txt)'}}>{rule ? rule.name : 'Unknown rule'}</p>
+                    <p className="text-xs mt-1" style={{color:'var(--txt2)'}}>Raised {fmtWhen(appr.created_at)}</p>
+                    <p className="text-xs mt-1.5" style={{color:'var(--txt)'}}>
+                      {plan.campaignStatusChange ? `Turn campaign ${plan.campaignStatusChange}` : ''}
+                      {plan.newBudgetCents != null && plan.currentBudgetCents != null && plan.actionType !== 'toggle_on'
+                        ? `Budget ${centsFmt(plan.currentBudgetCents)} → ${centsFmt(plan.newBudgetCents)}${plan.clamped ? ' (clamped to cap)' : ''}`
+                        : ''}
+                    </p>
+                  </div>
+                  <div className="flex gap-1.5 flex-none">
+                    <Button size="sm" variant="success" onClick={()=>approve(appr)} loading={busyApprovalId===appr.id}><Icon name="check" size={12}/> Approve</Button>
+                    <Button size="sm" variant="secondary" onClick={()=>reject(appr)} loading={busyApprovalId===appr.id}><Icon name="close" size={12}/> Dismiss</Button>
+                  </div>
+                </div>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      {tab==='reports' && (
+        loading ? <p className="text-sm" style={{color:'var(--txt2)'}}>Loading…</p> :
+        periods.length === 0 ? <p className="text-sm" style={{color:'var(--txt2)'}}>No triggered periods yet.</p> :
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left border-b" style={{color:'var(--txt2)', borderColor:'var(--line)'}}>
+                <th className="py-2 pr-3">Rule</th><th className="py-2 pr-3">Window</th><th className="py-2 pr-3">Status</th>
+                <th className="py-2 pr-3">Spend</th><th className="py-2 pr-3">Baseline spend</th>
+                <th className="py-2 pr-3">Clicks</th><th className="py-2 pr-3">Baseline clicks</th>
+                <th className="py-2 pr-3">Purchases</th><th className="py-2 pr-3">Revenue</th>
+              </tr>
+            </thead>
+            <tbody>
+              {periods.map(p => {
+                const rule = ruleById(p.rule_id);
+                return (
+                  <tr key={p.id} className="border-b" style={{borderColor:'var(--line)'}}>
+                    <td className="py-2 pr-3" style={{color:'var(--txt)'}}>{rule ? rule.name : p.rule_id}</td>
+                    <td className="py-2 pr-3" style={{color:'var(--txt2)'}}>{fmtWhen(p.started_at)} → {p.ended_at ? fmtWhen(p.ended_at) : 'ongoing'}</td>
+                    <td className="py-2 pr-3"><Badge color={p.status==='open'?'green':'gray'}>{p.status}</Badge></td>
+                    <td className="py-2 pr-3" style={{color:'var(--txt)'}}>{centsFmt(p.spend_cents)}</td>
+                    <td className="py-2 pr-3" style={{color:'var(--txt2)'}}>{centsFmt(p.baseline_spend_cents)}</td>
+                    <td className="py-2 pr-3" style={{color:'var(--txt)'}}>{p.link_clicks ?? '—'}</td>
+                    <td className="py-2 pr-3" style={{color:'var(--txt2)'}}>{p.baseline_link_clicks ?? '—'}</td>
+                    <td className="py-2 pr-3" style={{color:'var(--txt)'}}>{p.purchases ?? '—'}</td>
+                    <td className="py-2 pr-3" style={{color:'var(--txt)'}}>{centsFmt(p.revenue_cents)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
 // TEMPLATE MANAGER
 // ─────────────────────────────────────────────
 function TemplateManager({ storeId }) {
@@ -17592,12 +18066,13 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
     products:  { id:'products',  icon:'package', label:'Products' },
     brand:     { id:'brand',     icon:'palette', label:'Brand' },
     radar:     { id:'radar',     icon:'search',  label:'Market Radar' },
+    weather:   { id:'weather',   icon:'drop',    label:'Weather Ads' },
     settings:  { id:'settings',  icon:'gear',    label:'Settings' },
   };
   const pick = ids => ids.map(i => NAV_ITEMS[i]).filter(t =>
     navAllowed(t.id)
     && (['signage','ads'].includes(t.id) ? granted(t.id) : true)
-    && (['brand','settings','radar'].includes(t.id) ? effIsAdmin : true));
+    && (['brand','settings','radar','weather'].includes(t.id) ? effIsAdmin : true));
 
   const navGroups = [
     { kind:'link',  item: NAV_ITEMS.home },
@@ -17605,7 +18080,7 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
     { kind:'menu', id:'create',  icon:'palette', label:'Create',  items: pick(['shelf','creatives','recipes']) },
     { kind:'menu', id:'publish', icon:'globe',   label:'Publish', items: pick(['website','signage','ads']) },
     { kind:'menu', id:'catalog', icon:'package', label:'Catalogue', items: pick(['prices','products']) },
-    { kind:'menu', id:'admin',   icon:'gear',    label:'Admin',   items: pick(['brand','radar','settings']) },
+    { kind:'menu', id:'admin',   icon:'gear',    label:'Admin',   items: pick(['brand','radar','weather','settings']) },
   ].filter(g => g.kind === 'link' || g.items.length > 0);
   const [openMenu, setOpenMenu] = useState(null);
 
@@ -17769,6 +18244,7 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
         {page==='ads'      && granted('ads')      && <AdsPage key={'at-'+(adsTab||'x')} initialTab={adsTab} settings={settings}/>}
         {page==='brand'    && effIsAdmin && <BrandPage        settings={settings}/>}
         {page==='radar'    && effIsAdmin && <MarketRadarPage/>}
+        {page==='weather'  && effIsAdmin && <WeatherAdsPage/>}
         {page==='reviews'                && <ReviewsPage isAdmin={effIsAdmin}/>}
         {page==='settings' && effIsAdmin && <SettingsPage     settings={settings} onSave={saveSettings} currentUserId={user ? user.id : null}
                                              onViewAs={isAdmin ? setViewAs : null} theme={theme} onTheme={onTheme}/>}

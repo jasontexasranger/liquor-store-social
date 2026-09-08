@@ -997,6 +997,14 @@ function byPeriodThenDate(a, b) {
 // disk instead of just navigating the tab — a plain <a download> silently
 // ignores the `download` attribute on cross-origin hrefs) and triggers a
 // save with a real filename and extension.
+// Same wrap the optisigns edge function applies before pushing to a screen
+// (supabase/functions/optisigns/index.ts, wrapForScreen) — kept identical so
+// a link copied here is a drop-in replacement for what a push would have
+// sent, if someone wants to swap one screen's image by hand in OptiSigns
+// instead of re-running a push.
+const SIGNAGE_VIEWER = 'https://lrs.thesuenocompany.com/signage-viewer.html';
+const signageLinkFor = url => SIGNAGE_VIEWER + '?img=' + encodeURIComponent(url);
+
 async function downloadFile(url, filename) {
   const res = await fetch(url);
   if (!res.ok) throw new Error('Could not fetch file (' + res.status + ')');
@@ -1053,6 +1061,13 @@ function CreativeLibrary({ isAdmin, myStores }) {
     catch(e) { toast.error('Download failed: ' + e.message); }
     finally { setDownloadingId(null); }
   };
+
+  const copy = async function(text, what) {
+    try { await navigator.clipboard.writeText(text); toast.success(what + ' copied'); }
+    catch(e) { toast.error('Could not copy — ' + e.message); }
+  };
+  const copyLink        = c => copy(c.public_url, 'Link');
+  const copySignageLink = c => copy(signageLinkFor(c.public_url), 'Signage link');
 
   const downloadAllVisible = async function() {
     if (visible.length === 0) return;
@@ -1125,14 +1140,26 @@ function CreativeLibrary({ isAdmin, myStores }) {
                     <img src={c.public_url} alt={c.name} className="w-full h-full object-cover"/>
                   </div>
                   <div className="absolute top-2 right-2 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button onClick={()=>copyLink(c)}
+                      className="p-1.5" title="Copy link"
+                      style={{background:'rgba(var(--sink2-rgb),.85)', color:'var(--txt)', border:'1px solid var(--line)'}}
+                      aria-label={'Copy link to '+c.name}>
+                      <Icon name="share" size={12}/>
+                    </button>
+                    <button onClick={()=>copySignageLink(c)}
+                      className="p-1.5" title="Copy signage link (for OptiSigns)"
+                      style={{background:'rgba(var(--sink2-rgb),.85)', color:'var(--txt)', border:'1px solid var(--line)'}}
+                      aria-label={'Copy signage link to '+c.name}>
+                      <Icon name="grid" size={12}/>
+                    </button>
                     <button onClick={()=>downloadOne(c)} disabled={downloadingId===c.id}
-                      className="p-1.5"
+                      className="p-1.5" title="Download"
                       style={{background:'rgba(var(--sink2-rgb),.85)', color:'var(--cy)', border:'1px solid var(--cy)'}}
                       aria-label={'Download '+c.name}>
                       <Icon name="down" size={12}/>
                     </button>
                     <button onClick={()=>del(c)}
-                      className="p-1.5"
+                      className="p-1.5" title="Delete"
                       style={{background:'rgba(var(--sink2-rgb),.85)', color:'var(--red)', border:'1px solid var(--red)'}}
                       aria-label={'Delete '+c.name}>
                       <Icon name="trash" size={12}/>

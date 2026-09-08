@@ -993,6 +993,26 @@ function byPeriodThenDate(a, b) {
   return String(b.created_at).localeCompare(String(a.created_at));
 }
 
+// Fetches the file (so cross-origin Supabase Storage URLs actually save to
+// disk instead of just navigating the tab — a plain <a download> silently
+// ignores the `download` attribute on cross-origin hrefs) and triggers a
+// save with a real filename and extension.
+async function downloadFile(url, filename) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Could not fetch file (' + res.status + ')');
+  const blob = await res.blob();
+  const ext = (blob.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
+  const safeName = (filename || 'creative').replace(/[^a-z0-9\-_. ]/gi, '_');
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = objectUrl;
+  a.download = /\.[a-z0-9]+$/i.test(safeName) ? safeName : (safeName + '.' + ext);
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objectUrl);
+}
+
 function CreativeLibrary({ isAdmin, myStores }) {
   const toast = useToast();
   const { campaigns, create, update } = useCampaigns();
@@ -1002,6 +1022,8 @@ function CreativeLibrary({ isAdmin, myStores }) {
   const [fCamp,  setFCamp]  = useState('all');
   const [fAsp,   setFAsp]   = useState('all');
   const [fPer,   setFPer]   = useState('all');
+  const [downloadingId, setDownloadingId] = useState(null);
+  const [bulkDownloading, setBulkDownloading] = useState(false);
 
   const counts = {};
   creatives.forEach(c => { if (c.campaign_id) counts[c.campaign_id] = (counts[c.campaign_id]||0)+1; });
@@ -1025,6 +1047,28 @@ function CreativeLibrary({ isAdmin, myStores }) {
     catch(e) { toast.error(e.message); }
   };
 
+  const downloadOne = async function(c) {
+    setDownloadingId(c.id);
+    try { await downloadFile(c.public_url, c.name); }
+    catch(e) { toast.error('Download failed: ' + e.message); }
+    finally { setDownloadingId(null); }
+  };
+
+  const downloadAllVisible = async function() {
+    if (visible.length === 0) return;
+    setBulkDownloading(true);
+    let failed = 0;
+    for (const c of visible) {
+      try {
+        await downloadFile(c.public_url, c.name);
+        await new Promise(r => setTimeout(r, 250)); // let each save land before the next
+      } catch(e) { failed++; }
+    }
+    setBulkDownloading(false);
+    if (failed) toast.error(failed + ' of ' + visible.length + ' failed to download');
+    else toast.success('Downloaded ' + visible.length + ' creative' + (visible.length===1?'':'s'));
+  };
+
   return (
     <div className="space-y-4">
       {isAdmin && <CampaignManager campaigns={campaigns} onCreate={create} onUpdate={update} counts={counts}/>}
@@ -1033,6 +1077,9 @@ function CreativeLibrary({ isAdmin, myStores }) {
         <div className="flex items-center gap-3 mb-4 flex-wrap">
           <span className="ttl">Creative Library</span>
           <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          <Button size="sm" variant="secondary" onClick={downloadAllVisible} loading={bulkDownloading} disabled={visible.length===0}>
+            <Icon name="down"/> Download {visible.length > 0 ? 'all (' + visible.length + ')' : 'all'}
+          </Button>
           <Button size="sm" onClick={()=>setShowUp(true)}><Icon name="up"/> Add creative</Button>
         </div>
 
@@ -1077,12 +1124,20 @@ function CreativeLibrary({ isAdmin, myStores }) {
                   <div className="w-full" style={{aspectRatio:String(aspectMeta(c.aspect).ratio), background:'rgba(var(--sink-rgb),.7)'}}>
                     <img src={c.public_url} alt={c.name} className="w-full h-full object-cover"/>
                   </div>
-                  <button onClick={()=>del(c)}
-                    className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity p-1.5"
-                    style={{background:'rgba(var(--sink2-rgb),.85)', color:'var(--red)', border:'1px solid var(--red)'}}
-                    aria-label={'Delete '+c.name}>
-                    <Icon name="trash" size={12}/>
-                  </button>
+                  <div className="absolute top-2 right-2 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button onClick={()=>downloadOne(c)} disabled={downloadingId===c.id}
+                      className="p-1.5"
+                      style={{background:'rgba(var(--sink2-rgb),.85)', color:'var(--cy)', border:'1px solid var(--cy)'}}
+                      aria-label={'Download '+c.name}>
+                      <Icon name="down" size={12}/>
+                    </button>
+                    <button onClick={()=>del(c)}
+                      className="p-1.5"
+                      style={{background:'rgba(var(--sink2-rgb),.85)', color:'var(--red)', border:'1px solid var(--red)'}}
+                      aria-label={'Delete '+c.name}>
+                      <Icon name="trash" size={12}/>
+                    </button>
+                  </div>
                   <div className="p-2.5">
                     <p className="text-xs truncate" style={{color:'var(--txt)'}}>{c.name}</p>
                     <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">

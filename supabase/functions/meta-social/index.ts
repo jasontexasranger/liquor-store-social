@@ -1015,6 +1015,81 @@ Deno.serve(async (req) => {
       );
     }
 
+    // ── aiExtractEDLP ────────────────────────────────────────────────────────
+    // Turns a photo of a store's EDLP/specials report into structured rows.
+    // Uses Sonnet rather than the Haiku aiWrite uses — this is a numbers
+    // extraction task where a misread price is a real, costly mistake, and
+    // the accuracy gap matters more than the extra cost/latency here. The
+    // client always shows these rows for review before saving anything, so
+    // an occasional slip is caught by a human, not shipped straight to the
+    // website or a screen.
+    if (action === 'aiExtractEDLP') {
+      const { base64, mime } = params as { base64: string; mime?: string };
+      if (!base64) throw new Error('base64 image required');
+
+      const key = Deno.env.get('ANTHROPIC_API_KEY');
+      if (!key) throw new Error('ANTHROPIC_API_KEY is not configured in Edge Function secrets');
+
+      const prompt = `This image is a page from a liquor store's price report (retail price, sale/EDLP price, and a description per line item). Extract every line item you can read into a JSON array, one object per product, in this exact shape:
+
+[{"item_id": string|null, "name": string, "size": string|null, "reg_price": number|null, "sale_price": number|null}]
+
+Rules:
+- "name" is the product description as printed (don't rewrite or expand it).
+- "size" is the unit/pack size column (e.g. "750ML", "24AR", "12AR") if present, else null.
+- "reg_price" is the retail/regular price column; "sale_price" is the on-sale/EDLP price column. If a row only has one price, put it in "sale_price" and leave "reg_price" null.
+- "item_id" is the item/SKU number column if the report has one, else null.
+- Skip section headers, subtotal/total rows, and anything that isn't an actual product line.
+- Numbers only for prices — no "$" sign, no currency symbol.
+- Output ONLY the JSON array, no markdown fences, no commentary, no explanation.`;
+
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-5',
+          max_tokens: 4000,
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: mime || 'image/png', data: base64 } },
+              { type: 'text', text: prompt },
+            ],
+          }],
+        }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error.message ?? 'Claude API error');
+
+      const raw = (data.content?.[0]?.text ?? '').trim()
+        .replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
+      let items: Array<Record<string, unknown>>;
+      try {
+        items = JSON.parse(raw);
+        if (!Array.isArray(items)) throw new Error('not an array');
+      } catch (_e) {
+        throw new Error('Could not read a product list out of that image — try a clearer photo, or enter the rows by hand.');
+      }
+
+      // Never invent a name — a row Claude couldn't actually read a
+      // description for is worse than useless on a shelf or a website.
+      const cleaned = items
+        .filter(it => typeof it.name === 'string' && (it.name as string).trim())
+        .map(it => ({
+          item_id: it.item_id != null ? String(it.item_id).trim() : null,
+          name: String(it.name).trim(),
+          size: it.size != null ? String(it.size).trim() : null,
+          reg_price: typeof it.reg_price === 'number' ? it.reg_price : null,
+          sale_price: typeof it.sale_price === 'number' ? it.sale_price : null,
+        }));
+
+      return Response.json({ items: cleaned }, { headers: corsHeaders });
+    }
+
     // ── assistantChat ────────────────────────────────────────────────────────
     // The pinned in-app help bot. Scoped hard: it only talks about using this
     // platform and refuses everything else. The system prompt lives here,

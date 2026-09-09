@@ -6557,6 +6557,322 @@ function FeatureCreativeBatch({ storeId, storeName, period, rows, products, camp
 }
 
 // ─────────────────────────────────────────────
+// EDLP → PRICE ADS + SIGNAGE
+// ─────────────────────────────────────────────
+// Mirrors FeatureCreativeBatch's render step — EDLP items have no product
+// photo, but renderFieldTemplate already tolerates that (see the comment on
+// the `productDataUrl` catch below). What's different: there's no month to
+// push a dated run for, so instead of handing off to the separate
+// SignagePushModal like Features does, this folds a "push live now" step
+// straight into the same modal once the images exist.
+function EDLPCreativeBatch({ storeId, storeName, rows, campaigns, onClose }) {
+  const dragPanel = useDragPanel();
+  const toast = useToast();
+  const { templates } = useBrandTemplates(storeId);
+  const { addRendered, reload: reloadCreatives } = useCreatives();
+
+  const [picked,   setPicked]   = useState(null);   // Set of edlp item ids, null = all
+  const [campaign, setCampaign] = useState('');
+  const [running,  setRunning]  = useState(false);
+  const [done,     setDone]     = useState(null);
+  const [progress, setProgress] = useState({ n:0, total:0, label:'' });
+  const [pushing,  setPushing]  = useState(false);
+  const [pushed,   setPushed]   = useState(null);
+
+  const [screens, setScreens] = useState(null);   // null = loading
+  const [mapped,  setMapped]  = useState([]);
+  const [pickScr, setPickScr] = useState([]);
+
+  useEffect(function() {
+    let alive = true;
+    Promise.all([
+      callEdge('optisigns', 'listScreens', { storeId }),
+      getSB().from('meta_accounts').select('optisigns_screen_ids').eq('store_id', storeId).maybeSingle(),
+    ]).then(function([scr, acct]) {
+      if (!alive) return;
+      const ids = (acct.data && acct.data.optisigns_screen_ids) || [];
+      setScreens(scr.screens || []);
+      setMapped(ids);
+      setPickScr(ids);   // mapped screens ticked by default
+    }).catch(function(){ if (alive) setScreens([]); });
+    return function(){ alive = false; };
+  }, [storeId]);
+
+  const eligible = rows.filter(r => r.name && r.name.trim());
+
+  const allPriceAds = templates.filter(t => t.kind === 'price_ad');
+  const [tplOff, setTplOff] = useState({});
+  const priceAds = allPriceAds.filter(t => !tplOff[t.id]);
+
+  const isOn = id => (picked === null ? true : picked.has(id));
+  const toggle = function(id) {
+    setPicked(function(prev) {
+      const next = new Set(prev === null ? eligible.map(r=>r.id) : prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const chosen = eligible.filter(r => isOn(r.id));
+  const total  = chosen.length * priceAds.length;
+
+  const run = async function() {
+    if (!total) return;
+    setRunning(true);
+    setDone(null);
+    setPushed(null);
+    const made = [];
+    const failed = [];
+    let n = 0;
+
+    const sb = getSB();
+    const fieldsByTpl = {};
+    for (const t of priceAds) {
+      const { data } = await sb.from('ad_template_fields')
+        .select('*').eq('template_id', t.id).order('field_order');
+      fieldsByTpl[t.id] = withFieldDefaults(data);
+    }
+
+    for (const row of chosen) {
+      const reg  = row.reg_price  != null ? Number(row.reg_price)  : null;
+      const sale = row.sale_price != null ? Number(row.sale_price) : null;
+      const save = suggestSavings(reg, sale);
+
+      for (const tpl of priceAds) {
+        n += 1;
+        setProgress({ n, total, label: row.name + ' — ' + tpl.name });
+
+        const flds = fieldsByTpl[tpl.id];
+        if (!flds || !flds.length) {
+          failed.push(tpl.name + ': no fields set up yet');
+          continue;
+        }
+
+        try {
+          // No product photo for EDLP rows — renderFieldTemplate already
+          // handles a null productDataUrl (see FeatureCreativeBatch's own
+          // catch for the same case, one function up).
+          const rendered = await renderFieldTemplate(tpl, flds, {
+            product_name: row.name || '',
+            pack_size:    row.size || '',
+            price:        sale != null ? sale.toFixed(2) : '',
+            save:         save  != null ? save.toFixed(2) : '',
+          }, null);
+
+          const url  = typeof rendered === 'string' ? rendered : rendered.url;
+          const over = typeof rendered === 'string' ? [] : rendered.overflows;
+          const blob = dataUrlToBlob(url);
+          const aspect = nearestAspect(tpl.canvas_w, tpl.canvas_h);
+
+          // feature_id is a real foreign key into `features`, so an EDLP
+          // item's id can't be passed there — leaving it out just means a
+          // rerun adds a fresh copy instead of replacing the last one.
+          const publicUrl = await addRendered(blob, {
+            name: 'EDLP · ' + (row.name || 'Item') + ' · ' + aspect,
+            storeId, aspect,
+            campaignId: campaign || null,
+            templateId: tpl.id,
+            width: tpl.canvas_w, height: tpl.canvas_h,
+          });
+
+          made.push({ name: row.name, tpl: tpl.name, url: publicUrl,
+                      warn: over.length ? 'Text too big to fit: ' + over.join(', ') : null });
+        } catch (e) {
+          failed.push((row.name || 'Item') + ' / ' + tpl.name + ': ' + e.message);
+        }
+      }
+    }
+
+    await reloadCreatives();
+    setRunning(false);
+    setDone({ made, failed });
+    if (made.length) toast.success(made.length + ' creative' + (made.length===1?'':'s') + ' added to the library');
+    if (!made.length && failed.length) toast.error('Nothing was created');
+  };
+
+  // EDLP is the standing price list, not a dated run — so unlike the monthly
+  // features push, there's no "schedule this for later" option, only "put
+  // it on screens now."
+  const pushToScreens = async function() {
+    if (!done || !done.made.length) return;
+    setPushing(true);
+    try {
+      const r = await callEdge('optisigns', 'pushPlaylist', {
+        storeId, name: storeName.split(' ')[0].toUpperCase() + ' LRS - EDLP',
+        items: done.made.map(m => ({ url: m.url, name: m.name, duration: 8 })),
+        screenIds: pickScr,
+        tag: storeId,
+      });
+      setPushed(r);
+      toast.success('Playlist "' + r.name + '" updated with ' + r.items + ' item' + (r.items===1?'':'s')
+        + (r.assigned.length ? ' and put on ' + r.assigned.length + ' screen' + (r.assigned.length===1?'':'s') : ''));
+    } catch(e) { toast.error(e.message); }
+    finally { setPushing(false); }
+  };
+
+  return (
+    <Portal>
+    <div className="fixed inset-0 z-[210] flex items-center justify-center p-6"
+         style={{background:'rgba(var(--sink2-rgb),.88)', backdropFilter:'blur(4px)'}}
+         onClick={(running || pushing) ? undefined : onClose}>
+      <div className="hud hud-brk w-full max-w-2xl max-h-[88vh] overflow-auto p-6"
+           style={dragPanel.style} onClick={e=>e.stopPropagation()}>
+        <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-4">
+          <span className="ttl">EDLP → creatives + signage</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          {!running && !pushing && <button onClick={onClose} style={{color:'var(--txt2)'}}><Icon name="close"/></button>}
+        </div>
+
+        <p className="text-xs mb-4" style={{color:'var(--txt2)'}}>{storeName} · EDLP</p>
+
+        {allPriceAds.length === 0 ? (
+          <div className="text-center py-10">
+            <Icon name="image" size={34} style={{color:'var(--cy-dim)'}}/>
+            <p className="lbl mt-3">No price ad templates for this store</p>
+            <p className="text-xs mt-2" style={{color:'var(--txt2)'}}>
+              Upload one under Admin → Brand → Price Templates and position its fields first.
+            </p>
+          </div>
+        ) : done ? (
+          <div>
+            <p className="text-sm mb-3" style={{color:'var(--txt)'}}>
+              {done.made.length} created{done.failed.length ? ', ' + done.failed.length + ' skipped' : ''}.
+            </p>
+            {done.made.length > 0 && (
+              <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 mb-4">
+                {done.made.map(function(m, i) {
+                  return (
+                    <div key={i} className="hud p-0 overflow-hidden">
+                      <img src={m.url} alt="" className="w-full object-cover" style={{aspectRatio:'1'}}/>
+                      <p className="lbl p-1.5 truncate">{m.name}</p>
+                      {m.warn && <p className="text-[10px] px-1.5 pb-1.5" style={{color:'var(--amb)'}}>{m.warn}</p>}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {done.failed.length > 0 && (
+              <div className="p-3 mb-4" style={{border:'1px solid var(--red)', background:'rgba(255,77,94,.07)'}}>
+                {done.failed.map((f,i)=><p key={i} className="text-xs" style={{color:'var(--red)'}}>{f}</p>)}
+              </div>
+            )}
+
+            {done.made.length > 0 && !pushed && (
+              <div className="mb-4 p-3" style={{border:'1px solid var(--line)'}}>
+                <Label>Push straight to screens (optional)</Label>
+                {screens === null ? (
+                  <p className="lbl">Loading screens…</p>
+                ) : screens.length === 0 ? (
+                  <p className="lbl">No OptiSigns screens found for this store.</p>
+                ) : (
+                  <div className="space-y-1.5 mb-3" style={{maxHeight:'140px', overflowY:'auto'}}>
+                    {screens.map(function(s) {
+                      const on = pickScr.includes(s._id);
+                      return (
+                        <label key={s._id} className="flex items-center gap-2 text-xs cursor-pointer" style={{color:'var(--txt)'}}>
+                          <input type="checkbox" checked={on} onChange={()=>setPickScr(function(prev){
+                            return on ? prev.filter(id=>id!==s._id) : prev.concat([s._id]);
+                          })}/>
+                          {s.deviceName || s._id}
+                          {mapped.includes(s._id) && <Badge color="blue">mapped</Badge>}
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+                <Button size="sm" onClick={pushToScreens} loading={pushing} disabled={!pickScr.length}>
+                  <Icon name="grid"/> Push to {pickScr.length} screen{pickScr.length===1?'':'s'}
+                </Button>
+              </div>
+            )}
+
+            {pushed && (
+              <p className="text-xs mb-4" style={{color:'var(--grn)'}}>
+                Playlist "{pushed.name}" is live with {pushed.items} item{pushed.items===1?'':'s'}
+                {pushed.assigned.length ? (' on ' + pushed.assigned.length + ' screen' + (pushed.assigned.length===1?'':'s') + '.') : '.'}
+              </p>
+            )}
+
+            <div className="flex gap-2 justify-end">
+              <Button size="sm" variant="outline" onClick={()=>{ setDone(null); setPushed(null); }}>Run again</Button>
+              <Button size="sm" onClick={onClose}>Done</Button>
+            </div>
+          </div>
+        ) : running ? (
+          <div className="py-8">
+            <p className="lbl mb-2">{progress.n} of {progress.total}</p>
+            <div style={{height:'4px', background:'rgba(212,175,55,.12)'}}>
+              <div style={{height:'100%', width:(progress.total?progress.n/progress.total*100:0)+'%',
+                           background:'var(--cy)', transition:'width .2s'}}/>
+            </div>
+            <p className="text-xs mt-3 truncate" style={{color:'var(--txt2)'}}>{progress.label}</p>
+          </div>
+        ) : (
+          <div>
+            <div className="mb-4">
+              <Label>Sizes to generate</Label>
+              <div className="flex flex-wrap gap-2">
+                {allPriceAds.map(function(t) {
+                  const on = !tplOff[t.id];
+                  return (
+                    <button key={t.id}
+                      onClick={()=>setTplOff(prev=>Object.assign({}, prev, {[t.id]: on}))}
+                      className="px-2.5 py-1.5 text-xs"
+                      style={{ border:'1px solid ' + (on ? 'var(--cy)' : 'var(--line)'),
+                               background: on ? 'var(--cy-glow)' : 'transparent',
+                               color: on ? 'var(--cy)' : 'var(--txt3)' }}>
+                      {t.name} · {nearestAspect(t.canvas_w, t.canvas_h)}
+                    </button>
+                  );
+                })}
+              </div>
+              {priceAds.length === 0 && allPriceAds.length > 0 && (
+                <p className="text-xs mt-2" style={{color:'var(--amb)'}}>
+                  Every size is unticked — nothing will be generated.
+                </p>
+              )}
+            </div>
+
+            <div className="mb-4">
+              <Label>Tag with a campaign (optional)</Label>
+              <Select value={campaign} onChange={e=>setCampaign(e.target.value)} className="text-xs">
+                <option value="">No campaign</option>
+                {campaigns.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+              </Select>
+            </div>
+
+            {eligible.length === 0 ? (
+              <p className="lbl py-6 text-center">No EDLP items yet — add some above first.</p>
+            ) : (
+              <div className="mb-4" style={{maxHeight:'260px', overflowY:'auto'}}>
+                {eligible.map(function(r) {
+                  return (
+                    <label key={r.id} className="flex items-center gap-2.5 py-1.5 cursor-pointer">
+                      <input type="checkbox" checked={isOn(r.id)} onChange={()=>toggle(r.id)}/>
+                      <span className="text-xs flex-1 truncate" style={{color:'var(--txt)'}}>{r.name}</span>
+                      <span className="mono text-xs" style={{color:'var(--cy)'}}>{money(r.sale_price)}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className="flex gap-2 justify-end items-center">
+              <span className="lbl mr-auto">{total} image{total===1?'':'s'} will be created</span>
+              <Button size="sm" variant="outline" onClick={onClose}>Cancel</Button>
+              <Button size="sm" onClick={run} disabled={!total}>
+                <Icon name="image"/> Generate
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+    </Portal>
+  );
+}
+
+// ─────────────────────────────────────────────
 // POST PLANNER
 // ─────────────────────────────────────────────
 // Turns a month of features into a queue of scheduled posts. Everything it
@@ -7644,6 +7960,417 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
           storeName={(myStores.find(s=>s.id===storeId)||{}).name || ''}
           period={period} periodRow={periodRow} rows={rows} products={products}
           onClose={()=>setShowPlan(false)} onDone={reload}/>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// EDLP (Everyday Low Price) — per-store standing price list
+// ─────────────────────────────────────────────
+// Deliberately its own page rather than a mode bolted onto Features: EDLP
+// runs all year with no month to file it under, and the source is a
+// photographed report rather than typed-in copy. Reuses generic machinery
+// (price-ad templates, the signage pipeline, the website-snapshot pattern)
+// as plain function calls — nothing about Features or its monthly plumbing
+// had to change to add this.
+
+function useEdlpItems(storeId) {
+  const [items,  setItems]  = useState(null);   // null = loading
+  const [upload, setUpload] = useState(null);   // last upload row, or null
+
+  // Returns the freshly fetched rows directly, rather than relying on
+  // `items` state right after — a caller that just wrote a change and needs
+  // to publish the result can't wait a render cycle for that.
+  const fetchAll = useCallback(async function() {
+    const sb = getSB(); if (!sb || !storeId) return { rows: [], up: null };
+    const [{ data: rows }, { data: up }] = await Promise.all([
+      sb.from('edlp_items').select('*').eq('store_id', storeId).order('position'),
+      sb.from('edlp_uploads').select('*').eq('store_id', storeId).maybeSingle(),
+    ]);
+    return { rows: rows || [], up: up || null };
+  }, [storeId]);
+
+  const reload = useCallback(async function() {
+    const { rows, up } = await fetchAll();
+    setItems(rows); setUpload(up);
+    return rows;
+  }, [fetchAll]);
+
+  useEffect(function(){ setItems(null); setUpload(null); reload(); }, [reload]);
+
+  return { items, upload, reload, fetchAll };
+}
+
+// Publishes the snapshot the website's EDLP block reads. Called after every
+// save — same "saving IS publishing" rule StorePicksCard follows — but
+// simpler: no photos, no recipes, EDLP items don't carry either.
+async function publishEdlpWebsite(storeId, storeName, items) {
+  const sb = getSB();
+  const visible = (items || []).filter(r => r.on_website !== false && r.name);
+  const outItems = visible.map(function(r) {
+    const reg  = r.reg_price  != null ? Number(r.reg_price)  : null;
+    const sale = r.sale_price != null ? Number(r.sale_price) : null;
+    return {
+      name: r.name, size: r.size || '', item_id: r.item_id || null,
+      reg, sale,
+      savings: (reg != null && sale != null && reg > sale) ? Math.round((reg - sale) * 100) / 100 : null,
+    };
+  });
+  const snap = {
+    store: storeId,
+    title: (storeName || '').replace(/ Liquor Store.*$/i, '') + ' Everyday Low Prices',
+    updated_at: new Date().toISOString(),
+    footnote: 'Prices exclude tax & deposit — while supplies last.',
+    items: outItems,
+  };
+  const blob = new Blob([JSON.stringify(snap, null, 1)], { type:'application/json' });
+  const { error } = await sb.storage.from('creatives')
+    .upload('website/' + storeId + '-edlp.json', blob,
+            { upsert:true, contentType:'application/json', cacheControl:'300' });
+  if (error) throw new Error('Saved, but the website copy failed: ' + error.message);
+}
+
+// A lean inline-editable cell — not FeatureCell, which auto-patches a
+// `savings` column EDLP items don't have.
+function EdlpCell({ row, field, type='text', align='left', onCommit }) {
+  return (
+    <input
+      defaultValue={row[field] ?? ''}
+      onFocus={e=>{ e.target.style.borderBottomColor='var(--cy)'; e.target.style.background='rgba(212,175,55,.06)'; }}
+      onBlur={function(e){
+        e.target.style.borderBottomColor = 'transparent';
+        e.target.style.background = 'transparent';
+        const raw = e.target.value;
+        let v = raw === '' ? null : raw;
+        if (type === 'money') v = parseMoney(raw);
+        const prev = row[field] ?? null;
+        if (String(v ?? '') === String(prev ?? '')) return;
+        onCommit(row.id, { [field]: v });
+      }}
+      onKeyDown={e=>{ if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') { e.target.value = row[field] ?? ''; e.target.blur(); } }}
+      style={{
+        width:'100%', background:'transparent', border:'none',
+        borderBottom:'1px solid transparent', color:'var(--txt)',
+        fontSize:'12px', padding:'4px 5px', textAlign:align, outline:'none',
+        fontFamily: type==='text' ? 'var(--disp)' : 'var(--mono)',
+      }}
+    />
+  );
+}
+
+function EDLPPage({ isAdmin, myStores, editableIds }) {
+  const toast = useToast();
+  const [storeId, setStoreId] = useState(
+    (editableIds && editableIds.length ? editableIds[0] : (myStores[0]||{}).id) || '');
+  const canEdit = !editableIds || editableIds.includes(storeId);
+  const storeName = (myStores.find(s=>s.id===storeId)||{}).name || '';
+
+  const edlp = useEdlpItems(storeId);
+  const { campaigns } = useCampaigns();
+  const [busy,       setBusy]       = useState(false);
+  const [extracting, setExtracting] = useState(false);
+  const [review,     setReview]     = useState(null);   // { rows, dataUrl } — not yet saved
+  const [showBatch,  setShowBatch]  = useState(false);
+
+  const items = edlp.items || [];
+
+  // Runs a write, then refetches and republishes from what the refetch
+  // actually returned — not from hook state, which hasn't re-rendered yet.
+  const mutate = async function(fn) {
+    setBusy(true);
+    try {
+      await fn();
+      const rows = await edlp.reload();
+      await publishEdlpWebsite(storeId, storeName, rows);
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(false); }
+  };
+
+  const patchItem = (row, patch) => mutate(async function() {
+    const { error } = await getSB().from('edlp_items').update(patch).eq('id', row.id);
+    if (error) throw new Error(error.message);
+  });
+
+  const removeItem = row => mutate(async function() {
+    if (!confirm('Remove "' + (row.name || 'this item') + '"?')) return;
+    const { error } = await getSB().from('edlp_items').delete().eq('id', row.id);
+    if (error) throw new Error(error.message);
+  });
+
+  const addBlank = () => mutate(async function() {
+    const sb = getSB();
+    const { data:{ user } } = await sb.auth.getUser();
+    const maxPos = items.reduce((m,r)=>Math.max(m, r.position||0), 0);
+    const { error } = await sb.from('edlp_items').insert({
+      store_id: storeId, position: maxPos + 1, name: 'New item', created_by: user?.id });
+    if (error) throw new Error(error.message);
+  });
+
+  const move = (i, dir) => {
+    const list = items.slice();
+    const j = i + dir;
+    if (j < 0 || j >= list.length) return;
+    mutate(async function() {
+      const sb = getSB();
+      await sb.from('edlp_items').update({ position: j }).eq('id', list[i].id);
+      await sb.from('edlp_items').update({ position: i }).eq('id', list[j].id);
+      for (let k = 0; k < list.length; k++) {
+        if (k !== i && k !== j) await sb.from('edlp_items').update({ position: k }).eq('id', list[k].id);
+      }
+    });
+  };
+
+  const fileToDataUrl = file => new Promise(function(res, rej) {
+    const r = new FileReader();
+    r.onload  = () => res(r.result);
+    r.onerror = rej;
+    r.readAsDataURL(file);
+  });
+
+  const onUploadFile = async function(file) {
+    setExtracting(true);
+    setReview(null);
+    try {
+      const raw = await fileToDataUrl(file);
+      // Higher than the usual 600px default — this is an OCR source, and a
+      // heavily downscaled photo starts losing the fine print Claude needs
+      // to read a price correctly.
+      const compressed = await compressImage(raw, 2200, 0.85);
+      const base64 = compressed.split(',')[1];
+      const res = await callEdge('meta-social', 'aiExtractEDLP', { base64, mime: 'image/jpeg' });
+      const rows = (res.items || []).map(function(it, i) {
+        return { _key: 'r' + i, item_id: it.item_id || '', name: it.name || '', size: it.size || '',
+                  reg_price: it.reg_price, sale_price: it.sale_price };
+      });
+      if (!rows.length) { toast.error('No product rows found in that image'); return; }
+      setReview({ rows, dataUrl: compressed });
+      toast.success(rows.length + ' rows read — review before saving');
+    } catch(e) { toast.error(e.message); }
+    finally { setExtracting(false); }
+  };
+
+  const patchReviewRow = (key, patch) => setReview(function(prev) {
+    if (!prev) return prev;
+    return Object.assign({}, prev, { rows: prev.rows.map(r => r._key === key ? Object.assign({}, r, patch) : r) });
+  });
+  const removeReviewRow = key => setReview(function(prev) {
+    if (!prev) return prev;
+    return Object.assign({}, prev, { rows: prev.rows.filter(r => r._key !== key) });
+  });
+  const addReviewRow = () => setReview(function(prev) {
+    if (!prev) return prev;
+    return Object.assign({}, prev, { rows: prev.rows.concat([
+      { _key: 'r' + Date.now(), item_id:'', name:'', size:'', reg_price:null, sale_price:null },
+    ]) });
+  });
+
+  // A new upload represents "here is the current full report" — replace the
+  // store's list outright rather than merging or appending to what's there.
+  const saveReview = async function() {
+    if (!review) return;
+    const clean = review.rows.filter(r => r.name && r.name.trim());
+    if (!clean.length) { toast.error('Nothing to save — every row needs a name'); return; }
+    setBusy(true);
+    try {
+      const sb = getSB();
+      const path = 'edlp/' + storeId + '/' + Date.now() + '.jpg';
+      const blob = dataUrlToBlob(review.dataUrl);
+      const { error: upErr } = await sb.storage.from('creatives').upload(path, blob,
+        { contentType:'image/jpeg', cacheControl:'31536000' });
+      if (upErr) throw new Error(upErr.message);
+      const imageUrl = sb.storage.from('creatives').getPublicUrl(path).data.publicUrl;
+
+      const { data:{ user } } = await sb.auth.getUser();
+      const { error: delErr } = await sb.from('edlp_items').delete().eq('store_id', storeId);
+      if (delErr) throw new Error(delErr.message);
+      const toInsert = clean.map(function(r, i) {
+        return {
+          store_id: storeId, position: i,
+          item_id: r.item_id || null, name: r.name.trim(), size: r.size || null,
+          reg_price: r.reg_price, sale_price: r.sale_price,
+          on_website: true, created_by: user?.id,
+        };
+      });
+      const { data: insertedRows, error: insErr } = await sb.from('edlp_items').insert(toInsert).select();
+      if (insErr) throw new Error(insErr.message);
+      const { error: upsErr } = await sb.from('edlp_uploads').upsert({
+        store_id: storeId, image_url: imageUrl, item_count: (insertedRows||[]).length,
+        uploaded_by: user?.id, uploaded_at: new Date().toISOString(),
+      });
+      if (upsErr) throw new Error(upsErr.message);
+
+      await edlp.reload();
+      await publishEdlpWebsite(storeId, storeName, insertedRows || []);
+      setReview(null);
+      toast.success('Saved ' + (insertedRows||[]).length + ' items');
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <div className="flex items-center gap-3 mb-1 flex-wrap">
+          <span className="ttl">EDLP · Everyday Low Prices</span>
+          <StorePicker value={storeId} onChange={setStoreId} stores={myStores} compact/>
+          {!canEdit && <Badge color="yellow">view only</Badge>}
+          {edlp.upload && edlp.upload.uploaded_at && (
+            <span className="text-xs ml-auto" style={{color:'var(--txt2)'}}>
+              Last uploaded {new Date(edlp.upload.uploaded_at).toLocaleDateString()} · {edlp.upload.item_count} item{edlp.upload.item_count===1?'':'s'}
+            </span>
+          )}
+        </div>
+        <p className="lbl mt-2">
+          Upload a photo of the store's EDLP report to replace this list, or edit rows below one at a time.
+        </p>
+
+        {canEdit && (
+          <div className="mt-4 flex items-center gap-3 flex-wrap">
+            <label className="inline-block">
+              <span className="inline-flex items-center gap-2 px-4 py-2.5 text-[11px] uppercase tracking-[.16em] cursor-pointer clip border"
+                    style={{ borderColor:'var(--cy)', color:'var(--cy)', background:'var(--cy-glow)',
+                             opacity: extracting ? .5 : 1 }}>
+                <Icon name="up" size={13}/>{extracting ? 'Reading photo…' : 'Upload EDLP photo'}
+              </span>
+              <input type="file" accept="image/*" className="hidden" disabled={extracting}
+                     onChange={e=>{ const f=e.target.files[0]; e.target.value=''; if (f) onUploadFile(f); }}/>
+            </label>
+            {items.length > 0 && (
+              <Button size="sm" variant="outline" onClick={()=>setShowBatch(true)}>
+                <Icon name="image"/> Push to signage
+              </Button>
+            )}
+          </div>
+        )}
+      </Card>
+
+      {review && (
+        <Card>
+          <div className="flex items-center gap-3 mb-3 flex-wrap">
+            <span className="ttl">Review before saving</span>
+            <span className="lbl">{review.rows.length} row{review.rows.length===1?'':'s'}</span>
+            <span className="flex-1"/>
+            <Button size="sm" variant="outline" onClick={()=>setReview(null)}>Discard</Button>
+            <Button size="sm" onClick={saveReview} loading={busy}>
+              <Icon name="save"/> Save {review.rows.length} item{review.rows.length===1?'':'s'}
+            </Button>
+          </div>
+          <p className="text-xs mb-3" style={{color:'var(--amb)'}}>
+            Saving replaces this store's entire EDLP list with what's below — fix anything the photo misread first.
+          </p>
+          <div style={{maxHeight:'420px', overflowY:'auto'}} className="overflow-x-auto">
+            <table style={{width:'100%', minWidth:'560px', borderCollapse:'collapse'}}>
+              <thead>
+                <tr style={{borderBottom:'1px solid var(--line2)'}}>
+                  {['Item #','Product','Size','Reg $','Sale $',''].map(h=>(
+                    <th key={h} className="lbl text-left py-1.5 px-1">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {review.rows.map(function(r) {
+                  return (
+                    <tr key={r._key} style={{borderBottom:'1px solid var(--line)'}}>
+                      <td style={{width:'80px'}}>
+                        <input defaultValue={r.item_id||''} onBlur={e=>patchReviewRow(r._key,{item_id:e.target.value})}
+                               style={{width:'100%', background:'transparent', border:'none', color:'var(--txt2)', fontSize:'11px', fontFamily:'var(--mono)', padding:'4px 5px'}}/>
+                      </td>
+                      <td>
+                        <input defaultValue={r.name||''} onBlur={e=>patchReviewRow(r._key,{name:e.target.value})}
+                               style={{width:'100%', background:'transparent', border:'none', color:'var(--txt)', fontSize:'12px', padding:'4px 5px'}}/>
+                      </td>
+                      <td style={{width:'90px'}}>
+                        <input defaultValue={r.size||''} onBlur={e=>patchReviewRow(r._key,{size:e.target.value})}
+                               style={{width:'100%', background:'transparent', border:'none', color:'var(--txt2)', fontSize:'11px', fontFamily:'var(--mono)', padding:'4px 5px'}}/>
+                      </td>
+                      <td style={{width:'90px'}}>
+                        <input defaultValue={r.reg_price ?? ''} onBlur={e=>patchReviewRow(r._key,{reg_price:parseMoney(e.target.value)})}
+                               style={{width:'100%', background:'transparent', border:'none', color:'var(--txt2)', fontSize:'12px', fontFamily:'var(--mono)', padding:'4px 5px', textAlign:'right'}}/>
+                      </td>
+                      <td style={{width:'90px'}}>
+                        <input defaultValue={r.sale_price ?? ''} onBlur={e=>patchReviewRow(r._key,{sale_price:parseMoney(e.target.value)})}
+                               style={{width:'100%', background:'transparent', border:'none', color:'var(--cy)', fontSize:'12px', fontFamily:'var(--mono)', padding:'4px 5px', textAlign:'right'}}/>
+                      </td>
+                      <td style={{width:'32px'}}>
+                        <button onClick={()=>removeReviewRow(r._key)} style={{color:'var(--txt3)'}} title="Remove row">
+                          <Icon name="trash" size={13}/>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          <Button size="sm" variant="ghost" className="mt-2" onClick={addReviewRow}>
+            <Icon name="tag"/> Add row
+          </Button>
+        </Card>
+      )}
+
+      <Card>
+        <div className="flex items-center gap-3 mb-3">
+          <span className="ttl">Current list</span>
+          <span className="lbl">{items.length} item{items.length===1?'':'s'}</span>
+        </div>
+        {edlp.items === null ? (
+          <p className="lbl text-center py-8">Loading…</p>
+        ) : items.length === 0 ? (
+          <p className="lbl text-center py-8">No EDLP items yet — upload a photo of the report above.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table style={{width:'100%', minWidth:'640px', borderCollapse:'collapse'}}>
+              <thead>
+                <tr style={{borderBottom:'1px solid var(--line2)'}}>
+                  {['','Item #','Product','Size','Reg $','Sale $','On website',''].map(h=>(
+                    <th key={h} className="lbl text-left py-1.5 px-1">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {items.map(function(r, i) {
+                  return (
+                    <tr key={r.id} style={{borderBottom:'1px solid var(--line)', opacity: r.on_website===false ? .5 : 1}}>
+                      <td style={{width:'44px'}}>
+                        <div className="flex flex-col">
+                          <button disabled={!canEdit || i===0} onClick={()=>move(i,-1)} style={{color:'var(--txt3)'}}><Icon name="up" size={11}/></button>
+                          <button disabled={!canEdit || i===items.length-1} onClick={()=>move(i,1)} style={{color:'var(--txt3)'}}><Icon name="down" size={11}/></button>
+                        </div>
+                      </td>
+                      <td style={{width:'80px'}}>{canEdit ? <EdlpCell row={r} field="item_id" onCommit={(id,p)=>patchItem(r,p)}/> : <span className="mono text-xs" style={{color:'var(--txt2)'}}>{r.item_id||'—'}</span>}</td>
+                      <td>{canEdit ? <EdlpCell row={r} field="name" onCommit={(id,p)=>patchItem(r,p)}/> : <span className="text-xs" style={{color:'var(--txt)'}}>{r.name}</span>}</td>
+                      <td style={{width:'90px'}}>{canEdit ? <EdlpCell row={r} field="size" onCommit={(id,p)=>patchItem(r,p)}/> : <span className="mono text-xs" style={{color:'var(--txt2)'}}>{r.size||'—'}</span>}</td>
+                      <td style={{width:'90px'}}>{canEdit ? <EdlpCell row={r} field="reg_price" type="money" align="right" onCommit={(id,p)=>patchItem(r,p)}/> : <span className="mono text-xs" style={{color:'var(--txt2)'}}>{money(r.reg_price)}</span>}</td>
+                      <td style={{width:'90px'}}>{canEdit ? <EdlpCell row={r} field="sale_price" type="money" align="right" onCommit={(id,p)=>patchItem(r,p)}/> : <span className="mono text-xs" style={{color:'var(--cy)'}}>{money(r.sale_price)}</span>}</td>
+                      <td style={{width:'70px'}}>
+                        <input type="checkbox" checked={r.on_website !== false} disabled={!canEdit}
+                               onChange={e=>patchItem(r, { on_website: e.target.checked })}/>
+                      </td>
+                      <td style={{width:'32px'}}>
+                        {canEdit && (
+                          <button onClick={()=>removeItem(r)} style={{color:'var(--txt3)'}} title="Remove">
+                            <Icon name="trash" size={13}/>
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {canEdit && (
+          <Button size="sm" variant="ghost" className="mt-3" onClick={addBlank}>
+            <Icon name="tag"/> Add row
+          </Button>
+        )}
+      </Card>
+
+      {showBatch && (
+        <EDLPCreativeBatch storeId={storeId} storeName={storeName} rows={items} campaigns={campaigns}
+          onClose={()=>setShowBatch(false)}/>
       )}
     </div>
   );
@@ -16161,6 +16888,7 @@ function HomePage({ granted, isAdmin, go, onOpenHelp }) {
     { id:'shelf',     label:'Print shelf talkers',        icon:'print',   page:'shelf' },
     { id:'website',   label:'Update the website',         icon:'globe',   page:'website' },
     { id:'price',     label:'Check a price',              icon:'search',  page:'prices' },
+    { id:'edlp',      label:'Update EDLP pricing',        icon:'book',    page:'edlp' },
     { id:'recipe',    label:'Make a cocktail post',       icon:'cocktail', page:'recipes' },
     { id:'signage',   label:'Put it on the TVs',          icon:'grid',    page:'signage', need:'signage' },
     { id:'templates', label:'Edit price templates',       icon:'image',   page:'brand', tab:'templates', admin:true },
@@ -18306,6 +19034,7 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
     ads:       { id:'ads',       icon:'mega',    label:'Ads' },
     prices:    { id:'prices',    icon:'search',  label:'Price Check' },
     products:  { id:'products',  icon:'package', label:'Products' },
+    edlp:      { id:'edlp',      icon:'book',    label:'EDLP' },
     brand:     { id:'brand',     icon:'palette', label:'Brand' },
     radar:     { id:'radar',     icon:'search',  label:'Market Radar' },
     weather:   { id:'weather',   icon:'drop',    label:'Weather Ads' },
@@ -18321,7 +19050,7 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
     ...pick(['posts','features','reviews']).map(item => ({ kind:'link', item })),
     { kind:'menu', id:'create',  icon:'palette', label:'Create',  items: pick(['shelf','creatives','recipes']) },
     { kind:'menu', id:'publish', icon:'globe',   label:'Publish', items: pick(['website','signage','ads']) },
-    { kind:'menu', id:'catalog', icon:'package', label:'Catalogue', items: pick(['prices','products']) },
+    { kind:'menu', id:'catalog', icon:'package', label:'Catalogue', items: pick(['prices','products','edlp']) },
     { kind:'menu', id:'admin',   icon:'gear',    label:'Admin',   items: pick(['brand','radar','weather','settings']) },
   ].filter(g => g.kind === 'link' || g.items.length > 0);
   const [openMenu, setOpenMenu] = useState(null);
@@ -18483,6 +19212,9 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
         {page==='recipes'                && <RecipesPage isAdmin={effIsAdmin} onCompose={composeWith}
                                              myStores={effIsAdmin ? STORES : STORES.filter(st=>effStoreIds.includes(st.id))}/>}
         {page==='products'                && <ProductLibrary/>}
+        {page==='edlp'                    && <EDLPPage isAdmin={effIsAdmin}
+                                             myStores={STORES}
+                                             editableIds={effIsAdmin ? null : effStoreIds}/>}
         {page==='ads'      && granted('ads')      && <AdsPage key={'at-'+(adsTab||'x')} initialTab={adsTab} settings={settings}/>}
         {page==='brand'    && effIsAdmin && <BrandPage key={'bt-'+(brandTab||'x')} initialTab={brandTab} settings={settings}/>}
         {page==='radar'    && effIsAdmin && <MarketRadarPage/>}

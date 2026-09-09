@@ -1052,7 +1052,11 @@ Rules:
         },
         body: JSON.stringify({
           model: 'claude-sonnet-5',
-          max_tokens: 4000,
+          // A full page of a specials report runs well past 4k tokens of
+          // JSON — the first version of this capped at 4000 and silently
+          // truncated mid-array, which read as "couldn't read the image"
+          // when the real problem was that it read too much of it.
+          max_tokens: 16000,
           messages: [{
             role: 'user',
             content: [
@@ -1064,15 +1068,48 @@ Rules:
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error.message ?? 'Claude API error');
+      if (!res.ok) throw new Error('Claude API returned ' + res.status);
 
-      const raw = (data.content?.[0]?.text ?? '').trim()
-        .replace(/^```(?:json)?/i, '').replace(/```$/, '').trim();
-      let items: Array<Record<string, unknown>>;
-      try {
-        items = JSON.parse(raw);
-        if (!Array.isArray(items)) throw new Error('not an array');
-      } catch (_e) {
-        throw new Error('Could not read a product list out of that image — try a clearer photo, or enter the rows by hand.');
+      // Every text block, not just the first — and fences stripped wherever
+      // they land rather than only at the very start and end.
+      const raw = (Array.isArray(data.content) ? data.content : [])
+        .filter((b: Record<string, unknown>) => b && b.type === 'text')
+        .map((b: Record<string, unknown>) => String(b.text ?? ''))
+        .join('')
+        .replace(/```(?:json)?/gi, '')
+        .trim();
+
+      // Pull the array out of whatever it's wrapped in. If the response ran
+      // out of tokens mid-array, keep the objects that did complete and
+      // close it — a long report coming back 90% read beats it coming back
+      // as an error, since the whole point of the next screen is that a
+      // person checks these rows anyway.
+      const truncated = data.stop_reason === 'max_tokens';
+      const arrayText = (function () {
+        const start = raw.indexOf('[');
+        if (start < 0) return null;
+        const end = raw.lastIndexOf(']');
+        if (end > start) return raw.slice(start, end + 1);
+        const lastWhole = raw.lastIndexOf('}');
+        return lastWhole > start ? raw.slice(start, lastWhole + 1) + ']' : null;
+      })();
+
+      let items: Array<Record<string, unknown>> | null = null;
+      if (arrayText) {
+        try {
+          const parsed = JSON.parse(arrayText);
+          if (Array.isArray(parsed)) items = parsed;
+        } catch (_e) { /* handled below */ }
+      }
+
+      if (!items) {
+        // Into the function logs, so a failure is diagnosable rather than
+        // just "it didn't work."
+        console.log('aiExtractEDLP could not parse a list. stop_reason=' +
+          String(data.stop_reason) + ' reply starts: ' + raw.slice(0, 400));
+        throw new Error(truncated
+          ? 'That report was too long to read in one pass — photograph it in two halves and upload them one after the other.'
+          : 'Could not read a product list out of that image — try a clearer photo, or enter the rows by hand.');
       }
 
       // Never invent a name — a row Claude couldn't actually read a
@@ -1087,7 +1124,7 @@ Rules:
           sale_price: typeof it.sale_price === 'number' ? it.sale_price : null,
         }));
 
-      return Response.json({ items: cleaned }, { headers: corsHeaders });
+      return Response.json({ items: cleaned, truncated }, { headers: corsHeaders });
     }
 
     // ── assistantChat ────────────────────────────────────────────────────────

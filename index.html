@@ -8130,7 +8130,6 @@ function EDLPPage({ isAdmin, myStores, editableIds }) {
 
   const onUploadFile = async function(file) {
     setExtracting(true);
-    setReview(null);
     try {
       const raw = await fileToDataUrl(file);
       // Higher than the usual 600px default — this is an OCR source, and a
@@ -8139,13 +8138,23 @@ function EDLPPage({ isAdmin, myStores, editableIds }) {
       const compressed = await compressImage(raw, 2200, 0.85);
       const base64 = compressed.split(',')[1];
       const res = await callEdge('meta-social', 'aiExtractEDLP', { base64, mime: 'image/jpeg' });
+      const stamp = Date.now();
       const rows = (res.items || []).map(function(it, i) {
-        return { _key: 'r' + i, item_id: it.item_id || '', name: it.name || '', size: it.size || '',
+        return { _key: 'r' + stamp + '-' + i, item_id: it.item_id || '', name: it.name || '', size: it.size || '',
                   reg_price: it.reg_price, sale_price: it.sale_price };
       });
       if (!rows.length) { toast.error('No product rows found in that image'); return; }
-      setReview({ rows, dataUrl: compressed });
-      toast.success(rows.length + ' rows read — review before saving');
+      // A real specials report runs to several pages. Each photo adds to the
+      // draft rather than replacing it, so a two-page report is two uploads
+      // and one save — and nothing is written until that save.
+      setReview(function(prev) {
+        if (prev) return Object.assign({}, prev, {
+          rows: prev.rows.concat(rows), pages: (prev.pages || 1) + 1 });
+        return { rows, dataUrl: compressed, pages: 1 };
+      });
+      toast.success(rows.length + ' rows read'
+        + (res.truncated ? ' — that page may be cut off at the end, check it' : '')
+        + (review ? ' and added to the draft' : ' — review before saving'));
     } catch(e) { toast.error(e.message); }
     finally { setExtracting(false); }
   };
@@ -8231,7 +8240,7 @@ function EDLPPage({ isAdmin, myStores, editableIds }) {
               <span className="inline-flex items-center gap-2 px-4 py-2.5 text-[11px] uppercase tracking-[.16em] cursor-pointer clip border"
                     style={{ borderColor:'var(--cy)', color:'var(--cy)', background:'var(--cy-glow)',
                              opacity: extracting ? .5 : 1 }}>
-                <Icon name="up" size={13}/>{extracting ? 'Reading photo…' : 'Upload EDLP photo'}
+                <Icon name="up" size={13}/>{extracting ? 'Reading photo…' : (review ? 'Add another page' : 'Upload EDLP photo')}
               </span>
               <input type="file" accept="image/*" className="hidden" disabled={extracting}
                      onChange={e=>{ const f=e.target.files[0]; e.target.value=''; if (f) onUploadFile(f); }}/>
@@ -8249,7 +8258,10 @@ function EDLPPage({ isAdmin, myStores, editableIds }) {
         <Card>
           <div className="flex items-center gap-3 mb-3 flex-wrap">
             <span className="ttl">Review before saving</span>
-            <span className="lbl">{review.rows.length} row{review.rows.length===1?'':'s'}</span>
+            <span className="lbl">
+              {review.rows.length} row{review.rows.length===1?'':'s'}
+              {(review.pages || 1) > 1 ? ' · ' + review.pages + ' pages' : ''}
+            </span>
             <span className="flex-1"/>
             <Button size="sm" variant="outline" onClick={()=>setReview(null)}>Discard</Button>
             <Button size="sm" onClick={saveReview} loading={busy}>
@@ -8258,6 +8270,7 @@ function EDLPPage({ isAdmin, myStores, editableIds }) {
           </div>
           <p className="text-xs mb-3" style={{color:'var(--amb)'}}>
             Saving replaces this store's entire EDLP list with what's below — fix anything the photo misread first.
+            If the report runs to more than one page, upload the rest before you save.
           </p>
           <div style={{maxHeight:'420px', overflowY:'auto'}} className="overflow-x-auto">
             <table style={{width:'100%', minWidth:'560px', borderCollapse:'collapse'}}>

@@ -4405,6 +4405,9 @@ function SignagePage() {
   const [schedules, setSchedules] = useState(null);
   const [runDates,  setRunDates]  = useState({});     // asset_id -> row, for the open playlist
   const [rdDraft,   setRdDraft]   = useState({});     // asset_id -> {so, eo} being edited
+  const [openSched, setOpenSched] = useState(null);   // schedule id being edited
+  const [seDraft,   setSeDraft]   = useState({});     // schedule entry _id -> {so, eo} being edited
+  const [addEntry,  setAddEntry]  = useState({});     // schedule id -> {playlistId, so, eo} for a new entry
 
   // Which screens belong to which brand, and which account each brand lives
   // on — drives both the brand filter tiles and the account auto-switch.
@@ -4526,9 +4529,23 @@ function SignagePage() {
     finally { setBusy(null); }
   };
 
-  const assign = (screenId, playlistId) => act('assign-' + screenId, async function() {
-    if (!playlistId) return;
+  // The "Change to" dropdown offers playlists and schedules together, values
+  // prefixed pl:/sc: to tell them apart — picking a schedule here is a
+  // deliberate opt-out of playlist-only mode (the screen stops taking a
+  // straight assignment and starts reading dated entries instead).
+  const schedNm = id => (schedules || []).find(s => s._id === id)?.name || '—';
+  const assign = (screenId, rawValue) => act('assign-' + screenId, async function() {
+    if (!rawValue) return;
+    const [kind, id] = rawValue.split(':');
     const scr = screens.find(x => x._id === screenId);
+    if (kind === 'sc') {
+      if (!confirm('Put schedule "' + schedNm(id) + '" on ' + (scr?.deviceName || 'this screen') + ' now?')) return;
+      await callEdge('optisigns', 'assignScreenSchedule', { screenId, scheduleId: id, storeId: account });
+      toast.success((scr?.deviceName || 'Screen') + ' is now following ' + schedNm(id));
+      await load();
+      return;
+    }
+    const playlistId = id;
     if (!confirm('Put "' + plName(playlistId) + '" on ' + (scr?.deviceName || 'this screen') + ' now?')) return;
     await callEdge('optisigns', 'assignScreen', { screenId, playlistId, storeId: account });
     toast.success((scr?.deviceName || 'Screen') + ' is now playing ' + plName(playlistId));
@@ -4551,6 +4568,42 @@ function SignagePage() {
     if (!(v >= 1 && v <= 300)) { toast.error('Seconds must be between 1 and 300'); return; }
     await callEdge('optisigns', 'setDurations', { playlistId: open, updates: [{ pos, duration: v }], storeId: account });
     await refreshItems(open);
+  });
+
+  // Schedule entries: the dated blocks that determine which playlist a
+  // schedule-following screen shows on a given day. Remove-then-add under
+  // the hood (setScheduleEntryDates), because the OptiSigns API returned
+  // stale data on a plain update when this was probed — see the edge
+  // function's own comment on that action.
+  const saveEntryDates = (sched, entry, so, eo) => act('se-' + entry._id, async function() {
+    if (!so || !eo) { toast.error('Both dates are required'); return; }
+    await callEdge('optisigns', 'setScheduleEntryDates', {
+      storeId: account, scheduleId: sched._id, itemId: entry._id,
+      playlistId: entry.playlistId, startDate: so, endDate: eo,
+    });
+    setSeDraft(prev => { const n = Object.assign({}, prev); delete n[entry._id]; return n; });
+    toast.success('Dates updated');
+    await load();
+  });
+
+  const removeEntry = (entry) => act('se-' + entry._id, async function() {
+    if (!confirm('Remove "' + entry.playlistName + '" (' + entry.startDate + ' – ' + entry.endDate + ') from this schedule?')) return;
+    await callEdge('optisigns', 'removeScheduleEntry', { storeId: account, itemId: entry._id });
+    toast.success('Removed from schedule');
+    await load();
+  });
+
+  const addScheduleEntry = (sched) => act('add-' + sched._id, async function() {
+    const d = addEntry[sched._id] || {};
+    if (!d.playlistId) { toast.error('Pick a playlist'); return; }
+    if (!d.so || !d.eo) { toast.error('Both dates are required'); return; }
+    await callEdge('optisigns', 'setScheduleEntryDates', {
+      storeId: account, scheduleId: sched._id, playlistId: d.playlistId,
+      startDate: d.so, endDate: d.eo,
+    });
+    setAddEntry(prev => { const n = Object.assign({}, prev); delete n[sched._id]; return n; });
+    toast.success('Added to schedule');
+    await load();
   });
 
   const createList = () => act('create', async function() {
@@ -4676,10 +4729,19 @@ function SignagePage() {
                         <Select value="" className="w-auto text-xs"
                                 disabled={busy === 'assign-' + sc._id}
                                 onChange={e=>{ assign(sc._id, e.target.value); e.target.value=''; }}>
-                          <option value="">{busy === 'assign-' + sc._id ? 'Switching…' : 'Pick a playlist…'}</option>
-                          {(playlists||[]).map(p=>(
-                            <option key={p._id} value={p._id}>{p.name}</option>
-                          ))}
+                          <option value="">{busy === 'assign-' + sc._id ? 'Switching…' : 'Pick a playlist or schedule…'}</option>
+                          <optgroup label="Playlists">
+                            {(playlists||[]).map(p=>(
+                              <option key={p._id} value={'pl:'+p._id}>{p.name}</option>
+                            ))}
+                          </optgroup>
+                          {(schedules||[]).length > 0 && (
+                            <optgroup label="Schedules">
+                              {(schedules||[]).map(s=>(
+                                <option key={s._id} value={'sc:'+s._id}>{s.name}</option>
+                              ))}
+                            </optgroup>
+                          )}
                         </Select>
                       </td>
                     </tr>
@@ -4689,6 +4751,101 @@ function SignagePage() {
             </table>
           </div>
         )}
+      </Card>
+
+      <Card>
+        <div className="flex items-center gap-3 mb-4 flex-wrap">
+          <span className="ttl">Schedules</span>
+          <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+        </div>
+        <p className="text-xs mb-4" style={{color:'var(--txt2)'}}>
+          A screen following a schedule shows whichever entry's dates cover today. Edit dates, remove an entry,
+          or add an existing playlist to the rotation without leaving this page.
+        </p>
+
+        {schedules === null ? <p className="lbl text-center py-8">Loading…</p>
+         : schedules.length === 0 ? <p className="lbl text-center py-6">No schedules on this account yet.</p>
+         : schedules.map(function(sched) {
+          const isOpen = openSched === sched._id;
+          const today = isoDay(new Date());
+          return (
+            <div key={sched._id} className="mb-2" style={{border:'1px solid ' + (isOpen ? 'var(--cy)' : 'var(--line)')}}>
+              <button onClick={()=>setOpenSched(isOpen ? null : sched._id)}
+                className="flex items-center gap-3 w-full p-3 text-left">
+                <span className="text-xs font-semibold" style={{color:'var(--txt)'}}>{sched.name}</span>
+                <span className="lbl">{sched.items.length} entr{sched.items.length===1?'y':'ies'}</span>
+                <span className="flex-1"/>
+                <Icon name={isOpen ? 'up' : 'down'} size={12} style={{color:'var(--txt3)'}}/>
+              </button>
+
+              {isOpen && (
+                <div className="px-3 pb-3" style={{borderTop:'1px solid var(--line)'}}>
+                  {sched.items.length === 0 ? <p className="lbl py-4">No entries — add one below.</p> :
+                   sched.items.map(function(entry) {
+                    const d = seDraft[entry._id] || {};
+                    const so = d.so !== undefined ? d.so : entry.startDate;
+                    const eo = d.eo !== undefined ? d.eo : entry.endDate;
+                    const dirty = d.so !== undefined || d.eo !== undefined;
+                    const live = entry.startDate <= today && today <= entry.endDate;
+                    return (
+                      <div key={entry._id} className="flex items-center gap-2 py-1.5 flex-wrap"
+                           style={{borderBottom:'1px solid rgba(212,175,55,.06)'}}>
+                        {live && <Badge color="green">Live now</Badge>}
+                        <span className="text-xs flex-1 truncate" style={{color:'var(--txt)'}} title={entry.playlistName}>
+                          {entry.playlistName}
+                        </span>
+                        <Input type="date" className="text-xs" style={{width:'118px', padding:'3px 4px'}}
+                               value={so}
+                               onChange={e=>setSeDraft(prev=>Object.assign({}, prev,
+                                 {[entry._id]: Object.assign({}, prev[entry._id], {so: e.target.value})}))}/>
+                        <span className="lbl">–</span>
+                        <Input type="date" className="text-xs" style={{width:'118px', padding:'3px 4px'}}
+                               value={eo}
+                               onChange={e=>setSeDraft(prev=>Object.assign({}, prev,
+                                 {[entry._id]: Object.assign({}, prev[entry._id], {eo: e.target.value})}))}/>
+                        {dirty && (
+                          <Button size="sm" variant="ghost" disabled={!!busy}
+                                  onClick={()=>saveEntryDates(sched, entry, so, eo)}
+                                  aria-label="Save dates" title="Save dates">
+                            <Icon name="check" size={11} style={{color:'var(--grn)'}}/>
+                          </Button>
+                        )}
+                        <Button size="sm" variant="ghost" disabled={!!busy}
+                                onClick={()=>removeEntry(entry)}
+                                aria-label="Remove entry" title="Remove this entry from the schedule">
+                          <Icon name="trash" size={11} style={{color:'var(--red)'}}/>
+                        </Button>
+                      </div>
+                    );
+                  })}
+
+                  <div className="flex items-center gap-2 mt-3 flex-wrap">
+                    <Select className="text-xs w-auto"
+                            value={(addEntry[sched._id]||{}).playlistId || ''}
+                            onChange={e=>setAddEntry(prev=>Object.assign({}, prev,
+                              {[sched._id]: Object.assign({}, prev[sched._id], {playlistId: e.target.value})}))}>
+                      <option value="">Add a playlist…</option>
+                      {(playlists||[]).map(p=><option key={p._id} value={p._id}>{p.name}</option>)}
+                    </Select>
+                    <Input type="date" className="text-xs" style={{width:'118px', padding:'3px 4px'}}
+                           value={(addEntry[sched._id]||{}).so || ''}
+                           onChange={e=>setAddEntry(prev=>Object.assign({}, prev,
+                             {[sched._id]: Object.assign({}, prev[sched._id], {so: e.target.value})}))}/>
+                    <span className="lbl">–</span>
+                    <Input type="date" className="text-xs" style={{width:'118px', padding:'3px 4px'}}
+                           value={(addEntry[sched._id]||{}).eo || ''}
+                           onChange={e=>setAddEntry(prev=>Object.assign({}, prev,
+                             {[sched._id]: Object.assign({}, prev[sched._id], {eo: e.target.value})}))}/>
+                    <Button size="sm" variant="outline" loading={busy === 'add-' + sched._id}
+                            onClick={()=>addScheduleEntry(sched)}>
+                      <Icon name="up" size={12}/> Add to schedule
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </Card>
 
       <Card>

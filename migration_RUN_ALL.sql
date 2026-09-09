@@ -2094,8 +2094,18 @@ CREATE TABLE IF NOT EXISTS public.edlp_items (
   updated_at   TIMESTAMPTZ
 );
 
+-- The product photo the price ad draws, linked the same way features.product_id
+-- is: a soft reference into the shared image library, nulled rather than
+-- cascaded, so deleting a photo can never take a price row with it. Added by
+-- ALTER rather than inline in the CREATE above so this stays safe to re-run
+-- against a database that already has the table.
+ALTER TABLE public.edlp_items
+  ADD COLUMN IF NOT EXISTS product_id UUID REFERENCES public.brand_images(id) ON DELETE SET NULL;
+
 CREATE INDEX IF NOT EXISTS edlp_items_store_idx ON public.edlp_items (store_id, position);
 CREATE INDEX IF NOT EXISTS edlp_items_name_idx  ON public.edlp_items (lower(name));
+CREATE INDEX IF NOT EXISTS edlp_items_product_idx
+  ON public.edlp_items (product_id) WHERE product_id IS NOT NULL;
 
 DROP TRIGGER IF EXISTS edlp_items_touch ON public.edlp_items;
 CREATE TRIGGER edlp_items_touch

@@ -6570,6 +6570,9 @@ function EDLPCreativeBatch({ storeId, storeName, rows, campaigns, onClose }) {
   const toast = useToast();
   const { templates } = useBrandTemplates(storeId);
   const { addRendered, reload: reloadCreatives } = useCreatives();
+  const { images: products } = useBrandImageLibrary();
+
+  const prodOf = id => products.find(p => p.id === id) || null;
 
   const [picked,   setPicked]   = useState(null);   // Set of edlp item ids, null = all
   const [campaign, setCampaign] = useState('');
@@ -6638,6 +6641,17 @@ function EDLPCreativeBatch({ storeId, storeName, rows, campaigns, onClose }) {
       const sale = row.sale_price != null ? Number(row.sale_price) : null;
       const save = suggestSavings(reg, sale);
 
+      // Unlike the features batch, a missing photo isn't disqualifying here —
+      // an EDLP ad is mostly name and price, and renderFieldTemplate handles
+      // a null photo. So a row without one still gets made, just without the
+      // bottle.
+      const prod = prodOf(row.product_id);
+      let productDataUrl = null;
+      if (prod) {
+        try { productDataUrl = await toDataUrl(prodSrc(prod)); }
+        catch (e) { /* render without it rather than losing the row */ }
+      }
+
       for (const tpl of priceAds) {
         n += 1;
         setProgress({ n, total, label: row.name + ' — ' + tpl.name });
@@ -6649,15 +6663,12 @@ function EDLPCreativeBatch({ storeId, storeName, rows, campaigns, onClose }) {
         }
 
         try {
-          // No product photo for EDLP rows — renderFieldTemplate already
-          // handles a null productDataUrl (see FeatureCreativeBatch's own
-          // catch for the same case, one function up).
           const rendered = await renderFieldTemplate(tpl, flds, {
             product_name: row.name || '',
             pack_size:    row.size || '',
             price:        sale != null ? sale.toFixed(2) : '',
             save:         save  != null ? save.toFixed(2) : '',
-          }, null);
+          }, productDataUrl);
 
           const url  = typeof rendered === 'string' ? rendered : rendered.url;
           const over = typeof rendered === 'string' ? [] : rendered.overflows;
@@ -6846,15 +6857,33 @@ function EDLPCreativeBatch({ storeId, storeName, rows, campaigns, onClose }) {
             ) : (
               <div className="mb-4" style={{maxHeight:'260px', overflowY:'auto'}}>
                 {eligible.map(function(r) {
+                  const p = prodOf(r.product_id);
                   return (
                     <label key={r.id} className="flex items-center gap-2.5 py-1.5 cursor-pointer">
                       <input type="checkbox" checked={isOn(r.id)} onChange={()=>toggle(r.id)}/>
+                      {p ? (
+                        <img src={prodSrc(p)} alt="" className="w-7 h-7 object-cover flex-none"
+                             style={{border:'1px solid var(--line)'}}/>
+                      ) : (
+                        <span className="w-7 h-7 flex-none flex items-center justify-center"
+                              style={{border:'1px dashed var(--line2)', color:'var(--txt3)'}}
+                              title="No photo linked — the ad will be text only">
+                          <Icon name="image" size={11}/>
+                        </span>
+                      )}
                       <span className="text-xs flex-1 truncate" style={{color:'var(--txt)'}}>{r.name}</span>
                       <span className="mono text-xs" style={{color:'var(--cy)'}}>{money(r.sale_price)}</span>
                     </label>
                   );
                 })}
               </div>
+            )}
+
+            {chosen.some(r => !r.product_id) && (
+              <p className="text-xs mb-4" style={{color:'var(--amb)'}}>
+                {chosen.filter(r => !r.product_id).length} of these have no photo linked — they'll still
+                be made, just without the bottle. "Match photos" on the EDLP page links what it can.
+              </p>
             )}
 
             <div className="flex gap-2 justify-end items-center">
@@ -8068,12 +8097,14 @@ function EDLPPage({ isAdmin, myStores, editableIds }) {
 
   const edlp = useEdlpItems(storeId);
   const { campaigns } = useCampaigns();
+  const { images: products, load: reloadProducts } = useBrandImageLibrary();
   const [busy,       setBusy]       = useState(false);
   const [extracting, setExtracting] = useState(false);
   const [review,     setReview]     = useState(null);   // { rows, dataUrl } — not yet saved
   const [showBatch,  setShowBatch]  = useState(false);
 
   const items = edlp.items || [];
+  const noPhoto = items.filter(r => !r.product_id).length;
 
   // Runs a write, then refetches and republishes from what the refetch
   // actually returned — not from hook state, which hasn't re-rendered yet.
@@ -8121,6 +8152,24 @@ function EDLPPage({ isAdmin, myStores, editableIds }) {
     });
   };
 
+  // The product library grows over time, so a row that had no confident match
+  // when it was first read often has one later. This re-runs the matcher over
+  // whatever is still unlinked, and never touches a photo already chosen.
+  const autoLinkPhotos = () => mutate(async function() {
+    const sb = getSB();
+    let n = 0;
+    for (const r of items) {
+      if (r.product_id) continue;
+      const pid = autoMatchProductId(r.name || '', r.size || '', products);
+      if (!pid) continue;
+      const { error } = await sb.from('edlp_items').update({ product_id: pid }).eq('id', r.id);
+      if (error) throw new Error(error.message);
+      n += 1;
+    }
+    if (n) toast.success(n + ' photo' + (n===1?'':'s') + ' linked');
+    else   toast.error('No new photo matches — link them by hand, or add the product first');
+  });
+
   const fileToDataUrl = file => new Promise(function(res, rej) {
     const r = new FileReader();
     r.onload  = () => res(r.result);
@@ -8139,11 +8188,17 @@ function EDLPPage({ isAdmin, myStores, editableIds }) {
       const base64 = compressed.split(',')[1];
       const res = await callEdge('meta-social', 'aiExtractEDLP', { base64, mime: 'image/jpeg' });
       const stamp = Date.now();
+      // Link a product photo by name+size wherever the match is unambiguous —
+      // same helper the paste-from-Excel importer uses, so a row that would
+      // auto-link as a feature auto-links here too. Anything it isn't sure
+      // about goes in unlinked and gets picked by hand on the list below.
       const rows = (res.items || []).map(function(it, i) {
         return { _key: 'r' + stamp + '-' + i, item_id: it.item_id || '', name: it.name || '', size: it.size || '',
-                  reg_price: it.reg_price, sale_price: it.sale_price };
+                  reg_price: it.reg_price, sale_price: it.sale_price,
+                  product_id: autoMatchProductId(it.name || '', it.size || '', products) };
       });
       if (!rows.length) { toast.error('No product rows found in that image'); return; }
+      const matched = rows.filter(r => r.product_id).length;
       // A real specials report runs to several pages. Each photo adds to the
       // draft rather than replacing it, so a two-page report is two uploads
       // and one save — and nothing is written until that save.
@@ -8153,6 +8208,7 @@ function EDLPPage({ isAdmin, myStores, editableIds }) {
         return { rows, dataUrl: compressed, pages: 1 };
       });
       toast.success(rows.length + ' rows read'
+        + (matched ? ', ' + matched + ' photo' + (matched===1?'':'s') + ' matched' : '')
         + (res.truncated ? ' — that page may be cut off at the end, check it' : '')
         + (review ? ' and added to the draft' : ' — review before saving'));
     } catch(e) { toast.error(e.message); }
@@ -8198,6 +8254,7 @@ function EDLPPage({ isAdmin, myStores, editableIds }) {
           store_id: storeId, position: i,
           item_id: r.item_id || null, name: r.name.trim(), size: r.size || null,
           reg_price: r.reg_price, sale_price: r.sale_price,
+          product_id: r.product_id || null,
           on_website: true, created_by: user?.id,
         };
       });
@@ -8276,7 +8333,7 @@ function EDLPPage({ isAdmin, myStores, editableIds }) {
             <table style={{width:'100%', minWidth:'560px', borderCollapse:'collapse'}}>
               <thead>
                 <tr style={{borderBottom:'1px solid var(--line2)'}}>
-                  {['Item #','Product','Size','Reg $','Sale $',''].map(h=>(
+                  {['','Item #','Product','Size','Reg $','Sale $',''].map(h=>(
                     <th key={h} className="lbl text-left py-1.5 px-1">{h}</th>
                   ))}
                 </tr>
@@ -8285,6 +8342,10 @@ function EDLPPage({ isAdmin, myStores, editableIds }) {
                 {review.rows.map(function(r) {
                   return (
                     <tr key={r._key} style={{borderBottom:'1px solid var(--line)'}}>
+                      <td style={{width:'26px'}} title={r.product_id ? 'Photo matched' : 'No photo matched — link one after saving'}>
+                        <Icon name={r.product_id ? 'check' : 'image'} size={11}
+                              style={{color: r.product_id ? 'var(--grn)' : 'var(--txt3)'}}/>
+                      </td>
                       <td style={{width:'80px'}}>
                         <input defaultValue={r.item_id||''} onBlur={e=>patchReviewRow(r._key,{item_id:e.target.value})}
                                style={{width:'100%', background:'transparent', border:'none', color:'var(--txt2)', fontSize:'11px', fontFamily:'var(--mono)', padding:'4px 5px'}}/>
@@ -8323,9 +8384,18 @@ function EDLPPage({ isAdmin, myStores, editableIds }) {
       )}
 
       <Card>
-        <div className="flex items-center gap-3 mb-3">
+        <div className="flex items-center gap-3 mb-3 flex-wrap">
           <span className="ttl">Current list</span>
-          <span className="lbl">{items.length} item{items.length===1?'':'s'}</span>
+          <span className="lbl">
+            {items.length} item{items.length===1?'':'s'}
+            {noPhoto > 0 ? ' · ' + noPhoto + ' without a photo' : ''}
+          </span>
+          <span className="flex-1"/>
+          {canEdit && noPhoto > 0 && (
+            <Button size="sm" variant="outline" onClick={autoLinkPhotos} loading={busy}>
+              <Icon name="image"/> Match photos
+            </Button>
+          )}
         </div>
         {edlp.items === null ? (
           <p className="lbl text-center py-8">Loading…</p>
@@ -8336,7 +8406,7 @@ function EDLPPage({ isAdmin, myStores, editableIds }) {
             <table style={{width:'100%', minWidth:'640px', borderCollapse:'collapse'}}>
               <thead>
                 <tr style={{borderBottom:'1px solid var(--line2)'}}>
-                  {['','Item #','Product','Size','Reg $','Sale $','On website',''].map(h=>(
+                  {['','Photo','Item #','Product','Size','Reg $','Sale $','On website',''].map(h=>(
                     <th key={h} className="lbl text-left py-1.5 px-1">{h}</th>
                   ))}
                 </tr>
@@ -8350,6 +8420,17 @@ function EDLPPage({ isAdmin, myStores, editableIds }) {
                           <button disabled={!canEdit || i===0} onClick={()=>move(i,-1)} style={{color:'var(--txt3)'}}><Icon name="up" size={11}/></button>
                           <button disabled={!canEdit || i===items.length-1} onClick={()=>move(i,1)} style={{color:'var(--txt3)'}}><Icon name="down" size={11}/></button>
                         </div>
+                      </td>
+                      <td style={{width:'40px'}}>
+                        {canEdit ? (
+                          <ProductLink row={r} products={products}
+                            onLink={(rowId, pid)=>patchItem(r, { product_id: pid })}
+                            onCreated={reloadProducts}/>
+                        ) : (function(){
+                          const p = products.find(x => x.id === r.product_id);
+                          return p ? <img src={prodSrc(p)} alt="" className="w-7 h-7 object-cover" style={{border:'1px solid var(--line)'}}/>
+                                   : <span className="lbl">—</span>;
+                        })()}
                       </td>
                       <td style={{width:'80px'}}>{canEdit ? <EdlpCell row={r} field="item_id" onCommit={(id,p)=>patchItem(r,p)}/> : <span className="mono text-xs" style={{color:'var(--txt2)'}}>{r.item_id||'—'}</span>}</td>
                       <td>{canEdit ? <EdlpCell row={r} field="name" onCommit={(id,p)=>patchItem(r,p)}/> : <span className="text-xs" style={{color:'var(--txt)'}}>{r.name}</span>}</td>

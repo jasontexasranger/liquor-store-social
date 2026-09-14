@@ -7,11 +7,15 @@
 
        ?store=brothers            →  .../creatives/website/brothers.json          (monthly features)
        ?store=brothers&view=picks →  .../creatives/website/brothers-picks.json    (manager picks)
+       ?store=brothers&view=edlp  →  .../creatives/website/brothers-edlp.json     (everyday low prices)
 
      Monthly features show everything at once in a wrapping grid, with
      filters for category, price and savings. Store picks stay a single row
      — a hand-picked shelf reads better as one line the visitor scrolls
-     through than a whole page of it.
+     through than a whole page of it. EDLP is a long standing list, so it
+     takes the same wrapping grid and filters as features; unlike features
+     it self-hides when nothing is published, the way picks does, since a
+     permanent block on the page shouldn't sit there empty.
 
      Nothing here is authenticated — the snapshot only ever contains what an
      admin or store manager deliberately published, which is the same
@@ -145,8 +149,10 @@
   var qs = new URLSearchParams(location.search);
   var store = (qs.get('store') || '').replace(/[^a-z0-9-]/g, '');
   // ?view=picks shows the manager-curated shelf instead of the monthly
-  // features. Picks self-hide when empty; features show a friendly note.
+  // features; ?view=edlp shows the store's standing everyday-low-price list.
+  // Picks and EDLP self-hide when empty; features show a friendly note.
   var isPicks = qs.get('view') === 'picks';
+  var isEdlp  = qs.get('view') === 'edlp';
   var accent = qs.get('accent');
   if (accent && /^#[0-9a-fA-F]{3,8}$/.test(accent)) {
     document.documentElement.style.setProperty('--accent', accent);
@@ -161,7 +167,7 @@
   if (!store) { app.innerHTML = '<p class="empty">No store given.</p>'; return; }
 
   var base = 'https://yyveikxfomxmedlxsulh.supabase.co/storage/v1/object/public/creatives/website/';
-  fetch(base + store + (isPicks ? '-picks' : '') + '.json?t=' + Math.floor(Date.now() / 300000))
+  fetch(base + store + (isPicks ? '-picks' : isEdlp ? '-edlp' : '') + '.json?t=' + Math.floor(Date.now() / 300000))
     .then(function (r) { if (!r.ok) throw new Error(); return r.json(); })
     .then(function (d) {
       var money = function (n) { return '$' + Number(n).toFixed(2); };
@@ -178,7 +184,15 @@
       var okImg = function (u) {
         return /^https:\/\/yyveikxfomxmedlxsulh\.supabase\.co\/storage\//.test(u || '');
       };
-      var items = (d.items || []).filter(function (it) { return it.placeholder || okImg(it.image); });
+      // A features or picks item without a usable photo is dropped — those
+      // blocks are photo-led. An EDLP list is price-led and routinely has
+      // items nobody has shot yet, so an unusable image demotes the item to
+      // the placeholder card instead of removing the price from the page.
+      var raw = d.items || [];
+      if (isEdlp) raw = raw.map(function (it) {
+        return okImg(it.image) ? it : Object.assign({}, it, { image: null, placeholder: true });
+      });
+      var items = raw.filter(function (it) { return it.placeholder || okImg(it.image); });
       var bp = (d.brand && /^#[0-9a-fA-F]{3,8}$/.test(d.brand.primary || '')) ? d.brand.primary : '#1e3a5f';
       var bs = (d.brand && /^#[0-9a-fA-F]{3,8}$/.test(d.brand.secondary || '')) ? d.brand.secondary : '#c4a35a';
       // The filter chips pick up this store's own brand colour for their
@@ -187,13 +201,14 @@
       document.documentElement.style.setProperty('--brand', bp);
       document.documentElement.style.setProperty('--brand2', bs);
       if (!items.length) {
-        if (isPicks) { hide(); } else {
+        if (isPicks || isEdlp) { hide(); } else {
           app.innerHTML = '<p class="empty">Check back soon for this month’s features.</p>';
         }
         return;
       }
 
-      var h = '<div class="hdr"><h2>' + esc(d.title || 'Monthly Features') + '</h2>'
+      var h = '<div class="hdr"><h2>'
+        + esc(d.title || (isEdlp ? 'Everyday Low Prices' : 'Monthly Features')) + '</h2>'
         + (d.dates ? '<p>' + esc(d.dates) + '</p>' : '') + '</div>';
 
       // Filters only make sense once there's enough on the page to sort
@@ -251,7 +266,8 @@
             + '<span style="color:' + bs + ';font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase">'
             + esc((d.title || '').split(' ')[0]) + '</span>'
             + '<span style="color:#fff;font-size:19px;font-weight:800;line-height:1.2">' + esc(it.name) + '</span>'
-            + '<span style="color:' + bs + ';font-size:12px;font-style:italic">Too good to wait for a photo</span>'
+            + '<span style="color:' + bs + ';font-size:12px;font-style:italic">'
+            + (isEdlp ? 'Every day, all year' : 'Too good to wait for a photo') + '</span>'
             + '</div>'
           : '<img loading="lazy" src="' + esc(it.image) + '" alt="' + esc(it.name) + '">';
         var front = '<div class="face front"><div class="ph">' + ribbon + photo + '</div>'

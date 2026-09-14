@@ -1007,6 +1007,7 @@ function byPeriodThenDate(a, b) {
 // a link copied here is a drop-in replacement for what a push would have
 // sent, if someone wants to swap one screen's image by hand in OptiSigns
 // instead of re-running a push.
+const SITE_BASE = 'https://lrs.thesuenocompany.com';
 const SIGNAGE_VIEWER = 'https://lrs.thesuenocompany.com/signage-viewer.html';
 const signageLinkFor = url => SIGNAGE_VIEWER + '?img=' + encodeURIComponent(url);
 
@@ -8117,23 +8118,54 @@ function useEdlpItems(storeId) {
 // Publishes the snapshot the website's EDLP block reads. Called after every
 // save — same "saving IS publishing" rule StorePicksCard follows — but
 // simpler: no photos, no recipes, EDLP items don't carry either.
-async function publishEdlpWebsite(storeId, storeName, items) {
+async function publishEdlpWebsite(storeId, storeName, items, products, brand) {
   const sb = getSB();
   const visible = (items || []).filter(r => r.on_website !== false && r.name);
-  const outItems = visible.map(function(r) {
+  const prodOf = id => (products || []).find(p => p.id === id) || null;
+
+  const outItems = [];
+  for (const r of visible) {
     const reg  = r.reg_price  != null ? Number(r.reg_price)  : null;
     const sale = r.sale_price != null ? Number(r.sale_price) : null;
-    return {
+    const prod = prodOf(r.product_id);
+
+    // The embed only trusts images from our own storage, so a photo that
+    // lives as base64 on the product gets a public copy once — same rule
+    // and same path the store picks push uses, and the URL is written back
+    // to the product so the next publish is a no-op.
+    let img = prod ? (prod.image_url || null) : null;
+    if (!img && prod && prod.data) {
+      try {
+        const blob = dataUrlToBlob(prod.data);
+        const path = 'website/products/' + prod.id + '.png';
+        const { error } = await sb.storage.from('creatives')
+          .upload(path, blob, { upsert:true, contentType: blob.type || 'image/png', cacheControl:'31536000' });
+        if (!error) {
+          img = sb.storage.from('creatives').getPublicUrl(path).data.publicUrl;
+          await sb.from('brand_images').update({ image_url: img }).eq('id', prod.id);
+          prod.image_url = img;
+        }
+      } catch(e) { /* falls through to the placeholder card */ }
+    }
+
+    outItems.push({
       name: r.name, size: r.size || '', item_id: r.item_id || null,
       reg, sale,
       savings: (reg != null && sale != null && reg > sale) ? Math.round((reg - sale) * 100) / 100 : null,
-    };
-  });
+      category: (prod && prod.category) || null,
+      image: img, placeholder: img ? undefined : true,
+    });
+  }
+
   const snap = {
     store: storeId,
     title: (storeName || '').replace(/ Liquor Store.*$/i, '') + ' Everyday Low Prices',
     updated_at: new Date().toISOString(),
-    footnote: 'Prices exclude tax & deposit — while supplies last.',
+    footnote: 'Everyday low prices — no end date. Prices exclude tax & deposit.',
+    brand: {
+      primary:   (brand && brand.primary_color)   || '#1e3a5f',
+      secondary: (brand && brand.secondary_color) || '#c4a35a',
+    },
     items: outItems,
   };
   const blob = new Blob([JSON.stringify(snap, null, 1)], { type:'application/json' });
@@ -8182,6 +8214,8 @@ function EDLPPage({ isAdmin, myStores, editableIds, go, initialStoreId }) {
   const { campaigns } = useCampaigns();
   const { images: products, load: reloadProducts } = useBrandImageLibrary();
   const { templates: storeTemplates } = useBrandTemplates(storeId);
+  const { profile: brand } = useBrandProfile(storeId);
+  const [publishing, setPublishing] = useState(false);
   // Ready means fields are positioned AND the template is scoped to EDLP.
   // Both have to be true before anything can be drawn, and being told that
   // here beats clicking through to an empty modal to find out.
@@ -8194,6 +8228,17 @@ function EDLPPage({ isAdmin, myStores, editableIds, go, initialStoreId }) {
   const items = edlp.items || [];
   const noPhoto = items.filter(r => !r.product_id).length;
 
+  // Same self-sizing iframe the picks block uses: the embed posts its height
+  // up on every change so the block grows and shrinks with the list instead
+  // of sitting in a fixed-height box with a scrollbar inside it.
+  const edlpEmbed =
+    '<iframe id="lrs-edlp-' + storeId + '" src="' + SITE_BASE + '/features-embed.html?store=' + storeId + '&view=edlp"'
+    + ' style="width:100%;border:0;height:0" scrolling="no" loading="lazy" title="Everyday low prices"></iframe>\n'
+    + '<script>window.addEventListener("message",function(e){'
+    + 'var f=document.getElementById("lrs-edlp-' + storeId + '");'
+    + 'if(f&&e.source===f.contentWindow&&e.origin==="' + SITE_BASE + '"&&e.data&&e.data.lrsFeaturesHeight!=null){'
+    + 'f.style.height=e.data.lrsFeaturesHeight+"px";}});<\/script>';
+
   // Runs a write, then refetches and republishes from what the refetch
   // actually returned — not from hook state, which hasn't re-rendered yet.
   const mutate = async function(fn) {
@@ -8201,7 +8246,7 @@ function EDLPPage({ isAdmin, myStores, editableIds, go, initialStoreId }) {
     try {
       await fn();
       const rows = await edlp.reload();
-      await publishEdlpWebsite(storeId, storeName, rows);
+      await publishEdlpWebsite(storeId, storeName, rows, products, brand);
     } catch(e) { toast.error(e.message); }
     finally { setBusy(false); }
   };
@@ -8355,7 +8400,7 @@ function EDLPPage({ isAdmin, myStores, editableIds, go, initialStoreId }) {
       if (upsErr) throw new Error(upsErr.message);
 
       await edlp.reload();
-      await publishEdlpWebsite(storeId, storeName, insertedRows || []);
+      await publishEdlpWebsite(storeId, storeName, insertedRows || [], products, brand);
       setReview(null);
       toast.success('Saved ' + (insertedRows||[]).length + ' items');
     } catch(e) { toast.error(e.message); }
@@ -8572,6 +8617,43 @@ function EDLPPage({ isAdmin, myStores, editableIds, go, initialStoreId }) {
             <Icon name="tag"/> Add row
           </Button>
         )}
+      </Card>
+
+      <Card>
+        <div className="flex items-center gap-3 mb-2 flex-wrap">
+          <span className="ttl">Website block</span>
+          <span className="flex-1"/>
+          <Button size="sm" variant="outline" loading={publishing} onClick={async function(){
+            setPublishing(true);
+            try {
+              await publishEdlpWebsite(storeId, storeName, items, products, brand);
+              toast.success('Published — the website block will show the current list');
+            } catch(e) { toast.error(e.message); }
+            finally { setPublishing(false); }
+          }}>
+            <Icon name="globe"/> Publish now
+          </Button>
+        </div>
+        <p className="lbl mb-3">
+          Paste this once into the store's site. It reads what's published here, so every later
+          save updates the page on its own — the same way the features and picks blocks work.
+          It hides itself when nothing is published, so it never sits there empty.
+        </p>
+        <Textarea rows={5} readOnly value={edlpEmbed}
+                  style={{fontFamily:'var(--mono)', fontSize:'10.5px'}}
+                  onFocus={e=>e.target.select()}/>
+        <div className="flex gap-2 mt-2 flex-wrap">
+          <Button size="sm" onClick={async function(){
+            try { await navigator.clipboard.writeText(edlpEmbed); toast.success('Embed code copied'); }
+            catch(e) { toast.error('Could not copy — ' + e.message); }
+          }}>
+            <Icon name="share"/> Copy embed code
+          </Button>
+          <Button size="sm" variant="outline"
+                  onClick={()=>window.open(SITE_BASE + '/features-embed.html?store=' + storeId + '&view=edlp', '_blank')}>
+            <Icon name="eye"/> Preview
+          </Button>
+        </div>
       </Card>
 
       {showBatch && (

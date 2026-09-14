@@ -6502,7 +6502,7 @@ function FeatureCreativeBatch({ storeId, storeName, period, rows, products, camp
             <Icon name="image" size={34} style={{color:'var(--cy-dim)'}}/>
             <p className="lbl mt-3">No price ad templates for this store</p>
             <p className="text-xs mt-2" style={{color:'var(--txt2)'}}>
-              Upload one under Admin → Brand → Price Templates and position its fields first.
+              Upload one under Create → Templates and position its fields to finish it.
             </p>
           </div>
         ) : done ? (
@@ -6791,7 +6791,7 @@ function EDLPCreativeBatch({ storeId, storeName, rows, campaigns, onClose }) {
       <div className="hud hud-brk w-full max-w-2xl max-h-[88vh] overflow-auto p-6"
            style={dragPanel.style} onClick={e=>e.stopPropagation()}>
         <div {...dragPanel.handleProps} className="flex items-center gap-3 mb-4">
-          <span className="ttl">EDLP → creatives + signage</span>
+          <span className="ttl">Create EDLP price ads</span>
           <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
           {!running && !pushing && <button onClick={onClose} style={{color:'var(--txt2)'}}><Icon name="close"/></button>}
         </div>
@@ -6804,7 +6804,7 @@ function EDLPCreativeBatch({ storeId, storeName, rows, campaigns, onClose }) {
             <p className="lbl mt-3">No EDLP price ad templates for this store</p>
             <p className="text-xs mt-2" style={{color:'var(--txt2)'}}>
               EDLP uses its own templates so an everyday-low-price ad doesn't go out
-              branded as a monthly feature. Under Admin → Brand → Price Templates, either
+              branded as a monthly feature. Under Create → Templates, either
               upload one and set "Used for" to EDLP, or switch an existing template to
               "EDLP only" or "Features + EDLP".
             </p>
@@ -8162,7 +8162,7 @@ function EdlpCell({ row, field, type='text', align='left', onCommit }) {
   );
 }
 
-function EDLPPage({ isAdmin, myStores, editableIds }) {
+function EDLPPage({ isAdmin, myStores, editableIds, go }) {
   const toast = useToast();
   const [storeId, setStoreId] = useState(
     (editableIds && editableIds.length ? editableIds[0] : (myStores[0]||{}).id) || '');
@@ -8172,6 +8172,11 @@ function EDLPPage({ isAdmin, myStores, editableIds }) {
   const edlp = useEdlpItems(storeId);
   const { campaigns } = useCampaigns();
   const { images: products, load: reloadProducts } = useBrandImageLibrary();
+  const { templates: storeTemplates } = useBrandTemplates(storeId);
+  // Ready means fields are positioned AND the template is scoped to EDLP.
+  // Both have to be true before anything can be drawn, and being told that
+  // here beats clicking through to an empty modal to find out.
+  const edlpTemplates = storeTemplates.filter(t => t.kind === 'price_ad' && templateUsableFor(t, 'edlp'));
   const [busy,       setBusy]       = useState(false);
   const [extracting, setExtracting] = useState(false);
   const [review,     setReview]     = useState(null);   // { rows, dataUrl } — not yet saved
@@ -8377,8 +8382,32 @@ function EDLPPage({ isAdmin, myStores, editableIds }) {
                      onChange={e=>{ const f=e.target.files[0]; e.target.value=''; if (f) onUploadFile(f); }}/>
             </label>
             {items.length > 0 && (
-              <Button size="sm" variant="outline" onClick={()=>setShowBatch(true)}>
-                <Icon name="image"/> Push to signage
+              <Button size="sm" onClick={()=>setShowBatch(true)} disabled={!edlpTemplates.length}>
+                <Icon name="image"/> Create price ads
+              </Button>
+            )}
+          </div>
+        )}
+
+        {canEdit && items.length > 0 && edlpTemplates.length === 0 && (
+          <div className="mt-3 p-3 flex items-start gap-3 flex-wrap"
+               style={{border:'1px solid var(--amb)', background:'rgba(240,168,48,.08)'}}>
+            <Icon name="warn" size={14} style={{color:'var(--amb)', flex:'none', marginTop:'2px'}}/>
+            <div className="flex-1" style={{minWidth:'220px'}}>
+              <p className="text-xs" style={{color:'var(--amb)'}}>
+                No EDLP price ad template for this store yet, so there's nothing to draw these onto.
+              </p>
+              <p className="text-xs mt-1" style={{color:'var(--txt2)'}}>
+                {isAdmin
+                  ? 'In Templates, upload one with "Used for" set to EDLP — or switch an existing template to EDLP. A template also needs its fields positioned before it counts.'
+                  : 'Ask an admin to set up an EDLP price ad template for this store.'}
+              </p>
+            </div>
+            {/* Templates is admin-only, so a manager gets the explanation
+                without a button that would land them on a blank page. */}
+            {go && isAdmin && (
+              <Button size="sm" variant="outline" onClick={()=>go('templates')}>
+                <Icon name="layers"/> Go to Templates
               </Button>
             )}
           </div>
@@ -9844,10 +9873,16 @@ function useBrandTemplates(storeId) {
 
   useEffect(()=>{ load(); },[load]);
 
+  // Returns the new row so the uploader can drop straight into positioning
+  // its fields. A template with no fields is invisible to every generator, so
+  // finishing that step is not optional — it just used to look optional.
   const add = async (tpl) => {
     const sb=getSB(); if(!sb) throw new Error('Not connected');
-    await sb.from('brand_templates').insert({ store_id:storeId, ...tpl });
+    const { data, error } = await sb.from('brand_templates')
+      .insert({ store_id:storeId, ...tpl }).select().single();
+    if (error) throw new Error(error.message);
     await load();
+    return data;
   };
 
   const remove = async (id) => {
@@ -11268,7 +11303,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated, seedFeature }) {
           .select('*').eq('template_id', selectedTpl.id).order('field_order');
         const tplFields = withFieldDefaults(rawFields);
         if (!tplFields || tplFields.length === 0) {
-          toast.error('That template has no fields yet — set them up under Brand → Price Templates');
+          toast.error('That template has no fields yet — finish its setup under Create → Templates');
           return;
         }
         const rendered = await renderFieldTemplate(
@@ -11428,7 +11463,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated, seedFeature }) {
                 </div>
               )}
               <p className="text-xs text-gray-400 mt-1.5 italic">
-                {selectedTpl ? `Using: ${selectedTpl.name} (${selectedTpl.canvas_w}×${selectedTpl.canvas_h})` : 'Upload templates in Brand → Price Templates'}
+                {selectedTpl ? `Using: ${selectedTpl.name} (${selectedTpl.canvas_w}×${selectedTpl.canvas_h})` : 'Upload templates in Create → Templates'}
               </p>
             </>
           ) : (
@@ -11445,7 +11480,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated, seedFeature }) {
                   </button>
                 ))}
               </div>
-              <p className="text-xs text-indigo-500 dark:text-indigo-400 mt-1.5"><Icon name="bulb"/> Upload your own brand templates under Brand → Price Templates</p>
+              <p className="text-xs text-indigo-500 dark:text-indigo-400 mt-1.5"><Icon name="bulb"/> Upload your own brand templates under Create → Templates</p>
             </>
           )}
         </div>
@@ -17170,7 +17205,7 @@ function HomePage({ granted, isAdmin, go, onOpenHelp }) {
     { id:'edlp',      label:'Update EDLP pricing',        icon:'book',    page:'edlp' },
     { id:'recipe',    label:'Make a cocktail post',       icon:'cocktail', page:'recipes' },
     { id:'signage',   label:'Put it on the TVs',          icon:'grid',    page:'signage', need:'signage' },
-    { id:'templates', label:'Edit price templates',       icon:'image',   page:'brand', tab:'templates', admin:true },
+    { id:'templates', label:'Design ad & tag templates',  icon:'layers',  page:'templates', admin:true },
     { id:'adsdash',   label:'See how the ads are doing',  icon:'chart',   page:'ads', tab:'dash', need:'ads' },
     { id:'ad',        label:'Run an ad',                  icon:'mega',    page:'ads', tab:'build', need:'ads' },
     { id:'users',     label:'Manage the team',            icon:'users',   page:'settings', admin:true },
@@ -17773,11 +17808,18 @@ function TemplateManager({ storeId }) {
       const sz = TEMPLATE_SIZES.find(s=>s.label===sizeLabel) || TEMPLATE_SIZES[0];
       // Compress to reasonable size
       const compressed = await compressImage(preview, Math.max(sz.w, sz.h), 0.88);
-      await add({ name: name.trim(), size_label: sizeLabel, canvas_w: sz.w, canvas_h: sz.h,
+      const row = await add({ name: name.trim(), size_label: sizeLabel, canvas_w: sz.w, canvas_h: sz.h,
                   data: compressed, use_for: useFor });
-      toast.success('Template saved!');
       setName(''); setPreview(null);
       if (fileRef.current) fileRef.current.value = '';
+      // Straight into the field editor. Stopping at "saved" is what left
+      // templates sitting in the library invisible to every generator.
+      if (row) {
+        setLayoutTpl(row);
+        toast.success('Uploaded — now position the fields to finish it');
+      } else {
+        toast.success('Template saved!');
+      }
     } catch(e) { toast.error(e.message); }
     finally { setSaving(false); }
   };
@@ -17852,14 +17894,18 @@ function TemplateManager({ storeId }) {
               <div key={sz.label} className="mb-5">
                 <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-2 uppercase tracking-wide">{sz.label} — {sz.w}×{sz.h}</p>
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                  {grp.map(t=>(
-                    <div key={t.id} className="relative group rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 shadow-sm">
-                      <img src={t.data} alt={t.name} className="w-full aspect-video object-cover"/>
+                  {grp.map(t=>{
+                    const ready = t.kind === 'price_ad';
+                    return (
+                    <div key={t.id} className="relative group rounded-xl overflow-hidden shadow-sm"
+                         style={{border:'1px solid ' + (ready ? 'var(--line)' : 'var(--amb)')}}>
+                      <img src={t.data} alt={t.name} className="w-full aspect-video object-cover"
+                           style={{opacity: ready ? 1 : .45}}/>
                       <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-all flex items-end">
                         <div className="w-full p-2 flex gap-1.5 translate-y-full group-hover:translate-y-0 transition-transform">
                           <button onClick={()=>setLayoutTpl(t)} className="flex-1 text-xs py-1 font-semibold"
                             style={{background:'var(--cy-glow)', color:'var(--cy)', border:'1px solid var(--cy)'}}>
-                            <Icon name="grid" size={12}/> Fields
+                            <Icon name="grid" size={12}/> {ready ? 'Fields' : 'Finish setup'}
                           </button>
                           <button onClick={()=>remove(t.id)} className="text-xs px-2 py-1 font-semibold"
                             style={{background:'rgba(255,77,94,.15)', color:'var(--red)', border:'1px solid var(--red)'}}>
@@ -17868,7 +17914,14 @@ function TemplateManager({ storeId }) {
                         </div>
                       </div>
                       <div className="absolute top-1.5 left-1.5 text-xs px-2 py-0.5" style={{background:'rgba(var(--sink2-rgb),.75)', color:'var(--txt)'}}>{t.name}</div>
-                      {t.kind==='price_ad' && <div className="absolute top-1.5 right-1.5"><Badge color="blue">Fields</Badge></div>}
+                      <div className="absolute top-1.5 right-1.5">
+                        {ready ? <Badge color="green">Ready</Badge> : <Badge color="yellow">Needs setup</Badge>}
+                      </div>
+                      {!ready && (
+                        <div className="px-1.5 py-1 text-[10px]" style={{color:'var(--amb)', background:'rgba(240,168,48,.1)'}}>
+                          No fields positioned yet — it won't appear in any generator until you finish setup.
+                        </div>
+                      )}
                       <div className="p-1.5 flex items-center gap-1.5" style={{borderTop:'1px solid var(--line)'}}>
                         <Icon name="tag" size={11} style={{color:'var(--cy-dim)', flex:'none'}}/>
                         <Select value={t.use_for || 'features'} className="text-[10px] py-1 px-1.5"
@@ -17880,7 +17933,8 @@ function TemplateManager({ storeId }) {
                         </Select>
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             );
@@ -18896,9 +18950,7 @@ function STSavedLibrary({ userId, isAdmin, onLoad }) {
 }
 
 function ShelfTalkerPage({ isAdmin, userStoreIds, userId }) {
-  const [tab,         setTab]         = useState(isAdmin ? 'admin' : 'create');
-  const [editTpl,     setEditTpl]     = useState(null);
-  const [adminSub,    setAdminSub]    = useState('library'); // 'library'|'new'|'edit'
+  const [tab,         setTab]         = useState('create');
   const [pendingLoad, setPendingLoad] = useState(null); // { templateId, values }
   const defaultStore = (userStoreIds && userStoreIds.length > 0) ? userStoreIds[0] : STORES[0].id;
   const [storeId,  setStoreId]  = useState(defaultStore);
@@ -18910,8 +18962,9 @@ function ShelfTalkerPage({ isAdmin, userStoreIds, userId }) {
     setTab('create');
   };
 
+  // Designing shelf talker templates moved to Create → Templates, alongside
+  // the price ad templates — same job, one place.
   const tabs = [
-    ...(isAdmin ? [{ id:'admin', icon:'gear', label:'Admin' }] : []),
     { id:'create', icon:'tag', label:'Create' },
     { id:'saved',  icon:'save', label:'My Library' },
   ];
@@ -18935,33 +18988,6 @@ function ShelfTalkerPage({ isAdmin, userStoreIds, userId }) {
         )}
       </div>
 
-      {tab==='admin' && isAdmin && (
-        <div className="space-y-4">
-          <div className="flex gap-2">
-            <Button variant={adminSub==='library'?'primary':'secondary'} size="sm" onClick={()=>{ setAdminSub('library'); setEditTpl(null); }}>
-              <Icon name="book"/> Template Library
-            </Button>
-            <Button variant={adminSub==='new'?'primary':'secondary'} size="sm" onClick={()=>{ setAdminSub('new'); setEditTpl(null); }}>
-              + New Template
-            </Button>
-          </div>
-          {adminSub==='library' && (
-            <STAdminLibrary onEditTemplate={tpl=>{setEditTpl(tpl);setAdminSub('edit');}}/>
-          )}
-          {(adminSub==='new'||adminSub==='edit') && (
-            <Card>
-              <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4">
-                {adminSub==='edit' ? `Edit: ${editTpl?.name}` : 'New Template'}
-              </h3>
-              <STTemplateForm
-                initialTemplate={editTpl}
-                onSaved={()=>{ setAdminSub('library'); setEditTpl(null); }}
-              />
-            </Card>
-          )}
-        </div>
-      )}
-
       {tab==='create' && (
         <STCreator storeId={storeId} isAdmin={isAdmin} userId={userId}
           pendingLoad={pendingLoad} onLoadComplete={function(){ setPendingLoad(null); }}/>
@@ -18974,12 +19000,86 @@ function ShelfTalkerPage({ isAdmin, userStoreIds, userId }) {
   );
 }
 
-function BrandPage({ settings, initialTab }) {
-  const [tab,     setTab]     = useState(initialTab || 'profile');
+// ─────────────────────────────────────────────
+// TEMPLATES — one home for both template systems
+// ─────────────────────────────────────────────
+// These used to live in two unrelated places: price ad templates buried in
+// Admin → Brand, shelf talker templates behind an Admin tab on the Shelf
+// Talkers page. Nothing in either name said "templates", so the answer to
+// "where do I make the artwork?" was two different wrong guesses. Both are
+// the same job — design the layout once, fill it with data many times — so
+// they belong on one page.
+function TemplatesPage({ initialTab }) {
+  const [tab,     setTab]     = useState(initialTab || 'price');
+  const [storeId, setStoreId] = useState(STORES[0].id);
+  const [stSub,   setStSub]   = useState('library');   // library | new | edit
+  const [editTpl, setEditTpl] = useState(null);
+
+  const tabs = [
+    { id:'price', icon:'image', label:'Price Ad Templates' },
+    { id:'shelf', icon:'print', label:'Shelf Talker Templates' },
+  ];
+
+  return (
+    <div>
+      <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 mb-5 flex-wrap gap-2">
+        <div className="flex">
+          {tabs.map(t=>(
+            <button key={t.id} onClick={()=>setTab(t.id)}
+              className={`px-5 py-3 text-sm font-semibold border-b-2 transition-colors ${tab===t.id?'border-indigo-500 text-indigo-600 dark:text-indigo-400':'border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200'}`}>
+              <Icon name={t.icon} size={14} className="mr-2"/>{t.label}
+            </button>
+          ))}
+        </div>
+        {tab==='price' && <StorePicker value={storeId} onChange={setStoreId} compact/>}
+      </div>
+
+      {tab==='price' && (
+        <div className="space-y-4">
+          <Card>
+            <p className="text-xs" style={{color:'var(--txt2)'}}>
+              The background artwork a price ad is drawn onto. Each one is set to serve the
+              monthly <strong>Features</strong> batch, the <strong>EDLP</strong> batch, or both —
+              so an everyday-low-price ad doesn't go out looking like a monthly feature.
+              A template only becomes usable once its fields are positioned.
+            </p>
+          </Card>
+          <TemplateManager storeId={storeId}/>
+        </div>
+      )}
+
+      {tab==='shelf' && (
+        <div className="space-y-4">
+          <div className="flex gap-2">
+            <Button variant={stSub==='library'?'primary':'secondary'} size="sm"
+                    onClick={()=>{ setStSub('library'); setEditTpl(null); }}>
+              <Icon name="book"/> Template Library
+            </Button>
+            <Button variant={stSub==='new'?'primary':'secondary'} size="sm"
+                    onClick={()=>{ setStSub('new'); setEditTpl(null); }}>
+              + New Template
+            </Button>
+          </div>
+          {stSub==='library' && (
+            <STAdminLibrary onEditTemplate={tpl=>{ setEditTpl(tpl); setStSub('edit'); }}/>
+          )}
+          {(stSub==='new' || stSub==='edit') && (
+            <Card>
+              <STTemplateForm initialTemplate={editTpl}
+                onSaved={()=>{ setStSub('library'); setEditTpl(null); }}/>
+            </Card>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BrandPage({ settings }) {
+  const [tab,     setTab]     = useState('profile');
   const [storeId, setStoreId] = useState(STORES[0].id);
   const tabs = [
     {id:'profile',   icon:'palette', label:'Brand Profile'},
-    {id:'templates', icon:'image', label:'Price Templates'},
   ];
   return (
     <div>
@@ -18991,8 +19091,7 @@ function BrandPage({ settings, initialTab }) {
         </div>
         <StorePicker value={storeId} onChange={setStoreId} compact/>
       </div>
-      {tab==='profile'   && <BrandProfileEditor storeId={storeId}/>}
-      {tab==='templates' && <TemplateManager storeId={storeId}/>}
+      {tab==='profile' && <BrandProfileEditor storeId={storeId}/>}
     </div>
   );
 }
@@ -19333,7 +19432,7 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
   const goHome = (p, t) => {
     if (p === 'posts') setPostsTab(t || null);
     if (p === 'ads')   setAdsTab(t || null);
-    if (p === 'brand') setBrandTab(t || null);
+    if (p === 'brand' || p === 'templates') setBrandTab(t || null);
     setPage(p);
   };
   // A recipe (or anything else) handing the composer a ready image + caption.
@@ -19448,6 +19547,7 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
     prices:    { id:'prices',    icon:'search',  label:'Price Check' },
     products:  { id:'products',  icon:'package', label:'Products' },
     edlp:      { id:'edlp',      icon:'book',    label:'EDLP' },
+    templates: { id:'templates', icon:'layers',  label:'Templates' },
     brand:     { id:'brand',     icon:'palette', label:'Brand' },
     radar:     { id:'radar',     icon:'search',  label:'Market Radar' },
     weather:   { id:'weather',   icon:'drop',    label:'Weather Ads' },
@@ -19456,12 +19556,12 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
   const pick = ids => ids.map(i => NAV_ITEMS[i]).filter(t =>
     navAllowed(t.id)
     && (['signage','ads'].includes(t.id) ? granted(t.id) : true)
-    && (['brand','settings','radar','weather'].includes(t.id) ? effIsAdmin : true));
+    && (['brand','settings','radar','weather','templates'].includes(t.id) ? effIsAdmin : true));
 
   const navGroups = [
     { kind:'link',  item: NAV_ITEMS.home },
     ...pick(['posts','features','reviews']).map(item => ({ kind:'link', item })),
-    { kind:'menu', id:'create',  icon:'palette', label:'Create',  items: pick(['shelf','creatives','recipes']) },
+    { kind:'menu', id:'create',  icon:'palette', label:'Create',  items: pick(['shelf','creatives','recipes','templates']) },
     { kind:'menu', id:'publish', icon:'globe',   label:'Publish', items: pick(['website','signage','ads']) },
     { kind:'menu', id:'catalog', icon:'package', label:'Catalogue', items: pick(['prices','products','edlp']) },
     { kind:'menu', id:'admin',   icon:'gear',    label:'Admin',   items: pick(['brand','radar','weather','settings']) },
@@ -19626,10 +19726,11 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
                                              myStores={effIsAdmin ? STORES : STORES.filter(st=>effStoreIds.includes(st.id))}/>}
         {page==='products'                && <ProductLibrary/>}
         {page==='edlp'                    && <EDLPPage isAdmin={effIsAdmin}
-                                             myStores={STORES}
+                                             myStores={STORES} go={goHome}
                                              editableIds={effIsAdmin ? null : effStoreIds}/>}
         {page==='ads'      && granted('ads')      && <AdsPage key={'at-'+(adsTab||'x')} initialTab={adsTab} settings={settings}/>}
-        {page==='brand'    && effIsAdmin && <BrandPage key={'bt-'+(brandTab||'x')} initialTab={brandTab} settings={settings}/>}
+        {page==='templates' && effIsAdmin && <TemplatesPage key={'tp-'+(brandTab||'x')} initialTab={brandTab}/>}
+        {page==='brand'    && effIsAdmin && <BrandPage settings={settings}/>}
         {page==='radar'    && effIsAdmin && <MarketRadarPage/>}
         {page==='weather'  && effIsAdmin && <WeatherAdsPage/>}
         {page==='reviews'                && <ReviewsPage isAdmin={effIsAdmin}/>}

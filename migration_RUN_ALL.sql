@@ -2153,6 +2153,30 @@ CREATE POLICY edlp_uploads_write ON public.edlp_uploads
 NOTIFY pgrst, 'reload schema';
 
 -- ============================================================================
+-- Social posts join the campaign concept
+-- ============================================================================
+-- Campaigns were built for the creative library and later given to features,
+-- and the features migration above claims "features, creatives and posts all
+-- share one campaign concept" — but posts never actually got the column. So a
+-- campaign could be tagged onto an image or a feature row, and then had
+-- nowhere to go when someone wrote the post the campaign was for.
+--
+-- Nulled rather than cascaded, like the other two, so archiving or deleting a
+-- campaign never takes scheduled posts down with it.
+-- ============================================================================
+
+ALTER TABLE public.scheduled_posts
+  ADD COLUMN IF NOT EXISTS campaign_id UUID REFERENCES public.campaigns(id) ON DELETE SET NULL;
+
+COMMENT ON COLUMN public.scheduled_posts.campaign_id IS
+  'Optional campaign this post belongs to. NULL = not part of a campaign.';
+
+CREATE INDEX IF NOT EXISTS scheduled_posts_campaign_idx
+  ON public.scheduled_posts (campaign_id) WHERE campaign_id IS NOT NULL;
+
+NOTIFY pgrst, 'reload schema';
+
+-- ============================================================================
 -- Tell PostgREST about the new tables.
 -- "Could not find the table in the schema cache" means this step was missed.
 -- ============================================================================

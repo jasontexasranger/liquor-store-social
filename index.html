@@ -524,12 +524,17 @@ function useCampaigns() {
   }, []);
   useEffect(function(){ reload(); }, [reload]);
 
+  // Returns the new row so a caller that created a campaign mid-flow — the
+  // composer's inline "new campaign" — can select it straight away instead of
+  // hunting for it in the reloaded list.
   const create = async function(fields) {
     const sb = getSB();
     const { data:{ user } } = await sb.auth.getUser();
-    const { error } = await sb.from('campaigns').insert({ ...fields, created_by:user?.id });
+    const { data, error } = await sb.from('campaigns')
+      .insert({ ...fields, created_by:user?.id }).select().single();
     if (error) throw error;
     await reload();
+    return data;
   };
   const update = async function(id, fields) {
     const sb = getSB();
@@ -1019,6 +1024,63 @@ async function downloadFile(url, filename) {
   a.click();
   a.remove();
   URL.revokeObjectURL(objectUrl);
+}
+
+// One campaign list is shared by creatives, features and posts. This bundles
+// picking one with making one, because the moment you discover you need a
+// campaign is while you're writing the thing that belongs to it — and having
+// to leave for the Creatives page to create it first is how a campaign ends
+// up never being used.
+function CampaignPicker({ value, onChange, className='', placeholder='No campaign' }) {
+  const toast = useToast();
+  const { campaigns, create } = useCampaigns();
+  const [adding, setAdding] = useState(false);
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  // Archived campaigns stay selectable only if that's what this post is
+  // already tagged with — otherwise the list fills with finished promos.
+  const shown = campaigns.filter(c => !c.archived || c.id === value);
+
+  const add = async function() {
+    if (!name.trim()) { toast.error('Name the campaign'); return; }
+    setBusy(true);
+    try {
+      const row = await create({ name: name.trim() });
+      if (row && row.id) onChange(row.id);
+      toast.success('Campaign created');
+      setName(''); setAdding(false);
+    } catch(e) {
+      toast.error(/duplicate/i.test(e.message) ? 'A campaign with that name already exists' : e.message);
+    } finally { setBusy(false); }
+  };
+
+  if (adding) {
+    return (
+      <div className={'flex gap-2 ' + className}>
+        <Input autoFocus value={name} onChange={e=>setName(e.target.value)}
+               placeholder="Summer Patio 2026" className="flex-1 text-xs"
+               onKeyDown={e=>{ if (e.key === 'Enter') add(); if (e.key === 'Escape') { setAdding(false); setName(''); } }}/>
+        <Button size="sm" onClick={add} loading={busy}><Icon name="check"/></Button>
+        <Button size="sm" variant="ghost" onClick={()=>{ setAdding(false); setName(''); }}>Cancel</Button>
+      </div>
+    );
+  }
+
+  return (
+    <div className={'flex gap-2 ' + className}>
+      <Select value={value || ''} className="flex-1 text-xs"
+              onChange={e=>onChange(e.target.value || null)}>
+        <option value="">{placeholder}</option>
+        {shown.map(c => (
+          <option key={c.id} value={c.id}>{c.name}{c.archived ? ' (archived)' : ''}</option>
+        ))}
+      </Select>
+      <Button size="sm" variant="outline" onClick={()=>setAdding(true)}>
+        <Icon name="tag"/> New
+      </Button>
+    </div>
+  );
 }
 
 function CreativeLibrary({ isAdmin, myStores }) {
@@ -7256,6 +7318,14 @@ function PostPlanBuilder({ storeId, storeName, period, periodRow, rows, products
           continue;
         }
 
+        // The features this post was built from may already carry a campaign.
+        // Inherit it when they agree, so a planned month lands under the same
+        // campaign as the creatives and feature rows without anyone re-tagging
+        // every generated post by hand. Mixed groups stay untagged rather than
+        // picking a winner.
+        const groupCampaigns = [...new Set(group.map(g => g.campaign_id).filter(Boolean))];
+        const inherited = groupCampaigns.length === 1 ? groupCampaigns[0] : null;
+
         const { error } = await sb.from('scheduled_posts').insert({
           store_id: storeId,
           caption,
@@ -7263,6 +7333,7 @@ function PostPlanBuilder({ storeId, storeName, period, periodRow, rows, products
           image_urls: imgs,
           publish_to: channels,
           scheduled_at: when.toISOString(),
+          campaign_id: inherited,
           status: 'needs_approval',
           auto_generated: true,
           plan_id: plan.id,
@@ -11471,6 +11542,7 @@ function PostComposer({ settings, pendingImage, pendingCaption, onClearPending, 
   const [imgPrev,     setImgPrev]    = useState(null);
   const [genImgUrl,   setGenImgUrl]  = useState(null);
   const [schedule,    setSchedule]   = useState('');
+  const [campaignId,  setCampaignId] = useState(null);
   const [loading,     setLoading]    = useState(false);
   const [showAI,      setShowAI]     = useState(false);
   const [showImgGen,  setShowImgGen] = useState(false);
@@ -11609,6 +11681,7 @@ function PostComposer({ settings, pendingImage, pendingCaption, onClearPending, 
           imageUrls: imageUrls,
           publishTo: publishTo,
           scheduledAt: new Date(schedule).toISOString(),
+          campaignId: campaignId || null,
         });
         setResults(selected.map(id => ({ store: (STORES.find(s=>s.id===id)||{}).name||id, success:true, scheduled:true })));
         toast.success('Post scheduled!');
@@ -11803,6 +11876,16 @@ function PostComposer({ settings, pendingImage, pendingCaption, onClearPending, 
       <div className="mb-5">
         <Label>Schedule (leave blank to post immediately)</Label>
         <Input type="datetime-local" value={schedule} onChange={e=>setSchedule(e.target.value)}/>
+      </div>
+
+      <div className="mb-5">
+        <Label>Campaign (optional)</Label>
+        <CampaignPicker value={campaignId} onChange={setCampaignId}/>
+        <p className="lbl mt-1">
+          {schedule
+            ? 'Groups this post with the creatives and features under the same campaign.'
+            : 'Saved with scheduled posts — publishing immediately doesn\'t keep a record to tag.'}
+        </p>
       </div>
       {uploading && <p className="text-xs text-indigo-500 dark:text-indigo-400 mb-2 text-center"><Icon name="up"/> Uploading image…</p>}
       <Button onClick={post} loading={loading} className="w-full" size="lg">
@@ -16122,7 +16205,11 @@ function ScheduledPostsPanel() {
   const [uploading,setUploading]= useState(false);
   const [showLib,  setShowLib]  = useState(false);
   const [lightbox, setLightbox] = useState(null);
+  const [campFilter, setCampFilter] = useState('all');
+  const { campaigns } = useCampaigns();
   const imgRef = useRef();
+
+  const campName = id => (campaigns.find(c => c.id === id) || {}).name || null;
 
   const replaceImage = async function(file) {
     if (!file) return;
@@ -16149,6 +16236,7 @@ function ScheduledPostsPanel() {
       scheduledAt: p.scheduled_at ? toLocalInput(p.scheduled_at) : '',
       publishTo: p.publish_to || ['facebook'],
       imageUrl: p.image_url || null,
+      campaignId: p.campaign_id || null,
     });
   };
 
@@ -16171,6 +16259,7 @@ function ScheduledPostsPanel() {
         publishTo: draft.publishTo,
         imageUrl: draft.imageUrl,
         scheduledAt: new Date(draft.scheduledAt).toISOString(),
+        campaignId: draft.campaignId || null,
       });
       toast.success('Scheduled post updated');
       setEditId(null);
@@ -16200,7 +16289,16 @@ function ScheduledPostsPanel() {
     finally { setCanceling(null); }
   };
 
-  const review  = posts.filter(function(p) { return p.status === 'needs_approval'; });
+  // One campaign filter drives the queue, the list and the calendar, so
+  // picking a campaign shows everything running under it in one place rather
+  // than per-view.
+  const shown = posts.filter(function(p) {
+    if (campFilter === 'all')  return true;
+    if (campFilter === 'none') return !p.campaign_id;
+    return p.campaign_id === campFilter;
+  });
+
+  const review  = shown.filter(function(p) { return p.status === 'needs_approval'; });
 
   const togglePick = id => setPicked(function(prev) {
     return prev.includes(id) ? prev.filter(x => x !== id) : prev.concat(id);
@@ -16243,8 +16341,8 @@ function ScheduledPostsPanel() {
     } catch(e) { toast.error(e.message); }
     finally { setBulk(null); }
   };
-  const pending = posts.filter(function(p) { return p.status === 'pending'; });
-  const past    = posts.filter(function(p) { return p.status !== 'pending' && p.status !== 'needs_approval'; });
+  const pending = shown.filter(function(p) { return p.status === 'pending'; });
+  const past    = shown.filter(function(p) { return p.status !== 'pending' && p.status !== 'needs_approval'; });
 
   return (
     <Card>
@@ -16252,6 +16350,11 @@ function ScheduledPostsPanel() {
       <div className="flex items-center gap-3 mb-4 flex-wrap">
         <h2 className="text-base font-bold text-gray-900 dark:text-white"><Icon name="cal"/> Scheduled &amp; Recent Posts</h2>
         <span className="flex-1"/>
+        <Select value={campFilter} onChange={e=>setCampFilter(e.target.value)} className="w-auto text-xs">
+          <option value="all">All campaigns</option>
+          <option value="none">No campaign</option>
+          {campaigns.map(c=><option key={c.id} value={c.id}>{c.name}</option>)}
+        </Select>
         <div className="flex" style={{border:'1px solid var(--line)'}}>
           {[['list','List'],['calendar','Calendar']].map(function(v) {
             const on = view===v[0];
@@ -16268,7 +16371,7 @@ function ScheduledPostsPanel() {
       </div>
 
       {view === 'calendar' && (
-        <PostCalendar posts={posts} onOpen={function(p){ setDetail(p); }}/>
+        <PostCalendar posts={shown} onOpen={function(p){ setDetail(p); }}/>
       )}
 
       {detail && (
@@ -16458,6 +16561,11 @@ function ScheduledPostsPanel() {
                           </div>
                         </div>
                       </div>
+                      <div>
+                        <Label>Campaign</Label>
+                        <CampaignPicker value={draft.campaignId}
+                          onChange={function(v){ setDraft({...draft, campaignId:v}); }}/>
+                      </div>
                       {!p.image_url && (draft.publishTo||[]).includes('instagram') && (
                         <p className="text-xs" style={{color:'var(--amb)'}}>
                           <Icon name="warn" size={12} className="mr-1"/>
@@ -16484,7 +16592,12 @@ function ScheduledPostsPanel() {
                       <div className="flex-1 min-w-0">
                         <p className="text-xs font-semibold" style={{color:'var(--txt)'}}>{storeName}</p>
                         <p className="text-xs line-clamp-2 mt-0.5" style={{color:'var(--txt2)'}}>{p.caption}</p>
-                        <p className="lbl mt-1.5"><Icon name="clock" size={11}/> {fmtDate(p.scheduled_at)} · {(p.publish_to || ['facebook']).join(' + ')}</p>
+                        <p className="lbl mt-1.5">
+                          <Icon name="clock" size={11}/> {fmtDate(p.scheduled_at)} · {(p.publish_to || ['facebook']).join(' + ')}
+                          {campName(p.campaign_id) && (
+                            <span style={{color:'var(--cy)'}}> · <Icon name="layers" size={11}/> {campName(p.campaign_id)}</span>
+                          )}
+                        </p>
                       </div>
                       <div className="flex gap-1.5 flex-none">
                         <Button size="sm" variant="outline" onClick={function(){ startEdit(p); }}>

@@ -445,13 +445,14 @@ Deno.serve(async (req) => {
 
     // ── schedule ─────────────────────────────────────────────────────────────
     if (action === 'schedule') {
-      const { storeIds, caption, imageUrl, imageUrls, publishTo, scheduledAt } = params as {
+      const { storeIds, caption, imageUrl, imageUrls, publishTo, scheduledAt, campaignId } = params as {
         storeIds: string[];
         caption: string;
         imageUrl: string | null;
         imageUrls?: string[] | null;
         publishTo: string[];
         scheduledAt: string; // ISO timestamp
+        campaignId?: string | null;
       };
       const images = normalizeImages(imageUrls, imageUrl);
 
@@ -475,6 +476,7 @@ Deno.serve(async (req) => {
         image_urls: images,
         publish_to: publishTo ?? ['facebook'],
         scheduled_at: scheduledAt,
+        campaign_id: campaignId || null,
         status: 'pending',
         created_by: userInfo.userId,
       }));
@@ -511,9 +513,10 @@ Deno.serve(async (req) => {
     // ── updateScheduled ──────────────────────────────────────────────────────
     // Only pending posts can be edited. Anything already published is history.
     if (action === 'updateScheduled') {
-      const { id, caption, imageUrl, imageUrls, publishTo, scheduledAt } = params as {
+      const { id, caption, imageUrl, imageUrls, publishTo, scheduledAt, campaignId } = params as {
         id: string; caption?: string; imageUrl?: string | null;
         imageUrls?: string[] | null; publishTo?: string[]; scheduledAt?: string;
+        campaignId?: string | null;
       };
       if (!id) throw new Error('id required');
 
@@ -545,6 +548,10 @@ Deno.serve(async (req) => {
         patch.image_url  = imageUrl;
         patch.image_urls = imageUrl ? [imageUrl] : [];
       }
+      // Explicit null is how the composer clears a campaign, so this is
+      // checked for undefined rather than falsiness.
+      if (campaignId !== undefined) patch.campaign_id = campaignId || null;
+
       if (publishTo !== undefined) {
         if (!publishTo.length) throw new Error('Choose at least one channel');
         patch.publish_to = publishTo;

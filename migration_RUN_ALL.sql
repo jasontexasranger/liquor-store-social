@@ -2177,6 +2177,36 @@ CREATE INDEX IF NOT EXISTS scheduled_posts_campaign_idx
 NOTIFY pgrst, 'reload schema';
 
 -- ============================================================================
+-- Price ad templates get a purpose: Features, EDLP, or both
+-- ============================================================================
+-- A month's feature ad and a standing everyday-low-price ad usually want to
+-- look different, so each template says which generator offers it. Defaults to
+-- 'features' because every template that existed when this was added was
+-- designed for the monthly batch — EDLP starts empty and says so rather than
+-- quietly producing feature-branded artwork.
+-- ============================================================================
+
+ALTER TABLE public.brand_templates
+  ADD COLUMN IF NOT EXISTS use_for TEXT NOT NULL DEFAULT 'features';
+
+DO $$
+BEGIN
+  ALTER TABLE public.brand_templates
+    ADD CONSTRAINT brand_templates_use_for_check
+    CHECK (use_for IN ('features','edlp','both'));
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END $$;
+
+COMMENT ON COLUMN public.brand_templates.use_for IS
+  'Which price ad generator offers this template: features | edlp | both.';
+
+CREATE INDEX IF NOT EXISTS brand_templates_use_for_idx
+  ON public.brand_templates (store_id, use_for);
+
+NOTIFY pgrst, 'reload schema';
+
+-- ============================================================================
 -- Tell PostgREST about the new tables.
 -- "Could not find the table in the schema cache" means this step was missed.
 -- ============================================================================

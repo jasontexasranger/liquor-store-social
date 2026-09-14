@@ -6385,7 +6385,7 @@ function FeatureCreativeBatch({ storeId, storeName, period, rows, products, camp
   const [done,     setDone]     = useState(null);
   const [progress, setProgress] = useState({ n:0, total:0, label:'' });
 
-  const allPriceAds = templates.filter(t => t.kind === 'price_ad');
+  const allPriceAds = templates.filter(t => t.kind === 'price_ad' && templateUsableFor(t, 'features'));
   // Which templates this run uses. All on by default — unticking is for the
   // month you only need the screen size, or only the social sizes.
   const [tplOff, setTplOff] = useState({});
@@ -6665,7 +6665,7 @@ function EDLPCreativeBatch({ storeId, storeName, rows, campaigns, onClose }) {
 
   const eligible = rows.filter(r => r.name && r.name.trim());
 
-  const allPriceAds = templates.filter(t => t.kind === 'price_ad');
+  const allPriceAds = templates.filter(t => t.kind === 'price_ad' && templateUsableFor(t, 'edlp'));
   const [tplOff, setTplOff] = useState({});
   const priceAds = allPriceAds.filter(t => !tplOff[t.id]);
 
@@ -6801,9 +6801,12 @@ function EDLPCreativeBatch({ storeId, storeName, rows, campaigns, onClose }) {
         {allPriceAds.length === 0 ? (
           <div className="text-center py-10">
             <Icon name="image" size={34} style={{color:'var(--cy-dim)'}}/>
-            <p className="lbl mt-3">No price ad templates for this store</p>
+            <p className="lbl mt-3">No EDLP price ad templates for this store</p>
             <p className="text-xs mt-2" style={{color:'var(--txt2)'}}>
-              Upload one under Admin → Brand → Price Templates and position its fields first.
+              EDLP uses its own templates so an everyday-low-price ad doesn't go out
+              branded as a monthly feature. Under Admin → Brand → Price Templates, either
+              upload one and set "Used for" to EDLP, or switch an existing template to
+              "EDLP only" or "Features + EDLP".
             </p>
           </div>
         ) : done ? (
@@ -9813,6 +9816,23 @@ const TEMPLATE_SIZES = [
   { label:'16:9 Screen',  w:1920, h:1080,  desc:'Digital signage / TV' },
 ];
 
+// Features and EDLP both draw price ads from the same template system, but a
+// month's feature ad and a standing everyday-low-price ad usually want to look
+// different. `use_for` scopes each template to one or both. Existing templates
+// were all made for features, so that's the column default — EDLP starts empty
+// on purpose and the EDLP generator says so rather than silently producing
+// feature-branded ads.
+const TEMPLATE_USES = [
+  { id:'features', label:'Features only' },
+  { id:'edlp',     label:'EDLP only' },
+  { id:'both',     label:'Features + EDLP' },
+];
+const useForLabel = v => (TEMPLATE_USES.find(u => u.id === (v || 'features')) || TEMPLATE_USES[0]).label;
+const templateUsableFor = (t, use) => {
+  const u = (t && t.use_for) || 'features';
+  return u === 'both' || u === use;
+};
+
 function useBrandTemplates(storeId) {
   const [templates, setTemplates] = useState([]);
 
@@ -9836,7 +9856,14 @@ function useBrandTemplates(storeId) {
     setTemplates(p=>p.filter(t=>t.id!==id));
   };
 
-  return { templates, load, add, remove };
+  const update = async (id, fields) => {
+    const sb=getSB(); if(!sb) throw new Error('Not connected');
+    const { error } = await sb.from('brand_templates').update(fields).eq('id', id);
+    if (error) throw new Error(error.message);
+    setTemplates(p=>p.map(t=>t.id===id ? Object.assign({}, t, fields) : t));
+  };
+
+  return { templates, load, add, remove, update };
 }
 
 // ─────────────────────────────────────────────
@@ -10517,7 +10544,52 @@ function ImagePicker({ file, preview, onFile, onClear, label='Attach Image (opti
 // ═══════════════════════════════════════════════════════════════
 // SHELF TALKER — CONSTANTS & HELPERS
 // ═══════════════════════════════════════════════════════════════
-const ST_CATEGORIES = ['Generic','Regular Price','Sale','Multi-Buy','Limited Time','New Product','Staff Pick','Clearance','Seasonal'];
+const ST_CATEGORIES = ['Generic','Regular Price','Sale','EDLP','Multi-Buy','Limited Time','New Product','Staff Pick','Clearance','Seasonal'];
+
+// Shelf talker fields carry a free-text label ("SALE PRICE", "PACKAGE SIZE")
+// and no semantic key, so filling one from an EDLP row means matching on that
+// label. Order matters: "REGULAR PRICE" has to be claimed by the regular rule
+// before the bare price rule sees it, or every price box on the tag fills with
+// the sale price. Anything unrecognised is left alone for a person to type.
+function edlpValueForField(label, row) {
+  const L = String(label || '').toLowerCase();
+  const reg   = row.reg_price  != null ? Number(row.reg_price)  : null;
+  const sale  = row.sale_price != null ? Number(row.sale_price) : null;
+  const save  = suggestSavings(reg, sale);
+  // Raw numbers only — the field's own "$" prefix adds the currency and the
+  // creator formats to two decimals when that prefix is present.
+  const num = n => (n == null ? '' : String(Number(n).toFixed(2)));
+
+  if (/sav/.test(L))                          return num(save);
+  if (/reg|retail|was\b|list/.test(L))        return num(reg);
+  if (/size|pack|unit|volume|\bml\b/.test(L)) return row.size || '';
+  if (/price|sale|now|edlp|each/.test(L))     return num(sale);
+  if (/item|product|name|desc|title/.test(L)) return row.name || '';
+  return null;
+}
+
+// The display value for a shelf talker field: a formula result if it has one,
+// otherwise the typed value, with the prefix applied and prices formatted to
+// two decimals. Lifted out of STCreator so the bulk EDLP filler produces
+// exactly what composing by hand would.
+function stComputedValues(fields, values) {
+  const out = Object.assign({}, values);
+  (fields || []).forEach(function(f) {
+    const pfx = f.prefix || '';
+    const isPricePfx = pfx.indexOf('$') !== -1;
+    if (typeof f.formula === 'string' && f.formula.trim()) {
+      const cv = evaluateFormula(f.formula, fields, values);
+      if (cv !== '') {
+        const fmtCv = isPricePfx ? (function(){ const n = parseFloat(cv); return !isNaN(n) ? n.toFixed(2) : cv; }()) : cv;
+        out[f.id] = pfx + fmtCv;
+      }
+    } else if (pfx && values[f.id]) {
+      const fmtVal = isPricePfx ? (function(){ const n = parseFloat(values[f.id]); return !isNaN(n) ? n.toFixed(2) : values[f.id]; }()) : values[f.id];
+      out[f.id] = pfx + fmtVal;
+    }
+  });
+  return out;
+}
 
 // Render a PDF's first page to a data URL via PDF.js
 async function pdfPageToDataUrl(pdfDataUrl, maxPx=2000) {
@@ -17676,8 +17748,9 @@ function WeatherAdsPage() {
 // ─────────────────────────────────────────────
 function TemplateManager({ storeId }) {
   const toast = useToast();
-  const { templates, add, remove, load:reloadTemplates } = useBrandTemplates(storeId);
+  const { templates, add, remove, update, load:reloadTemplates } = useBrandTemplates(storeId);
   const [name,      setName]     = useState('');
+  const [useFor,    setUseFor]   = useState('features');
   const [sizeLabel, setSizeLabel]= useState('1:1 Square');
   const [preview,   setPreview]  = useState(null);
   const [saving,    setSaving]   = useState(false);
@@ -17700,7 +17773,8 @@ function TemplateManager({ storeId }) {
       const sz = TEMPLATE_SIZES.find(s=>s.label===sizeLabel) || TEMPLATE_SIZES[0];
       // Compress to reasonable size
       const compressed = await compressImage(preview, Math.max(sz.w, sz.h), 0.88);
-      await add({ name: name.trim(), size_label: sizeLabel, canvas_w: sz.w, canvas_h: sz.h, data: compressed });
+      await add({ name: name.trim(), size_label: sizeLabel, canvas_w: sz.w, canvas_h: sz.h,
+                  data: compressed, use_for: useFor });
       toast.success('Template saved!');
       setName(''); setPreview(null);
       if (fileRef.current) fileRef.current.value = '';
@@ -17730,6 +17804,16 @@ function TemplateManager({ storeId }) {
               <Select value={sizeLabel} onChange={e=>setSizeLabel(e.target.value)}>
                 {TEMPLATE_SIZES.map(s=><option key={s.label} value={s.label}>{s.label} — {s.w}×{s.h} ({s.desc})</option>)}
               </Select>
+            </div>
+            <div>
+              <Label>Used for</Label>
+              <Select value={useFor} onChange={e=>setUseFor(e.target.value)}>
+                {TEMPLATE_USES.map(u=><option key={u.id} value={u.id}>{u.label}</option>)}
+              </Select>
+              <p className="lbl mt-1">
+                Which price ad generator offers this template — the monthly Features batch,
+                the EDLP batch, or both.
+              </p>
             </div>
             <div>
               <Label>Template Image</Label>
@@ -17785,6 +17869,16 @@ function TemplateManager({ storeId }) {
                       </div>
                       <div className="absolute top-1.5 left-1.5 text-xs px-2 py-0.5" style={{background:'rgba(var(--sink2-rgb),.75)', color:'var(--txt)'}}>{t.name}</div>
                       {t.kind==='price_ad' && <div className="absolute top-1.5 right-1.5"><Badge color="blue">Fields</Badge></div>}
+                      <div className="p-1.5 flex items-center gap-1.5" style={{borderTop:'1px solid var(--line)'}}>
+                        <Icon name="tag" size={11} style={{color:'var(--cy-dim)', flex:'none'}}/>
+                        <Select value={t.use_for || 'features'} className="text-[10px] py-1 px-1.5"
+                                onChange={async function(e){
+                                  try { await update(t.id, { use_for: e.target.value }); toast.success('Now ' + useForLabel(e.target.value)); }
+                                  catch(err) { toast.error(err.message); }
+                                }}>
+                          {TEMPLATE_USES.map(u=><option key={u.id} value={u.id}>{u.label}</option>)}
+                        </Select>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -18119,7 +18213,67 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
   const { fields, loading:fLoading } = useSTFields(selected?.id);
   const [catFilter,  setCatFilter]  = useState('all');
   const [search,     setSearch]     = useState('');
+  const [edlpOpen,   setEdlpOpen]   = useState(false);
+  const [edlpRows,   setEdlpRows]   = useState(null);   // null = not loaded
+  const [edlpPick,   setEdlpPick]   = useState({});     // id -> checked
+  const [edlpBusy,   setEdlpBusy]   = useState(false);
   const previewRef = useRef();
+
+  const openEdlp = async function() {
+    setEdlpOpen(true);
+    if (edlpRows !== null) return;
+    const sb = getSB(); if (!sb) return;
+    const { data, error } = await sb.from('edlp_items').select('*')
+      .eq('store_id', storeId).order('position');
+    if (error) { toast.error(error.message); setEdlpRows([]); return; }
+    setEdlpRows(data || []);
+    setEdlpPick(Object.fromEntries((data || []).map(r => [r.id, true])));
+  };
+
+  // One tag per EDLP item, filled by matching each field's label against the
+  // row (see edlpValueForField) and rendered the same way composing by hand
+  // renders it — so these land in the queue ready to print, not as a separate
+  // kind of entry the print path has to know about.
+  const queueFromEdlp = async function() {
+    const chosen = (edlpRows || []).filter(r => edlpPick[r.id]);
+    if (!selected)      { toast.error('Pick a template first'); return; }
+    if (!fields.length) { toast.error('That template has no fields set up yet'); return; }
+    if (!chosen.length) { toast.error('Tick at least one item'); return; }
+    setEdlpBusy(true);
+    try {
+      const entries = [];
+      const skipped = [];
+      for (const row of chosen) {
+        const vals = {};
+        fields.forEach(function(f) {
+          const v = edlpValueForField(f.label, row);
+          if (v !== null && v !== '') vals[f.id] = v;
+        });
+        // A tag missing something the template insists on would print blank,
+        // so it's reported rather than quietly queued.
+        const missing = fields.filter(f => f.required && !(typeof f.formula === 'string' && f.formula.trim())
+                                        && !(vals[f.id] && String(vals[f.id]).trim()));
+        if (missing.length) {
+          skipped.push((row.name || 'Item') + ' — no ' + missing.map(m=>m.label).join(', '));
+          continue;
+        }
+        const computed = stComputedValues(fields, vals);
+        const canvas = await renderSTCanvas(selected, fields, computed);
+        entries.push({
+          id: Date.now() + Math.random(),
+          label: selected.name + ' – ' + String(row.name || '').substring(0, 18),
+          template: selected, fields, values: computed,
+          previewSrc: canvas.toDataURL('image/png'),
+        });
+      }
+      if (entries.length) setPrintQueue(q => q.concat(entries));
+      setEdlpOpen(false);
+      if (entries.length) toast.success(entries.length + ' tag' + (entries.length===1?'':'s') + ' added to the queue');
+      if (skipped.length) toast.error(skipped.length + ' skipped — ' + skipped[0] + (skipped.length>1 ? ' (+' + (skipped.length-1) + ' more)' : ''));
+      if (!entries.length && !skipped.length) toast.error('Nothing was added');
+    } catch(e) { toast.error('Error: ' + e.message); }
+    finally { setEdlpBusy(false); }
+  };
 
   // When a saved tag is loaded from the library, pre-populate template + values
   useEffect(function() {
@@ -18137,22 +18291,8 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
     }
   }, [pendingLoad, templates, tplLoading]);
 
-  // Derive display values: apply formula and/or prefix for every field
-  const computedValues = Object.assign({}, values);
-  fields.forEach(function(f) {
-    const pfx = f.prefix || '';
-    const isPricePfx = pfx.indexOf('$') !== -1;
-    if (typeof f.formula === 'string' && f.formula.trim()) {
-      const cv = evaluateFormula(f.formula, fields, values);
-      if (cv !== '') {
-        var fmtCv = isPricePfx ? (function(){ var n = parseFloat(cv); return !isNaN(n) ? n.toFixed(2) : cv; }()) : cv;
-        computedValues[f.id] = pfx + fmtCv;
-      }
-    } else if (pfx && values[f.id]) {
-      var fmtVal = isPricePfx ? (function(){ var n = parseFloat(values[f.id]); return !isNaN(n) ? n.toFixed(2) : values[f.id]; }()) : values[f.id];
-      computedValues[f.id] = pfx + fmtVal;
-    }
-  });
+  // Derive display values: apply formula and/or prefix for every field.
+  const computedValues = stComputedValues(fields, values);
 
   // Field overflow validation — use actual box pixel dims from the template
   const overflowIds = fields.filter(f => {
@@ -18518,6 +18658,10 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
               title={editingQueueId?'Save changes to this queue item':'Add this tag to the print queue'}>
               <Icon name="note"/> {editingQueueId ? 'Update Queue Item' : `Add to Queue (${printQueue.length})`}
             </Button>
+            <Button variant="outline" onClick={openEdlp} disabled={!fields.length}
+              title="Fill this template from the store's EDLP list — one tag per item, straight into the queue">
+              <Icon name="book"/> Fill from EDLP
+            </Button>
             <Button variant="secondary" loading={savingTag} disabled={!selected}
               onClick={async () => {
                 setSavingTag(true);
@@ -18545,6 +18689,68 @@ function STCreator({ storeId, isAdmin, userId, pendingLoad, onLoadComplete }) {
           </div>
         </div>
       </div>
+
+      {edlpOpen && (
+        <Portal>
+        <div className="fixed inset-0 z-[210] flex items-center justify-center p-6"
+             style={{background:'rgba(var(--sink2-rgb),.88)', backdropFilter:'blur(4px)'}}
+             onClick={edlpBusy ? undefined : ()=>setEdlpOpen(false)}>
+          <div className="hud hud-brk w-full max-w-xl max-h-[88vh] overflow-auto p-6"
+               onClick={e=>e.stopPropagation()}>
+            <div className="flex items-center gap-3 mb-4">
+              <span className="ttl">Fill from EDLP</span>
+              <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+              {!edlpBusy && <button onClick={()=>setEdlpOpen(false)} style={{color:'var(--txt2)'}}><Icon name="close"/></button>}
+            </div>
+
+            <p className="text-xs mb-4" style={{color:'var(--txt2)'}}>
+              One "{selected?.name}" tag per ticked item, filled from this store's EDLP list
+              and added straight to the print queue.
+            </p>
+
+            {edlpRows === null ? (
+              <p className="lbl text-center py-8">Loading EDLP list…</p>
+            ) : edlpRows.length === 0 ? (
+              <p className="lbl text-center py-8">
+                No EDLP items for this store yet — upload the report on the EDLP page first.
+              </p>
+            ) : (
+              <React.Fragment>
+                <div className="flex items-center gap-2 mb-2">
+                  <button className="lbl" style={{color:'var(--cy)'}}
+                          onClick={()=>setEdlpPick(Object.fromEntries(edlpRows.map(r=>[r.id,true])))}>All</button>
+                  <span className="lbl">·</span>
+                  <button className="lbl" style={{color:'var(--cy)'}} onClick={()=>setEdlpPick({})}>None</button>
+                  <span className="flex-1"/>
+                  <span className="lbl">{edlpRows.filter(r=>edlpPick[r.id]).length} of {edlpRows.length}</span>
+                </div>
+                <div style={{maxHeight:'320px', overflowY:'auto'}} className="mb-4">
+                  {edlpRows.map(function(r) {
+                    return (
+                      <label key={r.id} className="flex items-center gap-2.5 py-1.5 cursor-pointer">
+                        <input type="checkbox" checked={!!edlpPick[r.id]}
+                               onChange={()=>setEdlpPick(prev=>Object.assign({}, prev, {[r.id]: !prev[r.id]}))}/>
+                        <span className="text-xs flex-1 truncate" style={{color:'var(--txt)'}}>{r.name}</span>
+                        <span className="mono text-xs" style={{color:'var(--txt3)'}}>{r.size || ''}</span>
+                        <span className="mono text-xs" style={{color:'var(--cy)'}}>{money(r.sale_price)}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </React.Fragment>
+            )}
+
+            <div className="flex gap-2 justify-end">
+              <Button size="sm" variant="outline" onClick={()=>setEdlpOpen(false)} disabled={edlpBusy}>Cancel</Button>
+              <Button size="sm" onClick={queueFromEdlp} loading={edlpBusy}
+                      disabled={!edlpRows || !edlpRows.some(r=>edlpPick[r.id])}>
+                <Icon name="note"/> Add to queue
+              </Button>
+            </div>
+          </div>
+        </div>
+        </Portal>
+      )}
     </div>
   );
 

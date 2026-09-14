@@ -9874,9 +9874,13 @@ const templateUsableFor = (t, use) => {
 function useBrandTemplates(storeId) {
   const [templates, setTemplates] = useState([]);
 
+  // This store's own templates plus the chain-wide ones (store_id NULL), so a
+  // global EDLP template is offered everywhere without being copied per store.
   const load = useCallback(async () => {
     const sb=getSB(); if(!sb) return;
-    const {data}=await sb.from('brand_templates').select('*').eq('store_id',storeId).order('created_at',{ascending:false});
+    let q = sb.from('brand_templates').select('*');
+    q = storeId ? q.or('store_id.eq.' + storeId + ',store_id.is.null') : q.is('store_id', null);
+    const {data}=await q.order('created_at',{ascending:false});
     setTemplates(data||[]);
   },[storeId]);
 
@@ -17795,6 +17799,7 @@ function TemplateManager({ storeId }) {
   const { templates, add, remove, update, load:reloadTemplates } = useBrandTemplates(storeId);
   const [name,      setName]     = useState('');
   const [useFor,    setUseFor]   = useState('features');
+  const [scope,     setScope]    = useState('store');   // store | global
   const [sizeLabel, setSizeLabel]= useState('1:1 Square');
   const [preview,   setPreview]  = useState(null);
   const [saving,    setSaving]   = useState(false);
@@ -17817,8 +17822,11 @@ function TemplateManager({ storeId }) {
       const sz = TEMPLATE_SIZES.find(s=>s.label===sizeLabel) || TEMPLATE_SIZES[0];
       // Compress to reasonable size
       const compressed = await compressImage(preview, Math.max(sz.w, sz.h), 0.88);
+      // store_id is passed explicitly rather than left to the hook's default —
+      // it spreads last, so null here is what makes a template chain-wide.
       const row = await add({ name: name.trim(), size_label: sizeLabel, canvas_w: sz.w, canvas_h: sz.h,
-                  data: compressed, use_for: useFor });
+                  data: compressed, use_for: useFor,
+                  store_id: scope === 'global' ? null : storeId });
       setName(''); setPreview(null);
       if (fileRef.current) fileRef.current.value = '';
       // Straight into the field editor. Stopping at "saved" is what left
@@ -17864,6 +17872,17 @@ function TemplateManager({ storeId }) {
               <p className="lbl mt-1">
                 Which price ad generator offers this template — the monthly Features batch,
                 the EDLP batch, or both.
+              </p>
+            </div>
+            <div>
+              <Label>Which stores</Label>
+              <Select value={scope} onChange={e=>setScope(e.target.value)}>
+                <option value="store">This store only</option>
+                <option value="global">All stores (chain-wide)</option>
+              </Select>
+              <p className="lbl mt-1">
+                Chain-wide templates show up for every store — one artwork to keep current
+                instead of four copies. Store-branded artwork should stay on its store.
               </p>
             </div>
             <div>
@@ -17916,14 +17935,22 @@ function TemplateManager({ storeId }) {
                             style={{background:'var(--cy-glow)', color:'var(--cy)', border:'1px solid var(--cy)'}}>
                             <Icon name="grid" size={12}/> {ready ? 'Fields' : 'Finish setup'}
                           </button>
-                          <button onClick={()=>remove(t.id)} className="text-xs px-2 py-1 font-semibold"
+                          <button onClick={function(){
+                              // A chain-wide template is deleted from every store at once,
+                              // which is not obvious from a store's own template list.
+                              const msg = t.store_id
+                                ? 'Delete "' + t.name + '"?'
+                                : 'Delete "' + t.name + '"? It is chain-wide — this removes it from every store.';
+                              if (confirm(msg)) remove(t.id);
+                            }} className="text-xs px-2 py-1 font-semibold"
                             style={{background:'rgba(255,77,94,.15)', color:'var(--red)', border:'1px solid var(--red)'}}>
                             <Icon name="trash" size={12}/>
                           </button>
                         </div>
                       </div>
                       <div className="absolute top-1.5 left-1.5 text-xs px-2 py-0.5" style={{background:'rgba(var(--sink2-rgb),.75)', color:'var(--txt)'}}>{t.name}</div>
-                      <div className="absolute top-1.5 right-1.5">
+                      <div className="absolute top-1.5 right-1.5 flex gap-1">
+                        {!t.store_id && <Badge color="indigo">Chain-wide</Badge>}
                         {ready ? <Badge color="green">Ready</Badge> : <Badge color="yellow">Needs setup</Badge>}
                       </div>
                       {!ready && (
@@ -17931,15 +17958,34 @@ function TemplateManager({ storeId }) {
                           No fields positioned yet — it won't appear in any generator until you finish setup.
                         </div>
                       )}
-                      <div className="p-1.5 flex items-center gap-1.5" style={{borderTop:'1px solid var(--line)'}}>
-                        <Icon name="tag" size={11} style={{color:'var(--cy-dim)', flex:'none'}}/>
-                        <Select value={t.use_for || 'features'} className="text-[10px] py-1 px-1.5"
-                                onChange={async function(e){
-                                  try { await update(t.id, { use_for: e.target.value }); toast.success('Now ' + useForLabel(e.target.value)); }
-                                  catch(err) { toast.error(err.message); }
-                                }}>
-                          {TEMPLATE_USES.map(u=><option key={u.id} value={u.id}>{u.label}</option>)}
-                        </Select>
+                      <div className="p-1.5 space-y-1" style={{borderTop:'1px solid var(--line)'}}>
+                        <div className="flex items-center gap-1.5">
+                          <Icon name="tag" size={11} style={{color:'var(--cy-dim)', flex:'none'}}/>
+                          <Select value={t.use_for || 'features'} className="text-[10px] py-1 px-1.5"
+                                  onChange={async function(e){
+                                    try { await update(t.id, { use_for: e.target.value }); toast.success('Now ' + useForLabel(e.target.value)); }
+                                    catch(err) { toast.error(err.message); }
+                                  }}>
+                            {TEMPLATE_USES.map(u=><option key={u.id} value={u.id}>{u.label}</option>)}
+                          </Select>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <Icon name="store" size={11} style={{color:'var(--cy-dim)', flex:'none'}}/>
+                          <Select value={t.store_id ? 'store' : 'global'} className="text-[10px] py-1 px-1.5"
+                                  onChange={async function(e){
+                                    const goGlobal = e.target.value === 'global';
+                                    // Going chain-wide puts this artwork in front of all four
+                                    // stores at once, so it's worth a beat of confirmation.
+                                    if (goGlobal && !confirm('Offer "' + t.name + '" to every store?')) return;
+                                    try {
+                                      await update(t.id, { store_id: goGlobal ? null : storeId });
+                                      toast.success(goGlobal ? 'Now chain-wide' : 'Now this store only');
+                                    } catch(err) { toast.error(err.message); }
+                                  }}>
+                            <option value="store">This store only</option>
+                            <option value="global">All stores</option>
+                          </Select>
+                        </div>
                       </div>
                     </div>
                     );
@@ -19049,8 +19095,10 @@ function TemplatesPage({ initialTab }) {
             <p className="text-xs" style={{color:'var(--txt2)'}}>
               The background artwork a price ad is drawn onto. Each one is set to serve the
               monthly <strong>Features</strong> batch, the <strong>EDLP</strong> batch, or both —
-              so an everyday-low-price ad doesn't go out looking like a monthly feature.
-              A template only becomes usable once its fields are positioned.
+              so an everyday-low-price ad doesn't go out looking like a monthly feature — and
+              to belong either to the store shown here or to <strong>every store</strong>, which
+              suits EDLP artwork that's the same chain-wide. A template only becomes usable once
+              its fields are positioned.
             </p>
           </Card>
           <TemplateManager storeId={storeId}/>

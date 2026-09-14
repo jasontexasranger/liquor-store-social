@@ -2207,6 +2207,26 @@ CREATE INDEX IF NOT EXISTS brand_templates_use_for_idx
 NOTIFY pgrst, 'reload schema';
 
 -- ============================================================================
+-- Price ad templates can be chain-wide
+-- ============================================================================
+-- Right for store-branded feature ads to belong to one store; wrong for EDLP,
+-- where the same artwork often runs at all four locations and rebuilding it
+-- per store means four things to keep in sync. NULL store_id = chain-wide,
+-- the same convention campaigns.store_id already uses.
+-- ============================================================================
+
+ALTER TABLE public.brand_templates
+  ALTER COLUMN store_id DROP NOT NULL;
+
+COMMENT ON COLUMN public.brand_templates.store_id IS
+  'NULL = chain-wide, offered to every store. Otherwise the template belongs to that one store.';
+
+CREATE INDEX IF NOT EXISTS brand_templates_global_idx
+  ON public.brand_templates (use_for) WHERE store_id IS NULL;
+
+NOTIFY pgrst, 'reload schema';
+
+-- ============================================================================
 -- Tell PostgREST about the new tables.
 -- "Could not find the table in the schema cache" means this step was missed.
 -- ============================================================================

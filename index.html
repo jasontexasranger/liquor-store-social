@@ -7644,7 +7644,7 @@ function BclCell({ feature, bcl, live, onCheck }) {
   );
 }
 
-function FeaturesPage({ isAdmin, myStores, editableIds }) {
+function FeaturesPage({ isAdmin, myStores, editableIds, initialView, go }) {
   const toast = useToast();
   // Everyone sees every store's month (managers need to know what the chain
   // is running); editing is only for your own stores. The database enforces
@@ -7660,7 +7660,7 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
   const [showSign,  setShowSign]  = useState(false);
   const [showWeb,   setShowWeb]   = useState(false);
   const [showCocktails, setShowCocktails] = useState(false);
-  const [view, setView] = useState('month');   // month | dashboard
+  const [view, setView] = useState(initialView || 'month');   // month | dashboard | edlp
   const [mode, setMode] = useState('plan');   // plan | sales
 
   const { periodRow, rows, loading, reload, addRows, updateRow, deleteRow, setStatus, ensurePeriod } =
@@ -7744,21 +7744,41 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
   const totalRev = rows.reduce((a,r)=>a + (Number(r.revenue)||0), 0);
   const totalQty = rows.reduce((a,r)=>a + (Number(r.qty_sold)||0), 0);
 
+  // One switcher, three views — built once rather than pasted into each
+  // branch. EDLP sits here rather than in its own nav item because it's the
+  // same job as the monthly sheet (what's on the shelf, at what price), just
+  // on a yearly cycle instead of a monthly one.
+  const viewTabs = (
+    <div className="flex" style={{border:'1px solid var(--line)', width:'fit-content'}}>
+      {[['month','Month view'],['dashboard','Dashboard'],['edlp','EDLP']].map(function(v){
+        const on = view===v[0];
+        return (
+          <button key={v[0]} onClick={()=>setView(v[0])}
+            className="px-4 py-2 text-xs uppercase tracking-[.16em]"
+            style={{ background:on?'var(--cy-glow)':'transparent', color:on?'var(--cy)':'var(--txt2)' }}>
+            {v[1]}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  if (view === 'edlp') {
+    return (
+      <div className="space-y-4">
+        {viewTabs}
+        {/* Opens on whichever store the month view was showing, so switching
+            views doesn't silently change which store you're looking at. */}
+        <EDLPPage isAdmin={isAdmin} myStores={myStores} editableIds={editableIds}
+                  go={go} initialStoreId={storeId}/>
+      </div>
+    );
+  }
+
   if (view === 'dashboard') {
     return (
       <div className="space-y-4">
-        <div className="flex" style={{border:'1px solid var(--line)', width:'fit-content'}}>
-          {[['month','Month view'],['dashboard','Dashboard']].map(function(v){
-            const on = view===v[0];
-            return (
-              <button key={v[0]} onClick={()=>setView(v[0])}
-                className="px-4 py-2 text-xs uppercase tracking-[.16em]"
-                style={{ background:on?'var(--cy-glow)':'transparent', color:on?'var(--cy)':'var(--txt2)' }}>
-                {v[1]}
-              </button>
-            );
-          })}
-        </div>
+        {viewTabs}
         <FeaturesDashboard/>
       </div>
     );
@@ -7766,18 +7786,7 @@ function FeaturesPage({ isAdmin, myStores, editableIds }) {
 
   return (
     <div className="space-y-4">
-      <div className="flex" style={{border:'1px solid var(--line)', width:'fit-content'}}>
-        {[['month','Month view'],['dashboard','Dashboard']].map(function(v){
-          const on = view===v[0];
-          return (
-            <button key={v[0]} onClick={()=>setView(v[0])}
-              className="px-4 py-2 text-xs uppercase tracking-[.16em]"
-              style={{ background:on?'var(--cy-glow)':'transparent', color:on?'var(--cy)':'var(--txt2)' }}>
-              {v[1]}
-            </button>
-          );
-        })}
-      </div>
+      {viewTabs}
 
       <Card>
         <div className="flex items-center gap-3 flex-wrap mb-4">
@@ -8162,10 +8171,10 @@ function EdlpCell({ row, field, type='text', align='left', onCommit }) {
   );
 }
 
-function EDLPPage({ isAdmin, myStores, editableIds, go }) {
+function EDLPPage({ isAdmin, myStores, editableIds, go, initialStoreId }) {
   const toast = useToast();
   const [storeId, setStoreId] = useState(
-    (editableIds && editableIds.length ? editableIds[0] : (myStores[0]||{}).id) || '');
+    initialStoreId || (editableIds && editableIds.length ? editableIds[0] : (myStores[0]||{}).id) || '');
   const canEdit = !editableIds || editableIds.includes(storeId);
   const storeName = (myStores.find(s=>s.id===storeId)||{}).name || '';
 
@@ -17202,7 +17211,7 @@ function HomePage({ granted, isAdmin, go, onOpenHelp }) {
     { id:'shelf',     label:'Print shelf talkers',        icon:'print',   page:'shelf' },
     { id:'website',   label:'Update the website',         icon:'globe',   page:'website' },
     { id:'price',     label:'Check a price',              icon:'search',  page:'prices' },
-    { id:'edlp',      label:'Update EDLP pricing',        icon:'book',    page:'edlp' },
+    { id:'edlp',      label:'Update EDLP pricing',        icon:'book',    page:'features', tab:'edlp' },
     { id:'recipe',    label:'Make a cocktail post',       icon:'cocktail', page:'recipes' },
     { id:'signage',   label:'Put it on the TVs',          icon:'grid',    page:'signage', need:'signage' },
     { id:'templates', label:'Design ad & tag templates',  icon:'layers',  page:'templates', admin:true },
@@ -19426,6 +19435,7 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
   const [postsTab, setPostsTab] = useState(null);
   const [adsTab,   setAdsTab]   = useState(null);
   const [brandTab, setBrandTab] = useState(null);
+  const [featuresTab, setFeaturesTab] = useState(null);   // month | dashboard | edlp
   // Lifted out of HelpBot so the "Help me find what I need" home card can
   // pop the same chat window open, not a second one.
   const [helpOpen, setHelpOpen] = useState(false);
@@ -19433,6 +19443,7 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
     if (p === 'posts') setPostsTab(t || null);
     if (p === 'ads')   setAdsTab(t || null);
     if (p === 'brand' || p === 'templates') setBrandTab(t || null);
+    if (p === 'features') setFeaturesTab(t || null);
     setPage(p);
   };
   // A recipe (or anything else) handing the composer a ready image + caption.
@@ -19546,7 +19557,6 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
     ads:       { id:'ads',       icon:'mega',    label:'Ads' },
     prices:    { id:'prices',    icon:'search',  label:'Price Check' },
     products:  { id:'products',  icon:'package', label:'Products' },
-    edlp:      { id:'edlp',      icon:'book',    label:'EDLP' },
     templates: { id:'templates', icon:'layers',  label:'Templates' },
     brand:     { id:'brand',     icon:'palette', label:'Brand' },
     radar:     { id:'radar',     icon:'search',  label:'Market Radar' },
@@ -19563,7 +19573,7 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
     ...pick(['posts','features','reviews']).map(item => ({ kind:'link', item })),
     { kind:'menu', id:'create',  icon:'palette', label:'Create',  items: pick(['shelf','creatives','recipes','templates']) },
     { kind:'menu', id:'publish', icon:'globe',   label:'Publish', items: pick(['website','signage','ads']) },
-    { kind:'menu', id:'catalog', icon:'package', label:'Catalogue', items: pick(['prices','products','edlp']) },
+    { kind:'menu', id:'catalog', icon:'package', label:'Catalogue', items: pick(['prices','products']) },
     { kind:'menu', id:'admin',   icon:'gear',    label:'Admin',   items: pick(['brand','radar','weather','settings']) },
   ].filter(g => g.kind === 'link' || g.items.length > 0);
   const [openMenu, setOpenMenu] = useState(null);
@@ -19716,8 +19726,10 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
         {page==='shelf'                  && <ShelfTalkerPage isAdmin={effIsAdmin} userStoreIds={effIsAdmin ? [] : effStoreIds} userId={user ? user.id : null}/>}
         {page==='creatives'              && <CreativeLibrary isAdmin={effIsAdmin}
                                              myStores={effIsAdmin ? STORES : STORES.filter(st=>effStoreIds.includes(st.id))}/>}
-        {page==='features'               && <FeaturesPage isAdmin={effIsAdmin}
-                                             myStores={STORES}
+        {page==='features'               && <FeaturesPage key={'ft-'+(featuresTab||'x')}
+                                             isAdmin={effIsAdmin}
+                                             myStores={STORES} go={goHome}
+                                             initialView={featuresTab}
                                              editableIds={effIsAdmin ? null : effStoreIds}/>}
         {page==='website'                && <WebsitePage editableIds={effIsAdmin ? null : effStoreIds}/>}
         {page==='prices'                 && <PriceCheckPage isAdmin={effIsAdmin}/>}
@@ -19725,9 +19737,6 @@ function AuthenticatedApp({ user, theme, onTheme, openChangePw }) {
         {page==='recipes'                && <RecipesPage isAdmin={effIsAdmin} onCompose={composeWith}
                                              myStores={effIsAdmin ? STORES : STORES.filter(st=>effStoreIds.includes(st.id))}/>}
         {page==='products'                && <ProductLibrary/>}
-        {page==='edlp'                    && <EDLPPage isAdmin={effIsAdmin}
-                                             myStores={STORES} go={goHome}
-                                             editableIds={effIsAdmin ? null : effStoreIds}/>}
         {page==='ads'      && granted('ads')      && <AdsPage key={'at-'+(adsTab||'x')} initialTab={adsTab} settings={settings}/>}
         {page==='templates' && effIsAdmin && <TemplatesPage key={'tp-'+(brandTab||'x')} initialTab={brandTab}/>}
         {page==='brand'    && effIsAdmin && <BrandPage settings={settings}/>}

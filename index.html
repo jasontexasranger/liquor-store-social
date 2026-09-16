@@ -1095,6 +1095,10 @@ function CreativeLibrary({ isAdmin, myStores }) {
   const [fPer,   setFPer]   = useState('all');
   const [downloadingId, setDownloadingId] = useState(null);
   const [bulkDownloading, setBulkDownloading] = useState(false);
+  const [picked, setPicked] = useState([]);       // creative ids ticked for a sheet
+  const [sheetBusy, setSheetBusy] = useState(false);
+  const [sheetProg, setSheetProg] = useState('');
+  const [sheetRes,  setSheetRes]  = useState(null);
 
   const counts = {};
   creatives.forEach(c => { if (c.campaign_id) counts[c.campaign_id] = (counts[c.campaign_id]||0)+1; });
@@ -1147,14 +1151,113 @@ function CreativeLibrary({ isAdmin, myStores }) {
     else toast.success('Downloaded ' + visible.length + ' creative' + (visible.length===1?'':'s'));
   };
 
+  // Hand-picked contact sheets. Two separate actions on purpose: the PDF is
+  // often all you want (a quick look at six options before anyone signs
+  // anything), while opening a round is the heavier commitment that records a
+  // decision. The PDF path also works before the approval tables exist.
+  const chosenCreatives = visible.filter(c => picked.includes(c.id));
+  const togglePick = id => setPicked(p => p.includes(id) ? p.filter(x => x !== id) : p.concat(id));
+
+  const pickedItems = () => chosenCreatives.map(c => ({
+    name: c.name, aspect: c.aspect, url: c.public_url, creativeId: c.id }));
+
+  // One store per round — a review belongs to a store, and a sheet mixing
+  // four stores' artwork isn't something one manager can sign off.
+  const pickedStores = [...new Set(chosenCreatives.map(c => c.store_id || 'global'))];
+
+  const sheetOnly = async function() {
+    if (!chosenCreatives.length) return;
+    setSheetBusy(true); setSheetProg(''); setSheetRes(null);
+    try {
+      const items = pickedItems();
+      const doc = await buildContactSheet({
+        title: 'Creative contact sheet',
+        subtitle: new Date().toLocaleDateString(undefined, { dateStyle:'long' })
+                + ' · ' + items.length + ' creative' + (items.length===1?'':'s'),
+        items: items.map(it => ({ name: it.name, sub: it.aspect, url: it.url })),
+        reviewUrl: null,
+        onProgress: (n, total) => setSheetProg(n + ' of ' + total),
+      });
+      doc.save('contact-sheet-' + new Date().toISOString().slice(0,10) + '.pdf');
+      toast.success('Contact sheet downloaded');
+    } catch(e) { toast.error(e.message); }
+    finally { setSheetBusy(false); setSheetProg(''); }
+  };
+
+  const sheetForApproval = async function() {
+    if (!chosenCreatives.length) return;
+    if (pickedStores.length > 1) {
+      toast.error('Pick creatives from one store — an approval round belongs to a single store');
+      return;
+    }
+    const storeId = chosenCreatives[0].store_id;
+    if (!storeId) { toast.error('Global creatives have no store to send to — filter to one store'); return; }
+    setSheetBusy(true); setSheetProg(''); setSheetRes(null);
+    try {
+      const store = (myStores.find(s => s.id === storeId) || {});
+      const r = await createCreativeReview({
+        storeId, storeName: store.name || storeId, kind:'features',
+        period: chosenCreatives[0].period || null,
+        items: pickedItems(),
+        onProgress: (n, total) => setSheetProg(n + ' of ' + total),
+      });
+      r.doc.save('contact-sheet-' + (store.name || 'store').split(' ')[0].toLowerCase() + '.pdf');
+      setSheetRes(r);
+      toast.success('Sheet downloaded, approval link ready');
+    } catch(e) { toast.error(e.message); }
+    finally { setSheetBusy(false); setSheetProg(''); }
+  };
+
   return (
     <div className="space-y-4">
       {isAdmin && <CampaignManager campaigns={campaigns} onCreate={create} onUpdate={update} counts={counts}/>}
+
+      {picked.length > 0 && (
+        <Card>
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="ttl">{picked.length} selected</span>
+            {pickedStores.length > 1 && (
+              <Badge color="yellow">{pickedStores.length} stores</Badge>
+            )}
+            <span className="flex-1"/>
+            <Button size="sm" variant="ghost" onClick={()=>{ setPicked([]); setSheetRes(null); }}>
+              Clear
+            </Button>
+            <Button size="sm" variant="outline" onClick={sheetOnly} loading={sheetBusy}>
+              <Icon name="print"/> {sheetBusy && sheetProg ? sheetProg : 'Contact sheet'}
+            </Button>
+            <Button size="sm" onClick={sheetForApproval} loading={sheetBusy}>
+              <Icon name="share"/> Sheet + approval link
+            </Button>
+          </div>
+          <p className="lbl mt-2">
+            Contact sheet is just the PDF. Approval link also opens a round the store ticks
+            through, and needs everything picked to be from one store.
+          </p>
+          {sheetRes && (
+            <div className="mt-3 p-3" style={{border:'1px solid var(--grn)', background:'rgba(63,240,138,.06)'}}>
+              <p className="text-xs mb-2" style={{color:'var(--grn)'}}>Send the store this link:</p>
+              <Input readOnly value={sheetRes.reviewUrl} className="text-xs mb-2"
+                     onFocus={e=>e.target.select()}/>
+              <Button size="sm" onClick={async function(){
+                try { await navigator.clipboard.writeText(sheetRes.reviewUrl); toast.success('Link copied'); }
+                catch(e) { toast.error('Could not copy — ' + e.message); }
+              }}>
+                <Icon name="share"/> Copy link
+              </Button>
+            </div>
+          )}
+        </Card>
+      )}
 
       <Card>
         <div className="flex items-center gap-3 mb-4 flex-wrap">
           <span className="ttl">Creative Library</span>
           <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
+          <Button size="sm" variant="ghost" disabled={visible.length===0}
+                  onClick={()=>setPicked(picked.length === visible.length ? [] : visible.map(c=>c.id))}>
+            {picked.length === visible.length && visible.length > 0 ? 'Select none' : 'Select all shown'}
+          </Button>
           <Button size="sm" variant="secondary" onClick={downloadAllVisible} loading={bulkDownloading} disabled={visible.length===0}>
             <Icon name="down"/> Download {visible.length > 0 ? 'all (' + visible.length + ')' : 'all'}
           </Button>
@@ -1198,10 +1301,20 @@ function CreativeLibrary({ isAdmin, myStores }) {
               const cp = campaigns.find(x=>x.id===c.campaign_id);
               const st = myStores.find(x=>x.id===c.store_id);
               return (
-                <div key={c.id} className="hud p-0 overflow-hidden group relative">
+                <div key={c.id} className="hud p-0 overflow-hidden group relative"
+                     style={picked.includes(c.id) ? {outline:'2px solid var(--cy)', outlineOffset:'-2px'} : undefined}>
                   <div className="w-full" style={{aspectRatio:String(aspectMeta(c.aspect).ratio), background:'rgba(var(--sink-rgb),.7)'}}>
                     <img src={c.public_url} alt={c.name} className="w-full h-full object-cover"/>
                   </div>
+                  {/* Ticked cards keep their box visible; the rest reveal it on
+                      hover so an untouched grid stays a wall of artwork. */}
+                  <label className={'absolute top-2 left-2 p-1.5 cursor-pointer transition-opacity '
+                                    + (picked.includes(c.id) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')}
+                         style={{background:'rgba(var(--sink2-rgb),.85)', border:'1px solid var(--line)'}}
+                         title="Select for a contact sheet">
+                    <input type="checkbox" checked={picked.includes(c.id)}
+                           onChange={()=>togglePick(c.id)} aria-label={'Select ' + c.name}/>
+                  </label>
                   <div className="absolute top-2 right-2 flex gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
                     <button onClick={()=>copyLink(c)}
                       className="p-1.5" title="Copy link"

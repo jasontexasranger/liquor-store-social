@@ -1254,9 +1254,20 @@ function CreativeLibrary({ isAdmin, myStores }) {
         <div className="flex items-center gap-3 mb-4 flex-wrap">
           <span className="ttl">Creative Library</span>
           <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
-          <Button size="sm" variant="ghost" disabled={visible.length===0}
+          {/* The sheet button lives here permanently, disabled and explaining
+              itself, rather than appearing only once something is ticked —
+              a control you can't see isn't a feature you have. */}
+          <Button size="sm" variant="outline" onClick={sheetOnly} loading={sheetBusy}
+                  disabled={!picked.length}
+                  title={picked.length ? 'Build a PDF contact sheet of the ticked creatives'
+                                       : 'Tick the box on some creatives first'}>
+            <Icon name="print"/> {sheetBusy && sheetProg ? sheetProg
+              : 'Contact sheet' + (picked.length ? ' (' + picked.length + ')' : '')}
+          </Button>
+          <Button size="sm" variant="secondary" disabled={visible.length===0}
                   onClick={()=>setPicked(picked.length === visible.length ? [] : visible.map(c=>c.id))}>
-            {picked.length === visible.length && visible.length > 0 ? 'Select none' : 'Select all shown'}
+            <Icon name="check"/> {picked.length === visible.length && visible.length > 0
+              ? 'Select none' : 'Select all ' + (visible.length ? '(' + visible.length + ')' : '')}
           </Button>
           <Button size="sm" variant="secondary" onClick={downloadAllVisible} loading={bulkDownloading} disabled={visible.length===0}>
             <Icon name="down"/> Download {visible.length > 0 ? 'all (' + visible.length + ')' : 'all'}
@@ -1306,11 +1317,12 @@ function CreativeLibrary({ isAdmin, myStores }) {
                   <div className="w-full" style={{aspectRatio:String(aspectMeta(c.aspect).ratio), background:'rgba(var(--sink-rgb),.7)'}}>
                     <img src={c.public_url} alt={c.name} className="w-full h-full object-cover"/>
                   </div>
-                  {/* Ticked cards keep their box visible; the rest reveal it on
-                      hover so an untouched grid stays a wall of artwork. */}
-                  <label className={'absolute top-2 left-2 p-1.5 cursor-pointer transition-opacity '
-                                    + (picked.includes(c.id) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')}
-                         style={{background:'rgba(var(--sink2-rgb),.85)', border:'1px solid var(--line)'}}
+                  {/* Always visible. Hiding it until hover meant nobody knew
+                      the grid could be selected at all. */}
+                  <label className="absolute top-2 left-2 p-1.5 cursor-pointer transition-all"
+                         style={{ background: picked.includes(c.id)
+                                    ? 'var(--cy-glow)' : 'rgba(var(--sink2-rgb),.8)',
+                                  border: '1px solid ' + (picked.includes(c.id) ? 'var(--cy)' : 'var(--line)') }}
                          title="Select for a contact sheet">
                     <input type="checkbox" checked={picked.includes(c.id)}
                            onChange={()=>togglePick(c.id)} aria-label={'Select ' + c.name}/>

@@ -1,0 +1,261 @@
+<!doctype html>
+<!-- Creative approval page for store staff.
+
+     Opened from a link the platform hands out: ?t=<token>. No login — most
+     store staff don't have accounts, and requiring one is how a sign-off step
+     quietly stops happening. The token is the capability; everything this page
+     can do goes through three SECURITY DEFINER functions that take it
+     (review_fetch / review_decide / review_submit), so the anon key below
+     reaches nothing else.
+
+     Decisions save as they're made, so a half-finished review isn't lost.
+     "Send back" is the explicit end of the round and records who did it.
+
+     Served by Netlify as a real file — the SPA rewrite in netlify.toml does
+     not shadow files that exist on disk. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Creative approval</title>
+<style>
+  :root { --ink:#191919; --mut:#767676; --line:#e5e5e5; --ok:#15803d; --no:#b91c1c;
+          --brand:#1e3a5f; --gold:#c4a35a; }
+  * { box-sizing:border-box; margin:0; }
+  body { font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;
+         color:var(--ink); background:#f6f6f4; padding:16px 14px 64px; }
+  .wrap { max-width:940px; margin:0 auto; }
+  header { text-align:center; padding:18px 0 6px; }
+  header h1 { font-size:22px; letter-spacing:.01em; }
+  header p { color:var(--mut); font-size:13.5px; margin-top:5px; }
+  .bar { position:sticky; top:0; z-index:5; background:rgba(246,246,244,.95);
+         backdrop-filter:blur(6px); border-bottom:1px solid var(--line);
+         margin:14px -14px 0; padding:10px 14px; display:flex; gap:10px;
+         align-items:center; flex-wrap:wrap; font-size:13px; }
+  .bar b { font-weight:700; }
+  .spacer { flex:1 1 auto; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr));
+          gap:14px; margin-top:18px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:12px; overflow:hidden;
+          display:flex; flex-direction:column; }
+  .card.approved { border-color:var(--ok); box-shadow:0 0 0 1px var(--ok); }
+  .card.rejected { border-color:var(--no); box-shadow:0 0 0 1px var(--no); }
+  .ph { background:#fafafa; aspect-ratio:1; position:relative; }
+  .ph img { position:absolute; inset:0; margin:auto; max-width:94%; max-height:94%;
+            width:auto; height:auto; object-fit:contain; cursor:zoom-in; }
+  .meta { padding:9px 11px 0; }
+  .nm { font-size:13px; font-weight:600; line-height:1.3; }
+  .asp { font-size:11px; color:var(--mut); margin-top:2px; }
+  .btns { display:flex; gap:7px; padding:9px 11px 11px; }
+  button { font:inherit; cursor:pointer; border-radius:8px; border:1.5px solid var(--line);
+           background:#fff; color:#444; padding:7px 10px; font-size:12.5px; font-weight:600;
+           transition:background .13s,border-color .13s,color .13s; }
+  button:hover { border-color:#bdbdbd; }
+  .btns button { flex:1; }
+  .yes.on { background:var(--ok); border-color:var(--ok); color:#fff; }
+  .no.on  { background:var(--no); border-color:var(--no); color:#fff; }
+  textarea { font:inherit; font-size:12.5px; width:100%; border:1px solid var(--line);
+             border-radius:8px; padding:7px 9px; resize:vertical; background:#fff; color:var(--ink); }
+  .why { padding:0 11px 11px; }
+  .foot { background:#fff; border:1px solid var(--line); border-radius:12px;
+          padding:16px; margin-top:20px; }
+  .foot h2 { font-size:15px; margin-bottom:4px; }
+  .foot p { font-size:12.5px; color:var(--mut); margin-bottom:12px; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-start; }
+  input[type=text] { font:inherit; font-size:13px; padding:8px 10px; border:1px solid var(--line);
+                     border-radius:8px; min-width:200px; flex:1 1 200px; background:#fff; color:var(--ink); }
+  .send { background:var(--brand); border-color:var(--brand); color:#fff; padding:9px 18px; }
+  .send:hover { border-color:var(--brand); background:#16304f; }
+  .send[disabled] { opacity:.45; cursor:default; }
+  .note { text-align:center; color:var(--mut); padding:56px 16px; font-size:14px; }
+  .done { background:#fff; border:1px solid var(--ok); border-left-width:4px; border-radius:12px;
+          padding:16px; margin-top:20px; }
+  .done h2 { font-size:15px; color:var(--ok); margin-bottom:4px; }
+  .done p { font-size:13px; color:var(--mut); }
+  .lb { position:fixed; inset:0; background:rgba(0,0,0,.86); display:none;
+        align-items:center; justify-content:center; z-index:50; padding:20px; }
+  .lb.on { display:flex; }
+  .lb img { max-width:100%; max-height:100%; object-fit:contain; }
+  @media (max-width:520px) { .grid { grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); } }
+</style>
+</head>
+<body>
+<div class="wrap" id="app"><p class="note">Loading…</p></div>
+<div class="lb" id="lb"><img id="lbi" alt=""></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script>
+(function () {
+  var URL_ = 'https://yyveikxfomxmedlxsulh.supabase.co';
+  // The project's publishable anon key, the same one the platform ships. It
+  // grants nothing on these tables — the three token functions are the only
+  // way in, and each needs the token from the link.
+  var KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl5dmVpa3hmb214bWVkbHhzdWxoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2MTk0MDksImV4cCI6MjA5OTE5NTQwOX0.bBuyIp-LS9X2mPiY0fbgjS5urw0Ke-YZbE56SgYgpt4';
+  var sb = window.supabase.createClient(URL_, KEY, { auth: { persistSession: false } });
+
+  var app = document.getElementById('app');
+  var token = new URLSearchParams(location.search).get('t') || '';
+  var state = null;
+
+  var esc = function (s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+      return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c];
+    });
+  };
+  // Images only from our own storage. The row is written by staff, but a page
+  // anyone can open shouldn't render an arbitrary URL.
+  var okImg = function (u) {
+    return /^https:\/\/yyveikxfomxmedlxsulh\.supabase\.co\/storage\//.test(u || '');
+  };
+
+  function fail(msg) { app.innerHTML = '<p class="note">' + esc(msg) + '</p>'; }
+
+  if (!token) { fail('This link is missing its code. Ask for a fresh one.'); return; }
+
+  var lb = document.getElementById('lb'), lbi = document.getElementById('lbi');
+  lb.addEventListener('click', function () { lb.classList.remove('on'); });
+
+  function counts() {
+    var a = 0, r = 0;
+    state.items.forEach(function (it) {
+      if (it.decision === 'approved') a++;
+      else if (it.decision === 'rejected') r++;
+    });
+    return { approved: a, rejected: r, left: state.items.length - a - r };
+  }
+
+  function render() {
+    var c = counts();
+    var submitted = state.status !== 'open';
+
+    var h = '<header><h1>' + esc(state.title) + '</h1>'
+      + '<p>Tick what\'s good to go, flag anything that needs changing. '
+      + 'Your choices save as you make them.</p></header>';
+
+    h += '<div class="bar"><b>' + state.items.length + '</b> to review'
+      + ' &nbsp;·&nbsp; <span style="color:var(--ok)"><b>' + c.approved + '</b> approved</span>'
+      + ' &nbsp;·&nbsp; <span style="color:var(--no)"><b>' + c.rejected + '</b> flagged</span>'
+      + '<span class="spacer"></span>'
+      + (c.left ? '<span style="color:var(--mut)">' + c.left + ' still to decide</span>'
+                : '<span style="color:var(--ok)">All decided</span>')
+      + '</div>';
+
+    h += '<div class="grid">';
+    state.items.forEach(function (it, i) {
+      var cls = it.decision === 'approved' ? ' approved' : it.decision === 'rejected' ? ' rejected' : '';
+      h += '<div class="card' + cls + '" data-i="' + i + '">'
+        + '<div class="ph">' + (okImg(it.url)
+            ? '<img loading="lazy" src="' + esc(it.url) + '" alt="' + esc(it.name) + '" data-zoom="' + esc(it.url) + '">'
+            : '') + '</div>'
+        + '<div class="meta"><div class="nm">' + esc(it.name || 'Creative') + '</div>'
+        + (it.aspect ? '<div class="asp">' + esc(it.aspect) + '</div>' : '') + '</div>'
+        + (submitted ? '' :
+            '<div class="btns">'
+          + '<button class="yes' + (it.decision === 'approved' ? ' on' : '') + '" data-act="approved" data-i="' + i + '">Approve</button>'
+          + '<button class="no' + (it.decision === 'rejected' ? ' on' : '') + '" data-act="rejected" data-i="' + i + '">Change</button>'
+          + '</div>')
+        + (it.decision === 'rejected' || it.note
+            ? '<div class="why"><textarea rows="2" data-note="' + i + '"'
+              + (submitted ? ' readonly' : '') + ' placeholder="What needs changing?">'
+              + esc(it.note || '') + '</textarea></div>'
+            : '')
+        + '</div>';
+    });
+    h += '</div>';
+
+    if (submitted) {
+      h += '<div class="done"><h2>Sent back — thank you</h2><p>'
+        + esc(state.reviewer ? state.reviewer + ' submitted this review.' : 'This review has been submitted.')
+        + (state.note ? ' “' + esc(state.note) + '”' : '')
+        + ' Anything flagged will be redone and sent again.</p></div>';
+    } else {
+      h += '<div class="foot"><h2>Send it back</h2>'
+        + '<p>One last look, then send. You can keep changing your mind until you do.</p>'
+        + '<div class="row"><input type="text" id="who" placeholder="Your name">'
+        + '<input type="text" id="msg" placeholder="Anything else? (optional)">'
+        + '<button class="send" id="send"' + (c.left ? ' disabled title="Decide on every item first"' : '') + '>'
+        + 'Send back' + (c.left ? ' (' + c.left + ' left)' : '') + '</button></div></div>';
+    }
+
+    app.innerHTML = h;
+
+    app.querySelectorAll('[data-zoom]').forEach(function (img) {
+      img.addEventListener('click', function () {
+        lbi.src = img.getAttribute('data-zoom'); lb.classList.add('on');
+      });
+    });
+
+    app.querySelectorAll('[data-act]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        var it = state.items[+b.getAttribute('data-i')];
+        var want = b.getAttribute('data-act');
+        // Pressing the lit button again clears the decision.
+        decide(it, it.decision === want ? 'pending' : want, it.note || null);
+      });
+    });
+
+    app.querySelectorAll('[data-note]').forEach(function (t) {
+      t.addEventListener('blur', function () {
+        var it = state.items[+t.getAttribute('data-note')];
+        if ((it.note || '') === t.value) return;
+        decide(it, it.decision, t.value);
+      });
+    });
+
+    var send = document.getElementById('send');
+    if (send) send.addEventListener('click', function () {
+      send.disabled = true; send.textContent = 'Sending…';
+      sb.rpc('review_submit', {
+        p_token: token,
+        p_reviewer: (document.getElementById('who') || {}).value || null,
+        p_note: (document.getElementById('msg') || {}).value || null,
+      }).then(function (res) {
+        if (res.error || res.data === false) {
+          send.disabled = false; send.textContent = 'Send back';
+          alert('Could not send that — please try again.');
+          return;
+        }
+        load();
+      });
+    });
+  }
+
+  function decide(item, decision, note) {
+    var prev = { decision: item.decision, note: item.note };
+    item.decision = decision;
+    item.note = note;
+    render();
+    sb.rpc('review_decide', {
+      p_token: token, p_item: item.id, p_decision: decision, p_note: note || null,
+    }).then(function (res) {
+      if (res.error || res.data === false) {
+        item.decision = prev.decision; item.note = prev.note;
+        render();
+        alert('That did not save — check your connection and try again.');
+      }
+    });
+  }
+
+  function load() {
+    sb.rpc('review_fetch', { p_token: token }).then(function (res) {
+      if (res.error) { fail('Could not load this review. Try the link again in a moment.'); return; }
+      var d = res.data;
+      if (!d) { fail('This review link is not valid any more. Ask for a fresh one.'); return; }
+      state = {
+        title: d.title || 'Creative approval',
+        status: d.status || 'open',
+        reviewer: d.reviewer || '',
+        note: d.note || '',
+        items: d.items || [],
+      };
+      if (!state.items.length) { fail('There is nothing in this review yet.'); return; }
+      render();
+    });
+  }
+
+  load();
+})();
+</script>
+</body>
+</html>

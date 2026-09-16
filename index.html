@@ -6457,7 +6457,10 @@ function FeatureCreativeBatch({ storeId, storeName, period, rows, products, camp
           const blob = dataUrlToBlob(url);
           const aspect = nearestAspect(tpl.canvas_w, tpl.canvas_h);
 
-          await addRendered(blob, {
+          // The hosted URL, not the data URL that was just rendered: the
+          // approval sheet and the review page both need an address someone
+          // else's browser can load.
+          const publicUrl = await addRendered(blob, {
             name: monthLabel(period) + ' · ' + (row.name || 'Feature') + ' · ' + aspect,
             storeId, aspect, period,
             campaignId: campaign || null,
@@ -6465,7 +6468,7 @@ function FeatureCreativeBatch({ storeId, storeName, period, rows, products, camp
             width: tpl.canvas_w, height: tpl.canvas_h,
           });
 
-          made.push({ name: row.name, tpl: tpl.name, url,
+          made.push({ name: row.name, tpl: tpl.name, url: publicUrl || url, aspect,
                       warn: over.length ? 'Text too big to fit: ' + over.join(', ') : null });
         } catch (e) {
           failed.push((row.name || 'Feature') + ' / ' + tpl.name + ': ' + e.message);
@@ -6529,6 +6532,11 @@ function FeatureCreativeBatch({ storeId, storeName, period, rows, products, camp
                 {done.failed.map((f,i)=><p key={i} className="text-xs" style={{color:'var(--red)'}}>{f}</p>)}
               </div>
             )}
+            {done.made.length > 0 && (
+              <ApprovalSend storeId={storeId} storeName={storeName} kind="features"
+                            period={period} made={done.made}/>
+            )}
+
             <div className="flex gap-2 justify-end">
               <Button size="sm" variant="outline" onClick={()=>setDone(null)}>Run again</Button>
               <Button size="sm" onClick={onClose}>Done</Button>
@@ -6749,7 +6757,7 @@ function EDLPCreativeBatch({ storeId, storeName, rows, campaigns, onClose }) {
             width: tpl.canvas_w, height: tpl.canvas_h,
           });
 
-          made.push({ name: row.name, tpl: tpl.name, url: publicUrl,
+          made.push({ name: row.name, tpl: tpl.name, url: publicUrl, aspect,
                       warn: over.length ? 'Text too big to fit: ' + over.join(', ') : null });
         } catch (e) {
           failed.push((row.name || 'Item') + ' / ' + tpl.name + ': ' + e.message);
@@ -6868,6 +6876,11 @@ function EDLPCreativeBatch({ storeId, storeName, rows, campaigns, onClose }) {
                 Playlist "{pushed.name}" is live with {pushed.items} item{pushed.items===1?'':'s'}
                 {pushed.assigned.length ? (' on ' + pushed.assigned.length + ' screen' + (pushed.assigned.length===1?'':'s') + '.') : '.'}
               </p>
+            )}
+
+            {done.made.length > 0 && (
+              <ApprovalSend storeId={storeId} storeName={storeName} kind="edlp"
+                            period={null} made={done.made}/>
             )}
 
             <div className="flex gap-2 justify-end">
@@ -8053,6 +8066,12 @@ function FeaturesPage({ isAdmin, myStores, editableIds, initialView, go }) {
           onClose={()=>setShowSign(false)}/>
       )}
 
+      {canEdit && (
+        <CreativeReviewsCard storeId={storeId}
+          storeName={(myStores.find(s=>s.id===storeId)||{}).name || ''}
+          period={period}/>
+      )}
+
       {isAdmin && showWeb && (
         <WebsitePushModal
           storeId={storeId}
@@ -8075,6 +8094,359 @@ function FeaturesPage({ isAdmin, myStores, editableIds, initialView, go }) {
           onClose={()=>setShowPlan(false)} onDone={reload}/>
       )}
     </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// CREATIVE APPROVAL — contact sheet + review round
+// ─────────────────────────────────────────────
+// A batch of price graphics has to be signed off before it reaches a screen
+// or a shelf. Two artefacts do that job together: a contact sheet PDF, which
+// is what gets attached to an email or printed and marked up, and a review
+// link, which is how the store answers without needing an account.
+
+const REVIEW_BASE = SITE_BASE + '/creative-review.html';
+const reviewLinkFor = token => REVIEW_BASE + '?t=' + encodeURIComponent(token);
+
+// Thumbnails for the sheet. Drawn onto a white square first: the creatives are
+// PNGs with transparency, and transparent pixels come out black in a PDF.
+async function sheetThumb(url, px) {
+  const dataUrl = await toDataUrl(url);
+  return new Promise(function(resolve) {
+    const img = new Image();
+    img.onload = function() {
+      const c = document.createElement('canvas');
+      c.width = px; c.height = px;
+      const g = c.getContext('2d');
+      g.fillStyle = '#ffffff';
+      g.fillRect(0, 0, px, px);
+      const s = Math.min(px / img.width, px / img.height);
+      const w = img.width * s, h = img.height * s;
+      g.drawImage(img, (px - w) / 2, (px - h) / 2, w, h);
+      resolve(c.toDataURL('image/jpeg', 0.86));
+    };
+    img.onerror = function(){ resolve(null); };
+    img.src = dataUrl;
+  });
+}
+
+// A letter-size contact sheet: 3 across, 3 down, 9 to a page, each with a tick
+// box and its caption, and a sign-off line on the last page. Returns the jsPDF
+// doc so the caller can both download it and upload a copy.
+async function buildContactSheet({ title, subtitle, items, reviewUrl, onProgress }) {
+  if (!window.jspdf || !window.jspdf.jsPDF) throw new Error('jsPDF not loaded');
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation:'portrait', unit:'in', format:'letter' });
+
+  const M = 0.5, PW = 8.5, PH = 11;
+  const COLS = 3, ROWS = 3, PER = COLS * ROWS;
+  const CELL_W = (PW - M * 2) / COLS;
+  const IMG = CELL_W - 0.22;          // square image, a little inset
+  const CAP = 0.52;                   // caption + tick box under each
+  const CELL_H = IMG + CAP;
+  const pages = Math.max(1, Math.ceil(items.length / PER));
+
+  for (let p = 0; p < pages; p++) {
+    if (p > 0) doc.addPage('letter', 'portrait');
+
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(15); doc.setTextColor(20);
+    doc.text(title, M, M + 0.06);
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(110);
+    doc.text(subtitle, M, M + 0.27);
+    doc.setDrawColor(210); doc.setLineWidth(0.008);
+    doc.line(M, M + 0.38, PW - M, M + 0.38);
+
+    const top = M + 0.62;
+    const slice = items.slice(p * PER, p * PER + PER);
+
+    for (let i = 0; i < slice.length; i++) {
+      const it = slice[i];
+      const cx = M + (i % COLS) * CELL_W;
+      const cy = top + Math.floor(i / COLS) * CELL_H;
+      if (onProgress) onProgress(p * PER + i + 1, items.length);
+
+      const thumb = await sheetThumb(it.url, 520);
+      if (thumb) {
+        doc.addImage(thumb, 'JPEG', cx + 0.11, cy, IMG, IMG);
+      } else {
+        doc.setDrawColor(225); doc.rect(cx + 0.11, cy, IMG, IMG);
+        doc.setFontSize(8); doc.setTextColor(150);
+        doc.text('image unavailable', cx + 0.11 + IMG / 2, cy + IMG / 2, { align:'center' });
+      }
+      doc.setDrawColor(170); doc.setLineWidth(0.006);
+      doc.rect(cx + 0.11, cy + IMG, IMG, 0.001);   // hairline under the image
+
+      // Tick box, then the caption beside it.
+      const by = cy + IMG + 0.12;
+      doc.setDrawColor(90); doc.setLineWidth(0.012);
+      doc.rect(cx + 0.12, by, 0.15, 0.15);
+
+      doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(30);
+      const nameLines = doc.splitTextToSize(String(it.name || 'Creative'), IMG - 0.3).slice(0, 2);
+      doc.text(nameLines, cx + 0.34, by + 0.11);
+      if (it.sub) {
+        doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(120);
+        doc.text(String(it.sub), cx + 0.34, by + 0.11 + nameLines.length * 0.12);
+      }
+    }
+
+    // Footer: the link is on every page, because the page someone prints is
+    // not necessarily the page that has the link on it.
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(7.5); doc.setTextColor(140);
+    doc.text('Page ' + (p + 1) + ' of ' + pages, PW - M, PH - M + 0.12, { align:'right' });
+    if (reviewUrl) doc.text('Approve online: ' + reviewUrl, M, PH - M + 0.12);
+
+    if (p === pages - 1) {
+      const y = PH - M - 0.42;
+      doc.setDrawColor(150); doc.setLineWidth(0.008);
+      doc.line(M, y, M + 2.9, y);
+      doc.line(M + 3.3, y, M + 5.1, y);
+      doc.setFontSize(8); doc.setTextColor(120);
+      doc.text('Approved by', M, y + 0.16);
+      doc.text('Date', M + 3.3, y + 0.16);
+    }
+  }
+  return doc;
+}
+
+// Creates the review round, uploads its contact sheet, and hands back the
+// link. The sheet is built first so the link can be printed on it, then the
+// row is updated with where the sheet ended up.
+async function createCreativeReview({ storeId, storeName, kind, period, items, onProgress }) {
+  const sb = getSB();
+  if (!items.length) throw new Error('Nothing to send for approval');
+  const { data:{ user } } = await sb.auth.getUser();
+
+  const label = kind === 'edlp' ? 'EDLP price ads' : (period ? monthLabel(period) + ' price ads' : 'Price ads');
+  const title = storeName.replace(/ Liquor Store.*$/i, '') + ' — ' + label;
+
+  const { data: review, error } = await sb.from('creative_reviews').insert({
+    store_id: storeId, kind, period: period || null, title, created_by: user?.id,
+  }).select().single();
+  if (error) throw new Error(error.message);
+
+  const rows = items.map(function(it, i) {
+    return {
+      review_id: review.id,
+      creative_id: it.creativeId || null,
+      name: it.name || 'Creative',
+      aspect: it.aspect || null,
+      public_url: it.url,
+      sort: i,
+    };
+  });
+  const { error: itErr } = await sb.from('creative_review_items').insert(rows);
+  if (itErr) throw new Error(itErr.message);
+
+  const reviewUrl = reviewLinkFor(review.token);
+  const doc = await buildContactSheet({
+    title,
+    subtitle: 'Generated ' + new Date().toLocaleDateString(undefined, { dateStyle:'long' })
+            + ' · ' + items.length + ' creative' + (items.length===1?'':'s')
+            + ' · tick to approve, or mark up what needs changing',
+    items: items.map(it => ({ name: it.name, sub: it.aspect, url: it.url })),
+    reviewUrl,
+    onProgress,
+  });
+
+  // Best effort: a sheet that failed to upload still downloads, and the
+  // review link works either way, so this must not fail the whole action.
+  let sheetUrl = null;
+  try {
+    const path = 'reviews/' + storeId + '/' + review.id + '.pdf';
+    const blob = doc.output('blob');
+    const { error: upErr } = await sb.storage.from('creatives')
+      .upload(path, blob, { upsert:true, contentType:'application/pdf', cacheControl:'300' });
+    if (!upErr) {
+      sheetUrl = sb.storage.from('creatives').getPublicUrl(path).data.publicUrl;
+      await sb.from('creative_reviews').update({ sheet_url: sheetUrl }).eq('id', review.id);
+    }
+  } catch(e) { /* keep going — the doc is still returned below */ }
+
+  return { review, reviewUrl, sheetUrl, doc, title };
+}
+
+// Review rounds for a store, and a way to start one from whatever is already
+// in the library — so a sheet can be produced any time, not only in the
+// minutes after a batch run.
+function CreativeReviewsCard({ storeId, storeName, period }) {
+  const toast = useToast();
+  const { creatives } = useCreatives();
+  const [rounds, setRounds] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [prog, setProg] = useState('');
+
+  const load = useCallback(async function() {
+    const sb = getSB(); if (!sb) return;
+    const { data } = await sb.from('creative_reviews')
+      .select('*, creative_review_items(decision)')
+      .eq('store_id', storeId).order('created_at', { ascending:false }).limit(12);
+    setRounds(data || []);
+  }, [storeId]);
+  useEffect(function(){ setRounds(null); load(); }, [load]);
+
+  // This month's images for this store, newest first — the same set the
+  // signage push works from.
+  const monthCreatives = creatives.filter(c =>
+    c.store_id === storeId && String(c.period) === String(period));
+
+  const start = async function() {
+    if (!monthCreatives.length) { toast.error('No creatives for this month yet — generate some first'); return; }
+    setBusy(true); setProg('');
+    try {
+      const r = await createCreativeReview({
+        storeId, storeName, kind:'features', period,
+        items: monthCreatives.map(c => ({
+          name: c.name, aspect: c.aspect, url: c.public_url, creativeId: c.id })),
+        onProgress: (n, total) => setProg(n + ' of ' + total),
+      });
+      const slug = (storeName.split(' ')[0] || 'store').toLowerCase();
+      r.doc.save('contact-sheet-' + slug + '-' + period + '.pdf');
+      toast.success('Contact sheet downloaded — link ready below');
+      await load();
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(false); setProg(''); }
+  };
+
+  const close = round => async function() {
+    if (!confirm('Close this round? The link stops accepting changes.')) return;
+    const { error } = await getSB().from('creative_reviews')
+      .update({ status:'closed' }).eq('id', round.id);
+    if (error) { toast.error(error.message); return; }
+    toast.success('Round closed');
+    await load();
+  };
+
+  const tally = round => {
+    const its = round.creative_review_items || [];
+    return {
+      total: its.length,
+      yes: its.filter(i => i.decision === 'approved').length,
+      no:  its.filter(i => i.decision === 'rejected').length,
+    };
+  };
+
+  return (
+    <Card>
+      <div className="flex items-center gap-3 mb-3 flex-wrap">
+        <span className="ttl">Approvals</span>
+        <span className="lbl">{monthCreatives.length} creative{monthCreatives.length===1?'':'s'} this month</span>
+        <span className="flex-1"/>
+        <Button size="sm" variant="outline" onClick={start} loading={busy}
+                disabled={!monthCreatives.length}>
+          <Icon name="print"/> {busy ? (prog ? 'Building — ' + prog : 'Building…') : 'New contact sheet'}
+        </Button>
+      </div>
+      <p className="lbl mb-3">
+        Builds a PDF contact sheet of this month's images and opens a round the store can
+        tick through — their answers come back here.
+      </p>
+
+      {rounds === null ? (
+        <p className="lbl text-center py-5">Loading…</p>
+      ) : rounds.length === 0 ? (
+        <p className="lbl text-center py-5">No approval rounds yet.</p>
+      ) : rounds.map(function(r) {
+        const t = tally(r);
+        const done = t.yes + t.no;
+        return (
+          <div key={r.id} className="py-2.5 flex items-center gap-3 flex-wrap"
+               style={{borderBottom:'1px solid rgba(212,175,55,.075)'}}>
+            <div className="flex-1" style={{minWidth:'200px'}}>
+              <p className="text-xs" style={{color:'var(--txt)'}}>{r.title}</p>
+              <p className="lbl mt-0.5">
+                {new Date(r.created_at).toLocaleDateString()}
+                {r.reviewer ? ' · ' + r.reviewer : ''}
+                {r.note ? ' · “' + r.note + '”' : ''}
+              </p>
+            </div>
+            <span className="mono text-xs" style={{color:'var(--grn)'}}>{t.yes} ok</span>
+            {t.no > 0 && <span className="mono text-xs" style={{color:'var(--red)'}}>{t.no} flagged</span>}
+            <span className="lbl">{done}/{t.total}</span>
+            <Badge color={r.status === 'submitted' ? 'green' : r.status === 'closed' ? 'gray' : 'yellow'}>
+              {r.status === 'submitted' ? 'Returned' : r.status === 'closed' ? 'Closed' : 'Waiting'}
+            </Badge>
+            <Button size="sm" variant="ghost" onClick={async function(){
+              try { await navigator.clipboard.writeText(reviewLinkFor(r.token)); toast.success('Link copied'); }
+              catch(e) { toast.error('Could not copy — ' + e.message); }
+            }} title="Copy the store's review link">
+              <Icon name="share" size={12}/>
+            </Button>
+            {r.sheet_url && (
+              <Button size="sm" variant="ghost" onClick={()=>window.open(r.sheet_url, '_blank')} title="Open the contact sheet">
+                <Icon name="file" size={12}/>
+              </Button>
+            )}
+            {r.status !== 'closed' && (
+              <Button size="sm" variant="ghost" onClick={close(r)} title="Close this round">
+                <Icon name="check" size={12}/>
+              </Button>
+            )}
+          </div>
+        );
+      })}
+    </Card>
+  );
+}
+
+// The one control both batch modals use once a run finishes. Makes the sheet,
+// downloads it, opens the round, and then shows the link — the link is the
+// point, so it stays on screen rather than living only in a toast.
+function ApprovalSend({ storeId, storeName, kind, period, made }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [prog, setProg] = useState('');
+  const [res,  setRes]  = useState(null);
+
+  const send = async function() {
+    setBusy(true); setProg('');
+    try {
+      const r = await createCreativeReview({
+        storeId, storeName, kind, period,
+        items: made.map(m => ({ name: m.name, aspect: m.aspect || m.tpl, url: m.url })),
+        onProgress: (n, total) => setProg(n + ' of ' + total),
+      });
+      const slug = (storeName.split(' ')[0] || 'store').toLowerCase();
+      r.doc.save('contact-sheet-' + slug + '-' + (period || kind) + '.pdf');
+      setRes(r);
+      toast.success('Contact sheet downloaded, approval link ready');
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(false); setProg(''); }
+  };
+
+  if (res) {
+    return (
+      <div className="mb-4 p-3" style={{border:'1px solid var(--grn)', background:'rgba(63,240,138,.06)'}}>
+        <p className="text-xs mb-2" style={{color:'var(--grn)'}}>
+          Contact sheet saved to your downloads. Send the store this link and their
+          answers come back into the app.
+        </p>
+        <Input readOnly value={res.reviewUrl} className="text-xs mb-2"
+               onFocus={e=>e.target.select()}/>
+        <div className="flex gap-2 flex-wrap">
+          <Button size="sm" onClick={async function(){
+            try { await navigator.clipboard.writeText(res.reviewUrl); toast.success('Link copied'); }
+            catch(e) { toast.error('Could not copy — ' + e.message); }
+          }}>
+            <Icon name="share"/> Copy link
+          </Button>
+          <Button size="sm" variant="outline" onClick={()=>window.open(res.reviewUrl, '_blank')}>
+            <Icon name="eye"/> Open it
+          </Button>
+          {res.sheetUrl && (
+            <Button size="sm" variant="outline" onClick={()=>window.open(res.sheetUrl, '_blank')}>
+              <Icon name="file"/> Sheet
+            </Button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <Button size="sm" variant="outline" onClick={send} loading={busy} className="mb-4">
+      <Icon name="print"/> {busy ? (prog ? 'Building sheet — ' + prog : 'Building…') : 'Contact sheet for approval'}
+    </Button>
   );
 }
 

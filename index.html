@@ -8266,6 +8266,56 @@ async function createCreativeReview({ storeId, storeName, kind, period, items, o
   return { review, reviewUrl, sheetUrl, doc, title };
 }
 
+// A month rendered at three sizes is the same design three times over, and
+// what the store is actually approving is the design. Showing every size
+// turns a twelve-feature month into four pages of repeats, so the sheet and
+// the review default to one size per product.
+const ASPECT_PREF = ['1:1', '4:5', '16:9', '9:16', '3:5'];
+function aspectsPresent(items) {
+  const seen = [];
+  (items || []).forEach(function(it) {
+    const a = it.aspect || '';
+    if (a && seen.indexOf(a) === -1) seen.push(a);
+  });
+  return seen.sort(function(a, b) {
+    const ia = ASPECT_PREF.indexOf(a), ib = ASPECT_PREF.indexOf(b);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+  });
+}
+// One row per design, preferring the chosen size. A product that only
+// rendered at another size still appears — dropping a product from an
+// approval sheet because its square version failed would be worse than
+// showing it at the wrong size.
+function oneSizePerDesign(items, aspect) {
+  if (!aspect || aspect === 'all') return items;
+  const byName = {};
+  items.forEach(function(it) {
+    const k = it.name || '';
+    (byName[k] = byName[k] || []).push(it);
+  });
+  const keep = Object.keys(byName).map(function(k) {
+    const g = byName[k];
+    return g.filter(x => (x.aspect || '') === aspect)[0] || g[0];
+  });
+  return items.filter(it => keep.indexOf(it) !== -1);
+}
+
+// The shared size control. Hidden entirely when there's only one size in
+// play, since a choice of one isn't a choice.
+function SheetSizePicker({ items, value, onChange }) {
+  const sizes = aspectsPresent(items);
+  if (sizes.length < 2) return null;
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <span className="lbl">Sheet shows</span>
+      <Select value={value} onChange={e=>onChange(e.target.value)} className="w-auto text-xs">
+        {sizes.map(a=><option key={a} value={a}>{a} only — one per product</option>)}
+        <option value="all">Every size ({items.length} images)</option>
+      </Select>
+    </div>
+  );
+}
+
 // Review rounds for a store, and a way to start one from whatever is already
 // in the library — so a sheet can be produced any time, not only in the
 // minutes after a batch run.
@@ -8290,14 +8340,20 @@ function CreativeReviewsCard({ storeId, storeName, period }) {
   const monthCreatives = creatives.filter(c =>
     c.store_id === storeId && String(c.period) === String(period));
 
+  const asItems = monthCreatives.map(c => ({
+    name: c.name, aspect: c.aspect, url: c.public_url, creativeId: c.id }));
+  const sizes = aspectsPresent(asItems);
+  const [aspect, setAspect] = useState('');
+  const activeAspect = aspect || sizes[0] || 'all';
+  const chosen = oneSizePerDesign(asItems, activeAspect);
+
   const start = async function() {
     if (!monthCreatives.length) { toast.error('No creatives for this month yet — generate some first'); return; }
     setBusy(true); setProg('');
     try {
       const r = await createCreativeReview({
         storeId, storeName, kind:'features', period,
-        items: monthCreatives.map(c => ({
-          name: c.name, aspect: c.aspect, url: c.public_url, creativeId: c.id })),
+        items: chosen,
         onProgress: (n, total) => setProg(n + ' of ' + total),
       });
       const slug = (storeName.split(' ')[0] || 'store').toLowerCase();
@@ -8332,14 +8388,17 @@ function CreativeReviewsCard({ storeId, storeName, period }) {
         <span className="ttl">Approvals</span>
         <span className="lbl">{monthCreatives.length} creative{monthCreatives.length===1?'':'s'} this month</span>
         <span className="flex-1"/>
+        <SheetSizePicker items={asItems} value={activeAspect} onChange={setAspect}/>
         <Button size="sm" variant="outline" onClick={start} loading={busy}
                 disabled={!monthCreatives.length}>
-          <Icon name="print"/> {busy ? (prog ? 'Building — ' + prog : 'Building…') : 'New contact sheet'}
+          <Icon name="print"/> {busy ? (prog ? 'Building — ' + prog : 'Building…')
+            : 'New contact sheet' + (chosen.length ? ' (' + chosen.length + ')' : '')}
         </Button>
       </div>
       <p className="lbl mb-3">
         Builds a PDF contact sheet of this month's images and opens a round the store can
-        tick through — their answers come back here.
+        tick through — their answers come back here. One size per product by default, since
+        the same design at three sizes is one decision, not three.
       </p>
 
       {rounds === null ? (
@@ -8366,22 +8425,31 @@ function CreativeReviewsCard({ storeId, storeName, period }) {
             <Badge color={r.status === 'submitted' ? 'green' : r.status === 'closed' ? 'gray' : 'yellow'}>
               {r.status === 'submitted' ? 'Returned' : r.status === 'closed' ? 'Closed' : 'Waiting'}
             </Badge>
-            <Button size="sm" variant="ghost" onClick={async function(){
-              try { await navigator.clipboard.writeText(reviewLinkFor(r.token)); toast.success('Link copied'); }
+            <Button size="sm" onClick={async function(){
+              try { await navigator.clipboard.writeText(reviewLinkFor(r.token)); toast.success('Link copied — paste it to the store'); }
               catch(e) { toast.error('Could not copy — ' + e.message); }
             }} title="Copy the store's review link">
-              <Icon name="share" size={12}/>
+              <Icon name="share"/> Copy link
             </Button>
             {r.sheet_url && (
-              <Button size="sm" variant="ghost" onClick={()=>window.open(r.sheet_url, '_blank')} title="Open the contact sheet">
-                <Icon name="file" size={12}/>
+              <Button size="sm" variant="outline" onClick={()=>window.open(r.sheet_url, '_blank')}>
+                <Icon name="file"/> Sheet
               </Button>
             )}
             {r.status !== 'closed' && (
-              <Button size="sm" variant="ghost" onClick={close(r)} title="Close this round">
-                <Icon name="check" size={12}/>
+              <Button size="sm" variant="ghost" onClick={close(r)} title="Stop the link accepting changes">
+                Close
               </Button>
             )}
+
+            {/* The link in full, selectable — copying is the usual route but a
+                button is no use when you're reading this over someone's
+                shoulder or pasting it into a text by hand. */}
+            <div className="w-full">
+              <Input readOnly value={reviewLinkFor(r.token)} className="text-[10.5px]"
+                     style={{fontFamily:'var(--mono)', padding:'5px 7px'}}
+                     onFocus={e=>e.target.select()}/>
+            </div>
           </div>
         );
       })}
@@ -8398,12 +8466,17 @@ function ApprovalSend({ storeId, storeName, kind, period, made }) {
   const [prog, setProg] = useState('');
   const [res,  setRes]  = useState(null);
 
+  const asItems = made.map(m => ({ name: m.name, aspect: m.aspect || m.tpl, url: m.url }));
+  const sizes = aspectsPresent(asItems);
+  const [aspect, setAspect] = useState(sizes[0] || 'all');
+  const chosen = oneSizePerDesign(asItems, aspect);
+
   const send = async function() {
     setBusy(true); setProg('');
     try {
       const r = await createCreativeReview({
         storeId, storeName, kind, period,
-        items: made.map(m => ({ name: m.name, aspect: m.aspect || m.tpl, url: m.url })),
+        items: chosen,
         onProgress: (n, total) => setProg(n + ' of ' + total),
       });
       const slug = (storeName.split(' ')[0] || 'store').toLowerCase();
@@ -8444,9 +8517,14 @@ function ApprovalSend({ storeId, storeName, kind, period, made }) {
   }
 
   return (
-    <Button size="sm" variant="outline" onClick={send} loading={busy} className="mb-4">
-      <Icon name="print"/> {busy ? (prog ? 'Building sheet — ' + prog : 'Building…') : 'Contact sheet for approval'}
-    </Button>
+    <div className="mb-4 p-3 flex items-center gap-3 flex-wrap" style={{border:'1px solid var(--line)'}}>
+      <SheetSizePicker items={asItems} value={aspect} onChange={setAspect}/>
+      <span className="flex-1"/>
+      <span className="lbl">{chosen.length} on the sheet</span>
+      <Button size="sm" variant="outline" onClick={send} loading={busy}>
+        <Icon name="print"/> {busy ? (prog ? 'Building sheet — ' + prog : 'Building…') : 'Contact sheet for approval'}
+      </Button>
+    </div>
   );
 }
 

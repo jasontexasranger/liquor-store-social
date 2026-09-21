@@ -18637,6 +18637,16 @@ function TemplateManager({ storeId }) {
   const [saving,    setSaving]   = useState(false);
   const [filterSz,  setFilterSz] = useState('all');
   const [layoutTpl, setLayoutTpl] = useState(null);
+  const [showNew,   setShowNew]   = useState(false);
+  const editorRef = useRef();
+  // The editor renders inline rather than as a modal, so opening one from
+  // a long gallery used to change something off-screen and look like
+  // nothing happened.
+  useEffect(function(){
+    if (layoutTpl && editorRef.current) {
+      editorRef.current.scrollIntoView({ behavior:'smooth', block:'start' });
+    }
+  }, [layoutTpl]);
   const fileRef = useRef();
 
   const handleFile = file => {
@@ -18664,6 +18674,7 @@ function TemplateManager({ storeId }) {
       // Straight into the field editor. Stopping at "saved" is what left
       // templates sitting in the library invisible to every generator.
       if (row) {
+        setShowNew(false);
         setLayoutTpl(row);
         toast.success('Uploaded — now position the fields to finish it');
       } else {
@@ -18681,7 +18692,32 @@ function TemplateManager({ storeId }) {
 
   return (
     <div className="space-y-5">
+      {/* The editor first: it is what you came here to do, and burying it
+          under the upload form is what made this hard to navigate. */}
+      <div ref={editorRef}>
+        {layoutTpl && (
+          <AdTemplateLayout key={layoutTpl.id} tpl={layoutTpl}
+            onClose={()=>setLayoutTpl(null)} onSaved={reloadTemplates}/>
+        )}
+      </div>
+
+      <div className="flex items-center gap-3 flex-wrap">
+        <span className="ttl">Price ad templates</span>
+        <span className="lbl">{templates.length} for this store</span>
+        <span className="flex-1"/>
+        {allSizes.length > 1 && (
+          <Select value={filterSz} onChange={e=>setFilterSz(e.target.value)} className="w-auto text-xs">
+            <option value="all">All sizes</option>
+            {allSizes.map(s=><option key={s.label} value={s.label}>{s.label}</option>)}
+          </Select>
+        )}
+        <Button size="sm" variant={showNew?'ghost':'primary'} onClick={()=>setShowNew(v=>!v)}>
+          {showNew ? 'Cancel' : <React.Fragment><Icon name="up"/> New template</React.Fragment>}
+        </Button>
+      </div>
+
       {/* Upload new template */}
+      {showNew && (
       <Card>
         <h3 className="text-sm font-bold text-gray-900 dark:text-white mb-4 uppercase tracking-wide">Upload Template Background</h3>
         <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
@@ -18732,21 +18768,11 @@ function TemplateManager({ storeId }) {
           </div>
         </div>
       </Card>
-
-      {layoutTpl && (
-        <AdTemplateLayout tpl={layoutTpl} onClose={()=>setLayoutTpl(null)} onSaved={reloadTemplates}/>
       )}
 
       {/* Template gallery */}
       {templates.length > 0 && (
         <Card>
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-bold text-gray-900 dark:text-white uppercase tracking-wide">Saved Templates ({templates.length})</h3>
-            <Select value={filterSz} onChange={e=>setFilterSz(e.target.value)} className="w-auto text-xs">
-              <option value="all">All sizes</option>
-              {allSizes.map(s=><option key={s.label} value={s.label}>{s.label}</option>)}
-            </Select>
-          </div>
           {(filterSz==='all' ? TEMPLATE_SIZES : TEMPLATE_SIZES.filter(s=>s.label===filterSz)).map(sz=>{
             const grp = grouped[sz.label];
             if (!grp || grp.length===0) return null;
@@ -18755,42 +18781,54 @@ function TemplateManager({ storeId }) {
                 <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 mb-2 uppercase tracking-wide">{sz.label} — {sz.w}×{sz.h}</p>
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                   {grp.map(t=>{
-                    const ready = t.kind === 'price_ad';
+                    const ready   = t.kind === 'price_ad';
+                    const editing = layoutTpl && layoutTpl.id === t.id;
                     return (
-                    <div key={t.id} className="relative group rounded-xl overflow-hidden shadow-sm"
-                         style={{border:'1px solid ' + (ready ? 'var(--line)' : 'var(--amb)')}}>
-                      <img src={t.data} alt={t.name} className="w-full aspect-video object-cover"
-                           style={{opacity: ready ? 1 : .45}}/>
-                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/40 transition-all flex items-end">
-                        <div className="w-full p-2 flex gap-1.5 translate-y-full group-hover:translate-y-0 transition-transform">
-                          <button onClick={()=>setLayoutTpl(t)} className="flex-1 text-xs py-1 font-semibold"
-                            style={{background:'var(--cy-glow)', color:'var(--cy)', border:'1px solid var(--cy)'}}>
-                            <Icon name="grid" size={12}/> {ready ? 'Fields' : 'Finish setup'}
-                          </button>
-                          <button onClick={function(){
+                    <div key={t.id} className="overflow-hidden shadow-sm"
+                         style={{border:'1.5px solid ' + (editing ? 'var(--cy)' : ready ? 'var(--line)' : 'var(--amb)')}}>
+                      {/* Shown at its real shape, uncropped: a 16:9 and a 1:1
+                          forced into the same box looked interchangeable,
+                          which is how you end up editing the wrong one. */}
+                      <div style={{ aspectRatio: (t.canvas_w||1) + ' / ' + (t.canvas_h||1),
+                                    background:'rgba(var(--sink-rgb),.6)' }}>
+                        <img src={t.data} alt={t.name} className="w-full h-full object-contain"
+                             style={{opacity: ready ? 1 : .5}}/>
+                      </div>
+
+                      <div className="p-2 space-y-1.5" style={{borderTop:'1px solid var(--line)'}}>
+                        <div className="flex items-start gap-1.5 flex-wrap">
+                          <p className="text-xs flex-1 truncate" style={{color:'var(--txt)', minWidth:'80px'}}>{t.name}</p>
+                          {!t.store_id && <Badge color="indigo">All stores</Badge>}
+                          {ready ? <Badge color="green">Ready</Badge> : <Badge color="yellow">Needs setup</Badge>}
+                        </div>
+                        <p className="lbl">{t.size_label} · {t.canvas_w}×{t.canvas_h}</p>
+
+                        {!ready && (
+                          <p className="text-[10px]" style={{color:'var(--amb)'}}>
+                            No fields positioned — it won't appear in any generator yet.
+                          </p>
+                        )}
+
+                        {/* Always visible. Hover-only buttons are why this was
+                            hard to find in the first place. */}
+                        <div className="flex gap-1.5">
+                          <Button size="sm" variant={ready ? 'outline' : 'primary'} className="flex-1"
+                                  onClick={()=>setLayoutTpl(t)}>
+                            <Icon name="grid"/> {editing ? 'Editing' : ready ? 'Edit fields' : 'Finish setup'}
+                          </Button>
+                          <Button size="sm" variant="danger" title="Delete this template"
+                            onClick={function(){
                               // A chain-wide template is deleted from every store at once,
                               // which is not obvious from a store's own template list.
                               const msg = t.store_id
                                 ? 'Delete "' + t.name + '"?'
                                 : 'Delete "' + t.name + '"? It is chain-wide — this removes it from every store.';
                               if (confirm(msg)) remove(t.id);
-                            }} className="text-xs px-2 py-1 font-semibold"
-                            style={{background:'rgba(255,77,94,.15)', color:'var(--red)', border:'1px solid var(--red)'}}>
-                            <Icon name="trash" size={12}/>
-                          </button>
+                            }}>
+                            <Icon name="trash"/>
+                          </Button>
                         </div>
-                      </div>
-                      <div className="absolute top-1.5 left-1.5 text-xs px-2 py-0.5" style={{background:'rgba(var(--sink2-rgb),.75)', color:'var(--txt)'}}>{t.name}</div>
-                      <div className="absolute top-1.5 right-1.5 flex gap-1">
-                        {!t.store_id && <Badge color="indigo">Chain-wide</Badge>}
-                        {ready ? <Badge color="green">Ready</Badge> : <Badge color="yellow">Needs setup</Badge>}
-                      </div>
-                      {!ready && (
-                        <div className="px-1.5 py-1 text-[10px]" style={{color:'var(--amb)', background:'rgba(240,168,48,.1)'}}>
-                          No fields positioned yet — it won't appear in any generator until you finish setup.
-                        </div>
-                      )}
-                      <div className="p-1.5 space-y-1" style={{borderTop:'1px solid var(--line)'}}>
+
                         <div className="flex items-center gap-1.5">
                           <Icon name="tag" size={11} style={{color:'var(--cy-dim)', flex:'none'}}/>
                           <Select value={t.use_for || 'features'} className="text-[10px] py-1 px-1.5"
@@ -18806,8 +18844,6 @@ function TemplateManager({ storeId }) {
                           <Select value={t.store_id ? 'store' : 'global'} className="text-[10px] py-1 px-1.5"
                                   onChange={async function(e){
                                     const goGlobal = e.target.value === 'global';
-                                    // Going chain-wide puts this artwork in front of all four
-                                    // stores at once, so it's worth a beat of confirmation.
                                     if (goGlobal && !confirm('Offer "' + t.name + '" to every store?')) return;
                                     try {
                                       await update(t.id, { store_id: goGlobal ? null : storeId });

@@ -1472,7 +1472,7 @@ function drawImageFitted(ctx, img, box, mode) {
   ctx.restore();
 }
 
-async function renderFieldTemplate(tpl, fields, values, productDataUrl, onStep) {
+async function renderFieldTemplate(tpl, fields, values, productDataUrl, onStep, bgMode) {
   const W = tpl.canvas_w || 1080;
   const H = tpl.canvas_h || 1080;
   await ensureFontsReady();
@@ -1493,10 +1493,14 @@ async function renderFieldTemplate(tpl, fields, values, productDataUrl, onStep) 
   let productImg = null;
   if (productDataUrl && imageFields.length) {
     let src = productDataUrl;
-    if (imageFields.some(f => f.remove_bg)) {
+    // The product's own setting wins over the template's: a template says
+    // "these ads want cutouts", but only the photo knows whether cutting it
+    // out works. 'keep' opts a photo out entirely.
+    const mode = bgMode || 'auto';
+    if (mode !== 'keep' && imageFields.some(f => f.remove_bg)) {
       if (onStep) onStep('removing');
       const tol = imageFields.find(f=>f.remove_bg)?.bg_tolerance ?? 42;
-      try { src = await removeProductBackground(productDataUrl, 228, tol); } catch(e) { /* keep original */ }
+      try { src = await removeProductBackground(productDataUrl, 228, tol, mode); } catch(e) { /* keep original */ }
     }
     try { productImg = await loadImg(src); }
     catch(e) {
@@ -6575,7 +6579,7 @@ function FeatureCreativeBatch({ storeId, storeName, period, rows, products, camp
             pack_size:    row.size || '',
             price:        row.sale_price != null ? Number(row.sale_price).toFixed(2) : '',
             save:         row.savings    != null ? Number(row.savings).toFixed(2) : '',
-          }, productDataUrl);
+          }, productDataUrl, null, prod && prod.bg_mode);
 
           const url  = typeof rendered === 'string' ? rendered : rendered.url;
           const over = typeof rendered === 'string' ? [] : rendered.overflows;
@@ -6864,7 +6868,7 @@ function EDLPCreativeBatch({ storeId, storeName, rows, campaigns, onClose }) {
             pack_size:    row.size || '',
             price:        sale != null ? sale.toFixed(2) : '',
             save:         save  != null ? save.toFixed(2) : '',
-          }, productDataUrl);
+          }, productDataUrl, null, prod && prod.bg_mode);
 
           const url  = typeof rendered === 'string' ? rendered : rendered.url;
           const over = typeof rendered === 'string' ? [] : rendered.overflows;
@@ -10309,6 +10313,66 @@ function compressImage(dataUrl, maxPx=600, quality=0.75) {
   });
 }
 
+// Three cutouts of the same photo, side by side on a checkerboard, so the
+// right one is chosen by looking rather than by guessing what a setting does.
+// The names describe the outcome, not the algorithm.
+const BG_MODES = [
+  { id:'auto',    label:'Cut out',       hint:'Remove the backdrop' },
+  { id:'protect', label:'Keep labels',   hint:'For white labels on white' },
+  { id:'keep',    label:'Leave as is',   hint:'No cutout at all' },
+];
+function BgModePicker({ src, value, onChange }) {
+  const [previews, setPreviews] = useState(null);
+
+  useEffect(function() {
+    let alive = true;
+    if (!src) { setPreviews(null); return; }
+    setPreviews(null);
+    Promise.all([
+      removeProductBackground(src, 228, 42, 'auto'),
+      removeProductBackground(src, 228, 42, 'protect'),
+    ]).then(function(r) {
+      if (alive) setPreviews({ auto: r[0], protect: r[1], keep: src });
+    }).catch(function(){ if (alive) setPreviews({ auto: src, protect: src, keep: src }); });
+    return function(){ alive = false; };
+  }, [src]);
+
+  if (!src) return null;
+  const CHECKER = 'repeating-conic-gradient(#d8d8d8 0% 25%, #f4f4f4 0% 50%) 50% / 12px 12px';
+
+  return (
+    <div>
+      <Label>Background</Label>
+      <div className="grid grid-cols-3 gap-2">
+        {BG_MODES.map(function(m) {
+          const on = (value || 'auto') === m.id;
+          return (
+            <button key={m.id} type="button" onClick={()=>onChange(m.id)}
+              className="p-1.5 text-left"
+              style={{ border:'1.5px solid ' + (on ? 'var(--cy)' : 'var(--line)'),
+                       background: on ? 'var(--cy-glow)' : 'transparent' }}>
+              <div style={{ background:CHECKER, aspectRatio:'1', position:'relative' }}>
+                {previews ? (
+                  <img src={previews[m.id]} alt="" style={{ position:'absolute', inset:0, margin:'auto',
+                       maxWidth:'92%', maxHeight:'92%', width:'auto', height:'auto', objectFit:'contain' }}/>
+                ) : (
+                  <span className="lbl" style={{position:'absolute', inset:0, display:'flex',
+                        alignItems:'center', justifyContent:'center'}}>…</span>
+                )}
+              </div>
+              <p className="text-[11px] mt-1" style={{color: on ? 'var(--cy)' : 'var(--txt)'}}>{m.label}</p>
+              <p className="text-[9.5px] leading-tight" style={{color:'var(--txt3)'}}>{m.hint}</p>
+            </button>
+          );
+        })}
+      </div>
+      <p className="lbl mt-1.5">
+        Pick whichever looks right on the checkerboard — that's what the price ads will use.
+      </p>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────
 // BRAND IMAGE LIBRARY HOOK
 // ─────────────────────────────────────────────
@@ -10576,9 +10640,14 @@ function useBrandTemplates(storeId) {
 // Flood-fills from all 4 edges to cut out near-white/near-cream backgrounds.
 // Returns a transparent-background PNG data URL.
 // ─────────────────────────────────────────────
-function removeProductBackground(dataUrl, threshold=228, tolerance=42) {
+// mode: 'auto' cuts out by flood filling in from the edges; 'keep' leaves the
+// photo alone; 'protect' fills and then puts back anything the product
+// vertically encloses — see the span-restore pass near the bottom, and
+// migration_product_bg_mode.sql for why the choice has to be per product.
+function removeProductBackground(dataUrl, threshold=228, tolerance=42, mode='auto') {
   return new Promise(resolve => {
     if (!dataUrl) { resolve(dataUrl); return; }
+    if (mode === 'keep') { resolve(dataUrl); return; }
 
     // This must never hang. Every failure path resolves with the original
     // image so the caller still gets something drawable:
@@ -10654,6 +10723,34 @@ function removeProductBackground(dataUrl, threshold=228, tolerance=42) {
         if (!isBg(i)) continue;
         data[i + 3] = 0; // punch out pixel
         stack.push(x+1, y, x-1, y, x, y+1, x, y-1);
+      }
+
+      // Span restore — the fix for white-label-on-white.
+      //
+      // The fill can only reach a label by crossing the product's outline
+      // where the label meets it, which means the label it ate always sits
+      // between two surviving parts of the product in its own column: cap
+      // above, base below. So walk each column, find the topmost and
+      // bottommost pixel still standing, and put back everything between.
+      // Columns that missed the product entirely have nothing standing and
+      // are left alone, which is why the gaps between three bottles stay
+      // transparent while all three labels come back.
+      //
+      // The cost is a genuine gap the product encloses — the carry handle on
+      // a six-pack — which this fills in too. That's exactly why this is a
+      // choice per product rather than the default.
+      if (mode === 'protect') {
+        for (let x = 0; x < width; x++) {
+          let top = -1, bot = -1;
+          for (let y = 0; y < height; y++) {
+            if (data[(y * width + x) * 4 + 3] > 0) { if (top === -1) top = y; bot = y; }
+          }
+          if (top === -1 || bot <= top) continue;
+          for (let y = top; y <= bot; y++) {
+            const i = (y * width + x) * 4;
+            if (data[i + 3] === 0) data[i + 3] = 255;
+          }
+        }
       }
 
       // Feather: slightly soften opaque pixels that border a transparent one
@@ -13715,6 +13812,7 @@ function ProductLibrary() {
   const [formSize,    setFormSize]    = useState('750ml');
   const [formCat,     setFormCat]     = useState('');
   const [formNotes,   setFormNotes]   = useState('');
+  const [formBg,      setFormBg]      = useState('auto');
   const [saving,      setSaving]      = useState(false);
   const [deleting,    setDeleting]    = useState(null);
   const fileRef = useRef();
@@ -13727,7 +13825,7 @@ function ProductLibrary() {
   };
 
   const resetForm = () => {
-    setFormImg(null); setFormPrev(null); setFormName(''); setFormSize('750ml'); setFormCat(''); setFormNotes(''); setShowForm(false); setEditId(null); setBclSku(null); setBclAlt(''); setImportedUrl(null);
+    setFormImg(null); setFormPrev(null); setFormName(''); setFormSize('750ml'); setFormCat(''); setFormNotes(''); setFormBg('auto'); setShowForm(false); setEditId(null); setBclSku(null); setBclAlt(''); setImportedUrl(null);
   };
 
   const applyImport = ({ image_url, image_alt, product }) => {
@@ -13751,6 +13849,7 @@ function ProductLibrary() {
     setFormSize(prod.size || '750ml');
     setFormCat(prod.category || '');
     setFormNotes(prod.notes || '');
+    setFormBg(prod.bg_mode || 'auto');
     setFormPrev(prod.image_url || prod.data || null);
     setFormImg(null);
     setBclSku(prod.bcliquor_sku || null);
@@ -13766,7 +13865,8 @@ function ProductLibrary() {
     if (!formCat)            { toast.error('Select a category'); return; }
     setSaving(true);
     try {
-      const fields = { product_name:formName.trim(), size:formSize, category:formCat, notes:formNotes.trim() };
+      const fields = { product_name:formName.trim(), size:formSize, category:formCat,
+                       notes:formNotes.trim(), bg_mode:formBg };
       // Provenance from a BCLIQUOR import — never blank out an existing value.
       if (bclSku)          fields.bcliquor_sku = bclSku;
       if (importedUrl)     fields.image_url    = importedUrl;
@@ -13851,6 +13951,11 @@ function ProductLibrary() {
               <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={e=>handleFile(e.target.files[0])}/>
               {formPrev && <img src={formPrev} alt="" className="mt-2 h-28 rounded-xl object-contain border border-gray-200 dark:border-gray-600 bg-gray-50 dark:bg-gray-700 p-1"/>}
             </div>
+            {formPrev && (
+              <div className="sm:col-span-2">
+                <BgModePicker src={formPrev} value={formBg} onChange={setFormBg}/>
+              </div>
+            )}
             <div>
               <Label>Product Name</Label>
               <Input value={formName} onChange={e=>setFormName(e.target.value)} placeholder="e.g. Maker's Mark Bourbon"/>

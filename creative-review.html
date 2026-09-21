@@ -216,6 +216,14 @@
           alert('Could not send that — please try again.');
           return;
         }
+        // Tell the office. Deliberately not awaited and never surfaced: the
+        // review is already saved, and a failed notification must not make
+        // this look like it didn't go through.
+        fetch(URL_ + '/functions/v1/review-notify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', apikey: KEY, Authorization: 'Bearer ' + KEY },
+          body: JSON.stringify({ token: token }),
+        }).catch(function () { /* ignore */ });
         load();
       });
     });

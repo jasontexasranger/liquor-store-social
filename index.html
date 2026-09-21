@@ -8452,13 +8452,14 @@ function CreativeReviewsCard({ storeId, storeName, period }) {
   const toast = useToast();
   const { creatives } = useCreatives();
   const [rounds, setRounds] = useState(null);
+  const [openRound, setOpenRound] = useState(null);
   const [busy, setBusy] = useState(false);
   const [prog, setProg] = useState('');
 
   const load = useCallback(async function() {
     const sb = getSB(); if (!sb) return;
     const { data } = await sb.from('creative_reviews')
-      .select('*, creative_review_items(decision)')
+      .select('*, creative_review_items(id, name, aspect, public_url, decision, note, sort)')
       .eq('store_id', storeId).order('created_at', { ascending:false }).limit(12);
     setRounds(data || []);
   }, [storeId]);
@@ -8571,6 +8572,12 @@ function CreativeReviewsCard({ storeId, storeName, period }) {
               </Button>
             )}
 
+            <Button size="sm" variant={openRound===r.id ? 'primary' : 'ghost'}
+                    onClick={()=>setOpenRound(openRound===r.id ? null : r.id)}
+                    title="See every creative and what they said">
+              <Icon name="chevD"/> {openRound===r.id ? 'Hide' : 'Details'}
+            </Button>
+
             {/* The link in full, selectable — copying is the usual route but a
                 button is no use when you're reading this over someone's
                 shoulder or pasting it into a text by hand. */}
@@ -8579,6 +8586,48 @@ function CreativeReviewsCard({ storeId, storeName, period }) {
                      style={{fontFamily:'var(--mono)', padding:'5px 7px'}}
                      onFocus={e=>e.target.select()}/>
             </div>
+
+            {openRound === r.id && (
+              <div className="w-full mt-1">
+                {/* Flagged first. The counts told you three things were wrong;
+                    this is the part that tells you which three and why, which
+                    is the only part you can act on. */}
+                {(function(){
+                  const its = (r.creative_review_items || [])
+                    .slice().sort((a,b)=>(a.sort||0)-(b.sort||0));
+                  const rank = { rejected:0, pending:1, approved:2 };
+                  its.sort((a,b)=>(rank[a.decision]??9)-(rank[b.decision]??9));
+                  if (!its.length) return <p className="lbl py-3 text-center">Nothing in this round.</p>;
+                  return (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+                      {its.map(function(it) {
+                        const no  = it.decision === 'rejected';
+                        const yes = it.decision === 'approved';
+                        return (
+                          <div key={it.id} className="overflow-hidden"
+                               style={{border:'1px solid ' + (no ? 'var(--red)' : yes ? 'var(--grn)' : 'var(--line)')}}>
+                            <img src={it.public_url} alt="" className="w-full object-contain"
+                                 style={{aspectRatio:'1', background:'rgba(var(--sink-rgb),.6)'}}/>
+                            <div className="p-1.5">
+                              <div className="flex items-center gap-1.5 mb-1">
+                                <Badge color={no ? 'red' : yes ? 'green' : 'gray'}>
+                                  {no ? 'Change' : yes ? 'Approved' : 'No answer'}
+                                </Badge>
+                                {it.aspect && <span className="lbl">{it.aspect}</span>}
+                              </div>
+                              <p className="text-[11px] truncate" style={{color:'var(--txt)'}}>{it.name}</p>
+                              {it.note && (
+                                <p className="text-[10.5px] mt-1" style={{color:'var(--red)'}}>“{it.note}”</p>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
           </div>
         );
       })}
@@ -18014,6 +18063,7 @@ function HomeLeaderboard({ go }) {
 
 function HomePage({ granted, isAdmin, go, onOpenHelp }) {
   const [pending, setPending] = useState(null);
+  const [returned, setReturned] = useState(null);
   // The opening plays once per session: logo alone on black, sinking to the
   // bottom as the cards arrive. Revisits go straight to the cards.
   const [intro, setIntro] = useState(() => window.__suenoIntroDone !== true);
@@ -18038,12 +18088,25 @@ function HomePage({ granted, isAdmin, go, onOpenHelp }) {
     return function(){ alive = false; };
   }, []);
 
+  // Approval rounds a store has sent back and nobody has closed off yet.
+  // Without this you only find out a review returned by going to look.
+  useEffect(function() {
+    let alive = true;
+    const sb = getSB(); if (!sb) return;
+    sb.from('creative_reviews').select('id').eq('status', 'submitted')
+      .then(function(r) { if (alive) setReturned((r.data || []).length); })
+      .catch(function(){ /* same — a bonus */ });
+    return function(){ alive = false; };
+  }, []);
+
   const CARDS = [
     { id:'post',      label:'Generate a social post',     icon:'edit',    page:'posts', tab:'compose' },
     { id:'approve',   label:'Approve waiting posts',      icon:'check',   page:'posts', tab:'scheduled',
       badge: pending > 0 ? pending + ' waiting' : null, admin:true },
     { id:'inbox',     label:'Answer comments & messages', icon:'comment', page:'posts', tab:'inbox', admin:true },
     { id:'features',  label:"Update this month's features", icon:'tag',   page:'features' },
+    { id:'approvals', label:'See what the stores sent back',  icon:'check',  page:'features', tab:'month',
+      badge: returned > 0 ? returned + ' returned' : null, need:'__returned' },
     { id:'shelf',     label:'Print shelf talkers',        icon:'print',   page:'shelf' },
     { id:'website',   label:'Update the website',         icon:'globe',   page:'website' },
     { id:'price',     label:'Check a price',              icon:'search',  page:'prices' },
@@ -18055,7 +18118,8 @@ function HomePage({ granted, isAdmin, go, onOpenHelp }) {
     { id:'ad',        label:'Run an ad',                  icon:'mega',    page:'ads', tab:'build', need:'ads' },
     { id:'users',     label:'Manage the team',            icon:'users',   page:'settings', admin:true },
     { id:'help',      label:'Help me find what I need',   icon:'comment', action:'help' },
-  ].filter(c => (!c.need || granted(c.need)) && (!c.admin || isAdmin));
+  ].filter(c => (c.need === '__returned' ? returned > 0 : (!c.need || granted(c.need)))
+            && (!c.admin || isAdmin));
 
   return (
     <div className="sueno-home">

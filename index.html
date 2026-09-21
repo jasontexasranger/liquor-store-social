@@ -10306,8 +10306,47 @@ function compressImage(dataUrl, maxPx=600, quality=0.75) {
       const h = Math.round(img.height * scale);
       const c = document.createElement('canvas');
       c.width=w; c.height=h;
-      c.getContext('2d').drawImage(img, 0, 0, w, h);
-      res(c.toDataURL('image/jpeg', quality));
+      const g = c.getContext('2d');
+      g.drawImage(img, 0, 0, w, h);
+
+      // Transparency has to survive the round trip. This used to always emit
+      // JPEG, which has no alpha channel — so a properly cut-out PNG came
+      // back with a black box behind the product, and every downstream cutout
+      // then had to guess at a background that had already been removed
+      // correctly. A product photo with real transparency is the one case
+      // where none of the guessing is needed, so it stays PNG.
+      let hasAlpha = false;
+      try {
+        const d = g.getImageData(0, 0, w, h).data;
+        for (let i = 3; i < d.length; i += 4) { if (d[i] < 250) { hasAlpha = true; break; } }
+      } catch(e) { /* tainted canvas — fall through to JPEG as before */ }
+
+      res(hasAlpha ? c.toDataURL('image/png') : c.toDataURL('image/jpeg', quality));
+    };
+    img.src = dataUrl;
+  });
+}
+
+// True when the artwork is already cut out, so no background removal should be
+// attempted on it at all.
+function imageHasAlpha(dataUrl) {
+  return new Promise(resolve => {
+    // JPEG cannot carry alpha, so there is nothing to test.
+    if (!dataUrl || !/^data:image\/(png|webp|gif)/i.test(dataUrl)) { resolve(false); return; }
+    const img = new Image();
+    img.onerror = () => resolve(false);
+    img.onload = () => {
+      try {
+        const s = Math.min(1, 400 / Math.max(img.width, img.height));
+        const c = document.createElement('canvas');
+        c.width  = Math.max(1, Math.round(img.width  * s));
+        c.height = Math.max(1, Math.round(img.height * s));
+        const g = c.getContext('2d');
+        g.drawImage(img, 0, 0, c.width, c.height);
+        const d = g.getImageData(0, 0, c.width, c.height).data;
+        for (let i = 3; i < d.length; i += 4) { if (d[i] < 250) { resolve(true); return; } }
+        resolve(false);
+      } catch(e) { resolve(false); }
     };
     img.src = dataUrl;
   });
@@ -13844,7 +13883,14 @@ function ProductLibrary() {
   const handleFile = file => {
     if (!file) return;
     setFormImg(file);
-    const r=new FileReader(); r.onload=()=>setFormPrev(r.result); r.readAsDataURL(file);
+    const r=new FileReader();
+    r.onload=function(){
+      setFormPrev(r.result);
+      // Artwork that arrives already cut out needs no cutout, so say so
+      // rather than leaving it on a setting that will damage it.
+      imageHasAlpha(r.result).then(function(a){ if (a) setFormBg('keep'); });
+    };
+    r.readAsDataURL(file);
   };
 
   const resetForm = () => {
@@ -13958,6 +14004,7 @@ function ProductLibrary() {
                   setFormPrev(out.dataUrl);
                   setFormImg(out.file || null);
                   if (out.hostedUrl) setImportedUrl(out.hostedUrl);
+                  imageHasAlpha(out.dataUrl).then(function(a){ if (a) setFormBg('keep'); });
                 }}>
                 <p className="lbl text-center">
                   Paste an image here (or drag one in from a browser tab)

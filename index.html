@@ -10739,11 +10739,34 @@ function removeProductBackground(dataUrl, threshold=228, tolerance=42, mode='aut
       // The cost is a genuine gap the product encloses — the carry handle on
       // a six-pack — which this fills in too. That's exactly why this is a
       // choice per product rather than the default.
+      // Anchors have to be STRONG: at least three consecutive pixels that are
+      // clearly product rather than backdrop — dark, or saturated like a gold
+      // capsule or a coloured band. A pale survivor (JPEG ringing beside a
+      // bottle, a hint of shadow) must not anchor a column, because then a
+      // column running down the GAP between two bottles gets "enclosed" and
+      // the gap comes back as a solid white slab. That is exactly what the
+      // first version did to the three Black Cellar bottles: labels restored,
+      // gaps filled in white.
+      //
+      // Strong anchors are a subset of all opaque anchors, so this can only
+      // ever restore less than before — it cannot introduce a new artefact.
+      // It still cannot read intent: with several products side by side the
+      // gaps are geometrically indistinguishable from a label, which is why
+      // 'keep' (or artwork that is already transparent) is the dependable
+      // route for a group shot.
       if (mode === 'protect') {
+        const RUN = 3;
         for (let x = 0; x < width; x++) {
-          let top = -1, bot = -1;
+          let top = -1, bot = -1, run = 0;
           for (let y = 0; y < height; y++) {
-            if (data[(y * width + x) * 4 + 3] > 0) { if (top === -1) top = y; bot = y; }
+            const i = (y * width + x) * 4;
+            const mx = Math.max(data[i], data[i+1], data[i+2]);
+            const mn = Math.min(data[i], data[i+1], data[i+2]);
+            const strong = data[i+3] > 0 && (mx < 200 || (mx - mn) > 40);
+            if (strong) {
+              run += 1;
+              if (run >= RUN) { if (top === -1) top = y - run + 1; bot = y; }
+            } else run = 0;
           }
           if (top === -1 || bot <= top) continue;
           for (let y = top; y <= bot; y++) {

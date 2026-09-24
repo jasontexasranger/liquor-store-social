@@ -1011,6 +1011,70 @@ const SITE_BASE = 'https://lrs.thesuenocompany.com';
 const SIGNAGE_VIEWER = 'https://lrs.thesuenocompany.com/signage-viewer.html';
 const signageLinkFor = url => SIGNAGE_VIEWER + '?img=' + encodeURIComponent(url);
 
+// Fetched on first use rather than on every page load — most sessions never
+// zip anything, and this is ~100KB.
+let _jszipPromise = null;
+function ensureJSZip() {
+  if (window.JSZip) return Promise.resolve(window.JSZip);
+  if (!_jszipPromise) {
+    _jszipPromise = new Promise(function(resolve, reject) {
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+      s.onload  = () => window.JSZip ? resolve(window.JSZip) : reject(new Error('JSZip did not load'));
+      s.onerror = () => { _jszipPromise = null; reject(new Error('Could not load the zip library — check the connection')); };
+      document.head.appendChild(s);
+    });
+  }
+  return _jszipPromise;
+}
+
+// One archive instead of N separate saves. Browsers rate-limit and eventually
+// block repeated downloads, so the old loop quietly lost files on a big month;
+// a zip is one save, and it is also what OptiSigns wants — real image files it
+// can cache on the player rather than a web page it has to load every rotation.
+async function zipCreatives(list, zipName, onProgress) {
+  const JSZip = await ensureJSZip();
+  const zip = new JSZip();
+  const used = {};
+  const failed = [];
+
+  for (let i = 0; i < list.length; i++) {
+    const c = list[i];
+    if (onProgress) onProgress(i + 1, list.length, c.name);
+    try {
+      const res = await fetch(c.public_url);
+      if (!res.ok) throw new Error(String(res.status));
+      const blob = await res.blob();
+
+      // A month can hold the same product at three sizes, and names repeat
+      // across stores — so the aspect goes in the filename and any remaining
+      // collision gets a counter rather than silently overwriting.
+      const ext  = (blob.type.split('/')[1] || 'png').replace('jpeg', 'jpg');
+      const base = String(c.name || 'creative').replace(/[^a-z0-9\-_ ]/gi, '_').trim().slice(0, 70)
+                 + (c.aspect ? ' ' + String(c.aspect).replace(':', 'x') : '');
+      used[base] = (used[base] || 0) + 1;
+      const fname = (used[base] > 1 ? base + ' (' + used[base] + ')' : base) + '.' + ext;
+
+      zip.file(fname, blob);
+    } catch(e) {
+      failed.push(c.name || c.public_url);
+    }
+  }
+
+  if (!Object.keys(zip.files).length) throw new Error('Nothing could be downloaded');
+
+  const out = await zip.generateAsync({ type:'blob' });
+  const objectUrl = URL.createObjectURL(out);
+  const a = document.createElement('a');
+  a.href = objectUrl;
+  a.download = zipName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(objectUrl);
+  return { failed };
+}
+
 async function downloadFile(url, filename) {
   const res = await fetch(url);
   if (!res.ok) throw new Error('Could not fetch file (' + res.status + ')');
@@ -1136,19 +1200,26 @@ function CreativeLibrary({ isAdmin, myStores }) {
   const copyLink        = c => copy(c.public_url, 'Link');
   const copySignageLink = c => copy(signageLinkFor(c.public_url), 'Signage link');
 
-  const downloadAllVisible = async function() {
-    if (visible.length === 0) return;
-    setBulkDownloading(true);
-    let failed = 0;
-    for (const c of visible) {
-      try {
-        await downloadFile(c.public_url, c.name);
-        await new Promise(r => setTimeout(r, 250)); // let each save land before the next
-      } catch(e) { failed++; }
-    }
-    setBulkDownloading(false);
-    if (failed) toast.error(failed + ' of ' + visible.length + ' failed to download');
-    else toast.success('Downloaded ' + visible.length + ' creative' + (visible.length===1?'':'s'));
+  const [zipProg, setZipProg] = useState('');
+
+  // What gets zipped: the ticked ones if anything is ticked, otherwise
+  // everything the current filters are showing.
+  const downloadZip = async function(list, label) {
+    if (!list.length) return;
+    setBulkDownloading(true); setZipProg('');
+    try {
+      const stamp = new Date().toISOString().slice(0, 10);
+      const r = await zipCreatives(list, 'creatives-' + label + '-' + stamp + '.zip',
+        (n, total) => setZipProg(n + ' of ' + total));
+      if (r.failed.length) toast.error(r.failed.length + ' could not be added — the rest are in the zip');
+      else toast.success(list.length + ' creative' + (list.length===1?'':'s') + ' zipped');
+    } catch(e) { toast.error(e.message); }
+    finally { setBulkDownloading(false); setZipProg(''); }
+  };
+
+  const downloadAllVisible = function() {
+    const storeLabel = fStore !== 'all' && fStore !== 'global' ? fStore : 'all-stores';
+    return downloadZip(visible, storeLabel);
   };
 
   // Hand-picked contact sheets. Two separate actions on purpose: the PDF is
@@ -1223,6 +1294,10 @@ function CreativeLibrary({ isAdmin, myStores }) {
             <Button size="sm" variant="ghost" onClick={()=>{ setPicked([]); setSheetRes(null); }}>
               Clear
             </Button>
+            <Button size="sm" variant="secondary" loading={bulkDownloading}
+                    onClick={()=>downloadZip(chosenCreatives, 'selected')}>
+              <Icon name="down"/> {bulkDownloading && zipProg ? 'Zipping ' + zipProg : 'Download zip'}
+            </Button>
             <Button size="sm" variant="outline" onClick={sheetOnly} loading={sheetBusy}>
               <Icon name="print"/> {sheetBusy && sheetProg ? sheetProg : 'Contact sheet'}
             </Button>
@@ -1270,7 +1345,8 @@ function CreativeLibrary({ isAdmin, myStores }) {
               ? 'Select none' : 'Select all ' + (visible.length ? '(' + visible.length + ')' : '')}
           </Button>
           <Button size="sm" variant="secondary" onClick={downloadAllVisible} loading={bulkDownloading} disabled={visible.length===0}>
-            <Icon name="down"/> Download {visible.length > 0 ? 'all (' + visible.length + ')' : 'all'}
+            <Icon name="down"/> {bulkDownloading && zipProg ? 'Zipping ' + zipProg
+              : 'Download zip' + (visible.length > 0 ? ' (' + visible.length + ')' : '')}
           </Button>
           <Button size="sm" onClick={()=>setShowUp(true)}><Icon name="up"/> Add creative</Button>
         </div>

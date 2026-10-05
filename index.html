@@ -1637,6 +1637,9 @@ async function renderFieldTemplate(tpl, fields, values, productDataUrl, onStep, 
       maxLines: f.max_lines || null,
       minFontSize: f.min_font_size || 8,
       maxFontSize: f.max_font_size || 200,
+      // Set = render at exactly this size. Null = the old auto-fit, kept so a
+      // template nobody has pinned yet behaves as it always did.
+      fixedFontSize: f.font_size || null,
       prefix: f.prefix || '',
       prefixScale: (f.prefix_scale ?? 55) / 100,
       prefixValign: f.prefix_valign || 'middle',
@@ -3606,6 +3609,35 @@ function AdFieldEditor({ templateDataUrl, fields, onChange }) {
                       <option value="top">Top</option><option value="middle">Middle</option><option value="bottom">Bottom</option>
                     </Select></div>
                 </div>
+                {/* The size the ad actually renders at. Empty means the old
+                    behaviour — fit the largest size that suits whatever text
+                    is in the field — which is why a short product name used to
+                    come out far bigger than a long one in the same box. */}
+                <div>
+                  <Label>Font size</Label>
+                  <div className="flex gap-2 items-center">
+                    <Input type="number" min="8" max="400" placeholder="auto"
+                           value={cur.font_size ?? ''}
+                           onChange={e=>patch(cur.id,{ font_size: e.target.value === '' ? null : +e.target.value })}
+                           className="flex-1"/>
+                    <Button size="sm" variant="outline" onClick={()=>fitFieldToBox(cur)}
+                            title="Set the size that fits the longest product name this month">
+                      Fit to box
+                    </Button>
+                    {cur.font_size != null && (
+                      <Button size="sm" variant="ghost" onClick={()=>patch(cur.id,{font_size:null})}
+                              title="Back to auto-fitting each product">
+                        Auto
+                      </Button>
+                    )}
+                  </div>
+                  <p className="lbl mt-1">
+                    {cur.font_size != null
+                      ? 'Every product renders at ' + cur.font_size + 'px. Anything too long is reported rather than shrunk.'
+                      : 'Auto: each product gets its own size, so short names render larger than long ones.'}
+                  </p>
+                </div>
+
                 <div className="grid grid-cols-2 gap-2">
                   <div><Label>Colour</Label>
                     <input type="color" value={cur.color||'#000000'} onChange={e=>patch(cur.id,{color:e.target.value})}
@@ -3727,11 +3759,103 @@ function AdTemplateLayout({ tpl, onClose, onSaved }) {
 
   // Sample copy chosen to stress the layout: a long name that must wrap and
   // shrink, and a save value wider than "$0.00".
-  const SAMPLE = {
-    product_name:'Okanagan Crush Pad Narrative Rosé',
+  // Real products, not a stand-in. The old preview rendered a hardcoded name
+  // ('Okanagan Crush Pad Narrative Rosé', 33 characters) while production
+  // rendered whatever the month held — so a short name like RYAN'S IRISH CREAM
+  // auto-fitted 35% larger than the preview had shown, and the layout you
+  // signed off was never the layout that shipped.
+  const [realNames, setRealNames] = useState(null);
+  useEffect(function() {
+    let alive = true;
+    const sb = getSB(); if (!sb || !tpl.store_id) { setRealNames([]); return; }
+    sb.from('feature_periods')
+      .select('period, features(name)')
+      .eq('store_id', tpl.store_id)
+      .order('period', { ascending:false }).limit(3)
+      .then(function(r) {
+        if (!alive) return;
+        const names = (r.data || []).flatMap(p => (p.features || []).map(f => f.name))
+          .filter(n => n && n.trim());
+        setRealNames([...new Set(names)]);
+      })
+      .catch(function(){ if (alive) setRealNames([]); });
+    return function(){ alive = false; };
+  }, [tpl.store_id]);
+
+  // A single preview is misleading whatever the sizing model, because the box
+  // has to survive the whole month. Shortest and longest are the two that
+  // decide whether the layout works.
+  const previewNames = (function() {
+    const ns = realNames && realNames.length ? realNames.slice() : null;
+    if (!ns) return ['Okanagan Crush Pad Narrative Rosé'];
+    ns.sort((a,b) => a.length - b.length);
+    return ns.length === 1 ? [ns[0]] : [ns[0], ns[ns.length-1]];
+  })();
+
+  const sampleFor = name => ({
+    product_name: name,
     pack_size:'6 × 355ml',
     price:'18.99',
     save:'$12.50',
+  });
+  const SAMPLE = sampleFor(previewNames[previewNames.length - 1]);
+
+  const [checkRes, setCheckRes] = useState(null);
+  // The regression check that matters here: a pinned size is only correct if
+  // it holds for every product the month will put through the box. Renders
+  // each real name at the stored size and reports the ones that overflow,
+  // rather than leaving it to be discovered on a shelf.
+  const checkAllProducts = function() {
+    const W = tpl.canvas_w || 1080, H = tpl.canvas_h || 1080;
+    const names = (realNames && realNames.length) ? realNames : previewNames;
+    const textFields = draft.filter(f => f.field_type !== 'product_image' && f.font_size);
+    if (!textFields.length) { toast.error('Pin a font size on at least one field first'); return; }
+    const bad = [];
+    for (const f of textFields) {
+      const boxW = Number(f.w_pct)/100*W, boxH = Number(f.h_pct)/100*H;
+      const vals = f.field_key === 'product_name' ? names : [SAMPLE[f.field_key] || 'SAMPLE'];
+      for (const v of vals) {
+        let text = String(v || '');
+        if (f.uppercase) text = text.toUpperCase();
+        const r = fitText(text, boxW, boxH, {
+          align: f.align || 'left', bold: !!f.bold,
+          lineSpacing: Number(f.line_spacing) || 1.15,
+          wrap: f.wrap !== false, maxLines: f.max_lines || null,
+          maxFontSize: f.max_font_size || 200, minFontSize: f.min_font_size || 8,
+          fontFamily: fontStack(f.font_family), fontWeight: f.font_weight || null,
+          padding: Math.round(Math.min(boxW, boxH) * ((f.padding_pct ?? 2) / 100)),
+          prefix: f.prefix || '', prefixScale: (f.prefix_scale ?? 55) / 100,
+          suffix: f.suffix || '', suffixScale: (f.suffix_scale ?? 35) / 100,
+          fixedFontSize: f.font_size,
+        });
+        if (r.overflow) bad.push((f.label || f.field_key) + ': ' + text);
+      }
+    }
+    setCheckRes({ total: names.length, bad });
+    if (bad.length) toast.error(bad.length + ' would not fit at the pinned size');
+    else toast.success('All ' + names.length + ' products fit');
+  };
+
+  // Pin the size that fits the longest name the box has to carry, so the
+  // tightest case is the one that defines the layout.
+  const fitFieldToBox = function(f) {
+    const W = tpl.canvas_w || 1080, H = tpl.canvas_h || 1080;
+    const boxW = Number(f.w_pct)/100*W, boxH = Number(f.h_pct)/100*H;
+    const longest = previewNames.reduce((a,b)=> b.length > a.length ? b : a, '');
+    let text = f.field_key === 'product_name' ? longest : (SAMPLE[f.field_key] || 'SAMPLE');
+    if (f.uppercase) text = String(text).toUpperCase();
+    const r = fitText(String(text), boxW, boxH, {
+      align: f.align || 'left', bold: !!f.bold,
+      lineSpacing: Number(f.line_spacing) || 1.15,
+      wrap: f.wrap !== false, maxLines: f.max_lines || null,
+      maxFontSize: f.max_font_size || 200, minFontSize: f.min_font_size || 8,
+      fontFamily: fontStack(f.font_family), fontWeight: f.font_weight || null,
+      padding: Math.round(Math.min(boxW, boxH) * ((f.padding_pct ?? 2) / 100)),
+      prefix: f.prefix || '', prefixScale: (f.prefix_scale ?? 55) / 100,
+      suffix: f.suffix || '', suffixScale: (f.suffix_scale ?? 35) / 100,
+    });
+    patch(f.id, { font_size: r.fontSize });
+    toast.success('Pinned to ' + r.fontSize + 'px — fits "' + String(text).slice(0, 28) + '"');
   };
 
   const makeMockup = async () => {
@@ -3789,10 +3913,48 @@ function AdTemplateLayout({ tpl, onClose, onSaved }) {
           <span className="ttl">Mockup</span>
           <span className="flex-1 h-px" style={{background:'linear-gradient(90deg,var(--line2),transparent)'}}/>
           <Button size="sm" variant="outline" onClick={makeMockup} loading={rendering}>
-            <Icon name="eye"/> Render with sample data
+            <Icon name="eye"/> Render{realNames && realNames.length ? ' the longest name' : ' with sample data'}
+          </Button>
+          <Button size="sm" variant="outline" onClick={checkAllProducts}
+                  title="Render every product name this store has run at the pinned sizes">
+            <Icon name="check"/> Check all products
           </Button>
           {mockup && <Button size="sm" variant="ghost" onClick={()=>setMockup(null)}>Clear</Button>}
         </div>
+
+        {realNames && (
+          <p className="lbl mb-3">
+            {realNames.length
+              ? 'Previewing real products from this store — ' + realNames.length + ' names, '
+                + 'shortest "' + previewNames[0] + '", longest "' + previewNames[previewNames.length-1] + '".'
+              : 'No features found for this store yet, so the preview falls back to a sample name.'}
+          </p>
+        )}
+
+        {checkRes && (
+          <div className="mb-3 p-2.5"
+               style={{border:'1px solid ' + (checkRes.bad.length ? 'var(--red)' : 'var(--grn)'),
+                       background: checkRes.bad.length ? 'rgba(255,77,94,.07)' : 'rgba(63,240,138,.06)'}}>
+            {checkRes.bad.length ? (
+              <React.Fragment>
+                <p className="text-xs mb-1" style={{color:'var(--red)'}}>
+                  {checkRes.bad.length} of {checkRes.total} would not fit at the pinned size:
+                </p>
+                {checkRes.bad.slice(0, 8).map((b,i)=>(
+                  <p key={i} className="text-[11px]" style={{color:'var(--txt2)'}}>{b}</p>
+                ))}
+                {checkRes.bad.length > 8 && <p className="lbl">+{checkRes.bad.length-8} more</p>}
+                <p className="text-[11px] mt-1.5" style={{color:'var(--txt2)'}}>
+                  Lower the pinned size, enlarge the box, or shorten those names.
+                </p>
+              </React.Fragment>
+            ) : (
+              <p className="text-xs" style={{color:'var(--grn)'}}>
+                All {checkRes.total} products fit at the pinned sizes.
+              </p>
+            )}
+          </div>
+        )}
         {overflows.length > 0 && (
           <div className="mb-3 p-2.5" style={{border:'1px solid var(--amb)', background:'rgba(240,168,48,.1)'}}>
             <p className="text-xs" style={{color:'var(--amb)'}}>
@@ -4413,13 +4575,21 @@ function ProductLink({ row, products, onLink, onCreated }) {
 // Defined at module scope on purpose. Declaring this inside FeaturesPage makes
 // React see a brand-new component type on every render, remounting every input
 // and stealing focus after each keystroke.
-function FeatureCell({ row, field, type='text', align='left', onCommit }) {
+function FeatureCell({ row, field, type='text', align='left', onCommit, placeholder }) {
+  // An empty cell used to be a transparent input with a transparent underline,
+  // so a manager looking at a blank Revenue column had nothing telling them it
+  // could be typed in. Now every editable cell carries a faint rule and a
+  // greyed hint, which firm up on hover and light up on focus.
+  const idle = 'rgba(212,175,55,.28)';
   return (
     <input
       defaultValue={row[field] ?? ''}
+      placeholder={placeholder || (type === 'money' ? '0.00' : type === 'int' ? '0' : '—')}
+      onMouseEnter={e=>{ if (document.activeElement !== e.target) e.target.style.borderBottomColor='var(--cy)'; }}
+      onMouseLeave={e=>{ if (document.activeElement !== e.target) e.target.style.borderBottomColor=idle; }}
       onFocus={e=>{ e.target.style.borderBottomColor='var(--cy)'; e.target.style.background='rgba(212,175,55,.06)'; }}
       onBlur={function(e){
-        e.target.style.borderBottomColor = 'transparent';
+        e.target.style.borderBottomColor = idle;
         e.target.style.background = 'transparent';
         const raw = e.target.value;
         let v = raw === '' ? null : raw;
@@ -4443,9 +4613,10 @@ function FeatureCell({ row, field, type='text', align='left', onCommit }) {
       onKeyDown={e=>{ if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') { e.target.value = row[field] ?? ''; e.target.blur(); } }}
       style={{
         width:'100%', background:'transparent', border:'none',
-        borderBottom:'1px solid transparent', color:'var(--txt)',
+        borderBottom:'1px solid ' + idle, color:'var(--txt)',
         fontSize:'12px', padding:'4px 5px', textAlign:align, outline:'none',
         fontFamily: type==='text' ? 'var(--disp)' : 'var(--mono)',
+        transition:'border-color .12s, background .12s',
       }}
     />
   );
@@ -8102,6 +8273,12 @@ function FeaturesPage({ isAdmin, myStores, editableIds, initialView, go }) {
               );
             })}
           </div>
+          {mode === 'sales' && canEdit && (
+            <span className="text-xs" style={{color:'var(--cy)'}}>
+              <Icon name="edit" size={12} className="mr-1.5"/>
+              Click any <strong>Qty sold</strong> or <strong>Revenue</strong> cell and type — it saves when you tab or click away.
+            </span>
+          )}
           <span className="flex-1"/>
           {canEdit && (
             <React.Fragment>
@@ -8885,9 +9062,12 @@ function EdlpCell({ row, field, type='text', align='left', onCommit }) {
   return (
     <input
       defaultValue={row[field] ?? ''}
+      placeholder={type === 'money' ? '0.00' : '—'}
+      onMouseEnter={e=>{ if (document.activeElement !== e.target) e.target.style.borderBottomColor='var(--cy)'; }}
+      onMouseLeave={e=>{ if (document.activeElement !== e.target) e.target.style.borderBottomColor='rgba(212,175,55,.28)'; }}
       onFocus={e=>{ e.target.style.borderBottomColor='var(--cy)'; e.target.style.background='rgba(212,175,55,.06)'; }}
       onBlur={function(e){
-        e.target.style.borderBottomColor = 'transparent';
+        e.target.style.borderBottomColor = 'rgba(212,175,55,.28)';
         e.target.style.background = 'transparent';
         const raw = e.target.value;
         let v = raw === '' ? null : raw;
@@ -8899,9 +9079,10 @@ function EdlpCell({ row, field, type='text', align='left', onCommit }) {
       onKeyDown={e=>{ if (e.key === 'Enter') e.target.blur(); if (e.key === 'Escape') { e.target.value = row[field] ?? ''; e.target.blur(); } }}
       style={{
         width:'100%', background:'transparent', border:'none',
-        borderBottom:'1px solid transparent', color:'var(--txt)',
+        borderBottom:'1px solid rgba(212,175,55,.28)', color:'var(--txt)',
         fontSize:'12px', padding:'4px 5px', textAlign:align, outline:'none',
         fontFamily: type==='text' ? 'var(--disp)' : 'var(--mono)',
+        transition:'border-color .12s, background .12s',
       }}
     />
   );
@@ -11634,6 +11815,7 @@ function fitText(text, boxW, boxH, settings={}) {
     padding=0,
     prefix='', prefixScale=0.55,
     suffix='', suffixScale=0.35,
+    fixedFontSize=null,
   } = settings;
   const weightOf = () => fontWeight != null ? String(fontWeight) : (bold ? 'bold' : 'normal');
 
@@ -11706,6 +11888,16 @@ function fitText(text, boxW, boxH, settings={}) {
     };
   };
 
+  // A pinned size is rendered at exactly that size: no search, no growing to
+  // fill the box when the name is short, no shrinking when it is long. This is
+  // what makes the editor WYSIWYG — the size stops depending on which product
+  // happens to be in the field. It runs through the same measure() as the
+  // fitter, so wrapping, ink metrics and overflow are judged identically.
+  if (fixedFontSize) {
+    const r = measure(fixedFontSize);
+    return { fontSize: fixedFontSize, ...r, overflow: !r.fits };
+  }
+
   // Binary search gets close fast, but fits() is not strictly monotonic —
   // changing font size changes where lines wrap, so a larger size can need
   // fewer lines and suddenly fit. Search, then verify downwards so the value
@@ -11735,11 +11927,13 @@ function drawTextField(ctx, text, box, settings={}, fit=null) {
           lineSpacing=1.2, minFontSize=8, maxFontSize=48, wrap=true, maxLines=null,
           fontFamily='Arial,Helvetica,sans-serif', fontWeight=null, padding=0,
           prefix='', prefixScale=0.55, prefixValign='middle',
-          suffix='', suffixScale=0.35, suffixValign='bottom' } = settings;
+          suffix='', suffixScale=0.35, suffixValign='bottom',
+          fixedFontSize=null } = settings;
   const wt = fontWeight != null ? String(fontWeight) : (bold ? 'bold' : 'normal');
   const r = fit || fitText(text, box.w, box.h, {
     align, bold, lineSpacing, wrap, maxLines, maxFontSize, minFontSize,
     fontFamily, fontWeight, padding, prefix, prefixScale, suffix, suffixScale,
+    fixedFontSize,
   });
   const { fontSize, lines, inks, advance, totalH } = r;
   if (!lines || !lines.length) return r;

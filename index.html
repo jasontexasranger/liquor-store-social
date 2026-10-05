@@ -3523,7 +3523,7 @@ function ProductPickerModal({ products, onPick, onClose }) {
 // ─────────────────────────────────────────────
 // AD TEMPLATE FIELD EDITOR
 // ─────────────────────────────────────────────
-function AdFieldEditor({ templateDataUrl, fields, onChange }) {
+function AdFieldEditor({ templateDataUrl, fields, onChange, onFitToBox }) {
   const boxRef = useRef();
   const [sel, setSel] = useState(null);
   const [drag, setDrag] = useState(null);
@@ -3717,10 +3717,12 @@ function AdFieldEditor({ templateDataUrl, fields, onChange }) {
                            value={cur.font_size ?? ''}
                            onChange={e=>patch(cur.id,{ font_size: e.target.value === '' ? null : +e.target.value })}
                            className="flex-1"/>
-                    <Button size="sm" variant="outline" onClick={()=>fitFieldToBox(cur)}
-                            title="Set the size that fits the longest product name this month">
-                      Fit to box
-                    </Button>
+                    {onFitToBox && (
+                      <Button size="sm" variant="outline" onClick={()=>onFitToBox(cur)}
+                              title="Set the size that fits the longest product name this month">
+                        Fit to box
+                      </Button>
+                    )}
                     {cur.font_size != null && (
                       <Button size="sm" variant="ghost" onClick={()=>patch(cur.id,{font_size:null})}
                               title="Back to auto-fitting each product">
@@ -3951,7 +3953,7 @@ function AdTemplateLayout({ tpl, onClose, onSaved }) {
       prefix: f.prefix || '', prefixScale: (f.prefix_scale ?? 55) / 100,
       suffix: f.suffix || '', suffixScale: (f.suffix_scale ?? 35) / 100,
     });
-    patch(f.id, { font_size: r.fontSize });
+    change(draft.map(x => x.id === f.id ? { ...x, font_size: r.fontSize } : x));
     toast.success('Pinned to ' + r.fontSize + 'px — fits "' + String(text).slice(0, 28) + '"');
   };
 
@@ -4003,7 +4005,7 @@ function AdTemplateLayout({ tpl, onClose, onSaved }) {
       </div>
       {loading
         ? <p className="lbl text-center py-8">Loading…</p>
-        : <AdFieldEditor templateDataUrl={art} fields={draft} onChange={change}/>}
+        : <AdFieldEditor templateDataUrl={art} fields={draft} onChange={change} onFitToBox={fitFieldToBox}/>}
 
       <div className="mt-5 pt-4" style={{borderTop:'1px solid var(--line)'}}>
         <div className="flex items-center gap-3 mb-3 flex-wrap">
@@ -12510,7 +12512,7 @@ function InlineImageGenerator({ storeId, settings, onGenerated, seedFeature }) {
     if (!file) return;
     setProdFile(file);
     const r=new FileReader();
-    r.onload=async()=>{ setProdPrev(r.result); try { await saveToLib(file.name, r.result); } catch{} };
+    r.onload=async()=>{ setProdPrev(r.result); try { await saveToQuickLib(file.name, r.result); } catch{} };
     r.readAsDataURL(file);
   };
 
@@ -14761,7 +14763,7 @@ function ImageGenerator({ settings, onUseInPost }) {
     const r=new FileReader();
     r.onload=async()=>{
       setProdPrev(r.result);
-      try { await saveToQuickLib(file.name, r.result); } catch{}
+      try { await saveToLib(file.name, r.result); } catch{}
     };
     r.readAsDataURL(file);
   };

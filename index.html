@@ -3935,15 +3935,19 @@ function AdTemplateLayout({ tpl, onClose, onSaved }) {
     else toast.success('All ' + names.length + ' products fit');
   };
 
-  // Pin the size that fits the longest name the box has to carry, so the
-  // tightest case is the one that defines the layout.
+  // Pin the largest size every name the box has to carry fits at, so the
+  // tightest case defines the layout. That has to be measured name by name:
+  // the most characters isn't the tightest — wide letters or one long word
+  // that can't wrap (SAUVIGNON) can need more room than a longer name.
   const fitFieldToBox = function(f) {
     const W = tpl.canvas_w || 1080, H = tpl.canvas_h || 1080;
     const boxW = Number(f.w_pct)/100*W, boxH = Number(f.h_pct)/100*H;
-    const longest = previewNames.reduce((a,b)=> b.length > a.length ? b : a, '');
-    let text = f.field_key === 'product_name' ? longest : (SAMPLE[f.field_key] || 'SAMPLE');
-    if (f.uppercase) text = String(text).toUpperCase();
-    const r = fitText(String(text), boxW, boxH, {
+    const texts = (f.field_key === 'product_name'
+      ? ((realNames && realNames.length) ? realNames : previewNames)
+      : [SAMPLE[f.field_key] || 'SAMPLE']
+    ).map(t => f.uppercase ? String(t).toUpperCase() : String(t));
+    const fitOne = (text, fixedFontSize = null) => fitText(text, boxW, boxH, {
+      fixedFontSize,
       align: f.align || 'left', bold: !!f.bold,
       lineSpacing: Number(f.line_spacing) || 1.15,
       wrap: f.wrap !== false, maxLines: f.max_lines || null,
@@ -3953,8 +3957,20 @@ function AdTemplateLayout({ tpl, onClose, onSaved }) {
       prefix: f.prefix || '', prefixScale: (f.prefix_scale ?? 55) / 100,
       suffix: f.suffix || '', suffixScale: (f.suffix_scale ?? 35) / 100,
     });
-    change(draft.map(x => x.id === f.id ? { ...x, font_size: r.fontSize } : x));
-    toast.success('Pinned to ' + r.fontSize + 'px — fits "' + String(text).slice(0, 28) + '"');
+    let size = Infinity, tightest = texts[0], overflow = false;
+    for (const t of texts) {
+      const r = fitOne(t);
+      if (r.fontSize < size) { size = r.fontSize; tightest = t; }
+      if (r.overflow) overflow = true;
+    }
+    // Wrapping isn't monotonic in size — a name that fits at its own best
+    // size can wrap worse a pixel smaller — so confirm every name at the
+    // chosen size, the same test Check all products runs.
+    const minSize = f.min_font_size || 8;
+    while (!overflow && size > minSize && texts.some(t => fitOne(t, size).overflow)) size--;
+    change(draft.map(x => x.id === f.id ? { ...x, font_size: size } : x));
+    if (overflow) toast.error('Even ' + size + 'px is too big for "' + tightest.slice(0, 28) + '" — enlarge the box or shorten that name');
+    else toast.success('Pinned to ' + size + 'px — the size every ' + (texts.length > 1 ? texts.length + ' names' : 'name') + ' fits; tightest is "' + tightest.slice(0, 28) + '"');
   };
 
   const makeMockup = async () => {

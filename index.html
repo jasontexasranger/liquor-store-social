@@ -588,10 +588,14 @@ function useCreatives() {
     const sb = getSB();
     const { data:{ session } } = await sb.auth.getSession();
     if (!session) throw new Error('Not authenticated');
-    const path = session.user.id + '/' + Date.now() + '-' + Math.random().toString(36).slice(2,8) + '.png';
+    // The encoder falls back to JPEG when a PNG would blow the size cap, so
+    // the stored path and content type follow the blob rather than assuming.
+    const type = blob.type || 'image/png';
+    const ext  = type === 'image/jpeg' ? 'jpg' : 'png';
+    const path = session.user.id + '/' + Date.now() + '-' + Math.random().toString(36).slice(2,8) + '.' + ext;
 
     const up = await sb.storage.from('creatives').upload(path, blob, {
-      contentType: 'image/png', upsert: false,
+      contentType: type, upsert: false,
     });
     if (up.error) throw new Error(up.error.message);
     const url = sb.storage.from('creatives').getPublicUrl(path).data.publicUrl;
@@ -611,7 +615,7 @@ function useCreatives() {
     const { error } = await sb.from('creatives').insert({
       name: meta.name, campaign_id: meta.campaignId || null, store_id: meta.storeId || null,
       aspect: meta.aspect, storage_path: path, public_url: url,
-      width: meta.width, height: meta.height, bytes: blob.size, mime: 'image/png',
+      width: meta.width, height: meta.height, bytes: blob.size, mime: type,
       period: meta.period || null, feature_id: meta.featureId || null,
       template_id: meta.templateId || null, source: 'feature_batch',
       created_by: session.user.id,
@@ -1548,6 +1552,53 @@ function drawImageFitted(ctx, img, box, mode) {
   ctx.restore();
 }
 
+// OptiSigns rejects assets over this, and a 1920x1080 lossless PNG carrying a
+// product photograph goes past it easily. Price ads are always opaque — the
+// renderer fills white before drawing — so there is no transparency to lose by
+// falling back to JPEG when a PNG will not fit.
+const MAX_EXPORT_BYTES = 2.5 * 1024 * 1024;
+
+function dataUrlBytes(dataUrl) {
+  const i = String(dataUrl || '').indexOf(',');
+  if (i < 0) return 0;
+  const b64 = dataUrl.slice(i + 1);
+  const pad = b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0;
+  return Math.floor(b64.length * 3 / 4) - pad;
+}
+
+// PNG first: flat brand artwork compresses better losslessly than it does as
+// JPEG, and most ads come in well under the cap, so the common case keeps
+// every pixel. Only a photo-heavy ad steps down through JPEG quality, and only
+// then does it shrink — resolution is the last thing worth giving up on a
+// screen that may be 4K.
+function cappedDataUrl(canvas, maxBytes = MAX_EXPORT_BYTES) {
+  let out = canvas.toDataURL('image/png');
+  if (dataUrlBytes(out) <= maxBytes) return out;
+
+  for (const q of [0.92, 0.86, 0.8, 0.72, 0.64, 0.55]) {
+    out = canvas.toDataURL('image/jpeg', q);
+    if (dataUrlBytes(out) <= maxBytes) return out;
+  }
+
+  // Still over at the lowest quality worth shipping: scale down and retry,
+  // rather than hand back a file the player will refuse.
+  let w = canvas.width, h = canvas.height;
+  for (let i = 0; i < 3; i++) {
+    w = Math.round(w * 0.8); h = Math.round(h * 0.8);
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const g = c.getContext('2d');
+    g.fillStyle = '#ffffff'; g.fillRect(0, 0, w, h);
+    g.drawImage(canvas, 0, 0, w, h);
+    for (const q of [0.8, 0.7, 0.6]) {
+      out = c.toDataURL('image/jpeg', q);
+      if (dataUrlBytes(out) <= maxBytes) return out;
+    }
+  }
+  // Best effort — the caller reports the size so it is never a silent failure.
+  return out;
+}
+
 async function renderFieldTemplate(tpl, fields, values, productDataUrl, onStep, bgMode) {
   const W = tpl.canvas_w || 1080;
   const H = tpl.canvas_h || 1080;
@@ -1654,7 +1705,7 @@ async function renderFieldTemplate(tpl, fields, values, productDataUrl, onStep, 
     if (res && res.overflow) overflows.push(f.label || f.field_key);
   }
 
-  const url = canvas.toDataURL('image/png');
+  const url = cappedDataUrl(canvas);
   // Attach non-fatally so callers that just want the image still work.
   try { url.overflows = overflows; } catch(e) {}
   return overflows.length ? { url, overflows } : url;
@@ -1906,7 +1957,7 @@ async function renderRecipeCard(styleTokens, recipe, photoDataUrl, stampDataUrl)
     });
   }
 
-  return canvas.toDataURL('image/png');
+  return cappedDataUrl(canvas);
 }
 
 // Bar measures here are ounces. The model is told so, but it drifts to
@@ -6845,7 +6896,10 @@ function FeatureCreativeBatch({ storeId, storeName, period, rows, products, camp
           });
 
           made.push({ name: row.name, tpl: tpl.name, url: publicUrl || url, aspect,
-                      warn: over.length ? 'Text too big to fit: ' + over.join(', ') : null });
+                      warn: [over.length ? 'Text too big to fit: ' + over.join(', ') : null,
+                             blob.size > MAX_EXPORT_BYTES
+                               ? 'Still ' + (blob.size/1048576).toFixed(1) + 'MB after compression — over the 2.5MB limit'
+                               : null].filter(Boolean).join(' · ') || null });
         } catch (e) {
           failed.push((row.name || 'Feature') + ' / ' + tpl.name + ': ' + e.message);
         }
@@ -7134,7 +7188,10 @@ function EDLPCreativeBatch({ storeId, storeName, rows, campaigns, onClose }) {
           });
 
           made.push({ name: row.name, tpl: tpl.name, url: publicUrl, aspect,
-                      warn: over.length ? 'Text too big to fit: ' + over.join(', ') : null });
+                      warn: [over.length ? 'Text too big to fit: ' + over.join(', ') : null,
+                             blob.size > MAX_EXPORT_BYTES
+                               ? 'Still ' + (blob.size/1048576).toFixed(1) + 'MB after compression — over the 2.5MB limit'
+                               : null].filter(Boolean).join(' · ') || null });
         } catch (e) {
           failed.push((row.name || 'Item') + ' / ' + tpl.name + ': ' + e.message);
         }
@@ -11529,7 +11586,7 @@ async function renderRetailTemplate(tplId, { productDataUrl, logoDataUrl, brandP
     });
   }
 
-  return canvas.toDataURL('image/png');
+  return cappedDataUrl(canvas);
 }
 
 // ─────────────────────────────────────────────
@@ -11781,7 +11838,7 @@ async function pdfPageToDataUrl(pdfDataUrl, maxPx=2000) {
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   await page.render({ canvasContext: ctx, viewport: vp }).promise;
-  return canvas.toDataURL('image/png');
+  return cappedDataUrl(canvas);
 }
 
 // Binary-search text fitting — returns { fontSize, lines, overflow }

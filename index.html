@@ -16862,13 +16862,61 @@ function StarRow({ rating, size=13 }) {
   );
 }
 
+// Which Google metric a bar chart is showing. Impressions are deliberately
+// offered split as well as combined: a store whose Maps impressions are rising
+// while Search falls is a different story from one where both move together,
+// and the combined total hides it.
+const GOOGLE_METRICS = [
+  { id:'total_impressions',  label:'Profile impressions', hint:'Search + Maps, mobile + desktop' },
+  { id:'search_impressions', label:'Search impressions',  hint:'Mobile + desktop' },
+  { id:'maps_impressions',   label:'Maps impressions',    hint:'Mobile + desktop' },
+  { id:'direction_requests', label:'Direction requests',  hint:'Requests for directions — not visits' },
+  { id:'website_clicks',     label:'Website clicks',      hint:'Clicks through to the store site' },
+  { id:'call_clicks',        label:'Call button clicks',  hint:'Taps on call — not calls connected' },
+];
+
+// A bare horizontal bar row. No chart library: twelve bars per store does not
+// justify pulling one in, and this keeps the HUD styling consistent.
+function MetricBar({ label, value, max, muted, note }) {
+  const pct = max > 0 ? Math.max(1.5, (value / max) * 100) : 0;
+  return (
+    <div className="flex items-center gap-2">
+      <span className="mono text-[9.5px] uppercase tracking-[.1em] text-right flex-shrink-0"
+            style={{color:'var(--txt3)', width:'4.6em'}}>{label}</span>
+      <span className="flex-1 h-3.5 relative" style={{background:'var(--line)'}}>
+        <span className="absolute inset-y-0 left-0" style={{
+          width: pct+'%',
+          background: muted ? 'var(--txt3)' : 'linear-gradient(90deg,var(--cy-dim),var(--cy))',
+          opacity: muted ? .45 : 1,
+        }}/>
+      </span>
+      <span className="mono text-[10px] text-right flex-shrink-0" style={{color:'var(--txt2)', width:'4.2em'}}>
+        {value === null || value === undefined ? '—' : value.toLocaleString()}
+      </span>
+      {note && <span className="mono text-[9px]" style={{color:'var(--amb)'}} title={note}>!</span>}
+    </div>
+  );
+}
+
 function ReviewsPage({ isAdmin }) {
   const toast = useToast();
-  const [snapshots, setSnapshots] = useState({});   // store_id -> latest snapshot row
-  const [recent,    setRecent]    = useState({});   // store_id -> [review rows]
+  const [snapshots, setSnapshots] = useState({});   // store_id -> latest Places snapshot
+  const [recent,    setRecent]    = useState({});   // store_id -> [Places recent reviews]
+  const [feedRv,    setFeedRv]    = useState([]);   // sueno_reviews, newest first
+  const [vis,       setVis]       = useState([]);   // sueno_review_visibility
+  const [themes,    setThemes]    = useState({});   // review_id -> [{theme,sentiment}]
+  const [issues,    setIssues]    = useState([]);   // joined issue rows
+  const [staff,     setStaff]     = useState([]);   // sueno_review_staff
+  const [sync,      setSync]      = useState(null); // last sueno_review_sync row
   const [loading,   setLoading]   = useState(true);
   const [syncing,   setSyncing]   = useState(false);
+  const [feeding,   setFeeding]   = useState(false);
   const [settingUp, setSettingUp] = useState(false);
+
+  const [tab,       setTab]       = useState('board');
+  const [storeFilt, setStoreFilt] = useState('all');
+  const [unanswered,setUnanswered]= useState(false);
+  const [metric,    setMetric]    = useState('total_impressions');
 
   const load = useCallback(async function() {
     setLoading(true);
@@ -16887,6 +16935,28 @@ function ReviewsPage({ isAdmin }) {
       const byRecent = {};
       (recentRows || []).forEach(r => { (byRecent[r.store_id] ??= []).push(r); });
       setRecent(byRecent);
+
+      // ── The Sueño reviews feed (sueno-reviews edge function) ───────────
+      // Every one of these is read-only to any signed-in user by design: this
+      // is shared company reporting, and a manager seeing the other stores is
+      // the point of a leaderboard.
+      const [rv, vz, th, iss, st, sy] = await Promise.all([
+        sb.from('sueno_reviews').select('*').order('review_date', { ascending:false }),
+        sb.from('sueno_review_visibility').select('*').order('month', { ascending:true }),
+        sb.from('sueno_review_themes').select('*'),
+        sb.from('sueno_review_issues')
+          .select('issue_code, review_id, sueno_review_issue_labels(description)'),
+        sb.from('sueno_review_staff').select('*').order('name'),
+        sb.from('sueno_review_sync').select('*').order('ran_at',{ascending:false}).limit(1).maybeSingle(),
+      ]);
+      setFeedRv(rv.data || []);
+      setVis(vz.data || []);
+      const byTheme = {};
+      (th.data || []).forEach(r => { (byTheme[r.review_id] ??= []).push(r); });
+      setThemes(byTheme);
+      setIssues(iss.data || []);
+      setStaff(st.data || []);
+      setSync(sy.data || null);
     } catch(e) { toast.error(e.message); }
     finally { setLoading(false); }
   }, []);
@@ -16917,6 +16987,17 @@ function ReviewsPage({ isAdmin }) {
     finally { setSettingUp(false); }
   };
 
+  const runFeedSync = async function() {
+    setFeeding(true);
+    try {
+      // callEdge throws on an error payload, so reaching here means it worked.
+      const c = (await callEdge('sueno-reviews', 'sync', {})).counts || {};
+      toast.success('Review feed — ' + (c.reviews||0) + ' reviews, ' + (c.visibility||0) + ' months');
+      await load();
+    } catch(e) { toast.error(e.message); }
+    finally { setFeeding(false); }
+  };
+
   // Ranked by rating first, review count as tiebreaker — stores with no
   // snapshot yet sink to the bottom rather than being hidden.
   const ranked = useMemo(function() {
@@ -16929,7 +17010,95 @@ function ReviewsPage({ isAdmin }) {
       });
   }, [snapshots]);
 
+  // Per-store figures from the feed. Kept rigidly separate from the Places
+  // snapshot above and labelled "in the feed" everywhere it appears: Places
+  // counts a store's WHOLE HISTORY, this counts only reviews inside the
+  // feed's reporting window. Showing 4.28 next to 4.5 as if they disagreed
+  // about the same thing would be wrong — they measure different sets.
+  const feedStats = useMemo(function() {
+    const by = {};
+    feedRv.forEach(r => {
+      const s = (by[r.store_id] ??= { n:0, sum:0, text:0, unanswered:0, newest:null });
+      s.n++; s.sum += r.rating;
+      if (r.review_text) s.text++;
+      if (!r.reply) s.unanswered++;
+      if (!s.newest || r.review_date > s.newest) s.newest = r.review_date;
+    });
+    Object.values(by).forEach(s => { s.avg = s.n ? s.sum / s.n : null; });
+    return by;
+  }, [feedRv]);
+
+  const shownReviews = useMemo(function() {
+    return feedRv.filter(r =>
+      (storeFilt === 'all' || r.store_id === storeFilt) &&
+      (!unanswered || !r.reply));
+  }, [feedRv, storeFilt, unanswered]);
+
+  // Months ascending, so the bars read left-to-right as time.
+  const months = useMemo(function() {
+    return [...new Set(vis.map(v => v.month))].sort();
+  }, [vis]);
+
+  const visByStore = useMemo(function() {
+    const by = {};
+    vis.forEach(v => { (by[v.store_id] ??= {})[v.month] = v; });
+    return by;
+  }, [vis]);
+
+  // One scale across every store, so the bars compare between stores as well
+  // as across months. A per-store scale would make Cobblestone look like
+  // Hideaway, which is the opposite of what a leaderboard is for.
+  const metricMax = useMemo(function() {
+    return vis.reduce((m, v) => Math.max(m, v[metric] || 0), 0);
+  }, [vis, metric]);
+
+  const issuesByStore = useMemo(function() {
+    const byReview = {};
+    feedRv.forEach(r => { byReview[r.id] = r; });
+    const out = [];
+    issues.forEach(i => {
+      const r = byReview[i.review_id];
+      if (!r) return;
+      out.push({
+        ...i,
+        description: (i.sueno_review_issue_labels && i.sueno_review_issue_labels.description) || i.issue_code,
+        store_id: r.store_id, review_date: r.review_date,
+        rating: r.rating, review_text: r.review_text, reply: r.reply,
+      });
+    });
+    return out.sort((a,b) => b.review_date.localeCompare(a.review_date));
+  }, [issues, feedRv]);
+
+  // Only positive mentions: the feed also carries neutral and critical name
+  // mentions, and putting those on a recognition board would be a quiet insult.
+  //
+  // Deduped by review + name because the same compliment arrives from two
+  // places — the themes file's staffPraise and the separate staff-mentions
+  // file both named Jacob on the same review. Stored separately on purpose
+  // (they aren't equally safe to display), but one person thanked once should
+  // appear once.
+  const praise = useMemo(function() {
+    const seen = new Set(), out = [];
+    staff.filter(s => s.sentiment === 'positive').forEach(s => {
+      const k = s.review_id + '|' + s.name.toLowerCase();
+      if (seen.has(k)) return;
+      seen.add(k); out.push(s);
+    });
+    return out;
+  }, [staff]);
+
   const haveAnyData = Object.keys(snapshots).length > 0;
+  const haveFeed    = feedRv.length > 0;
+  const storeName   = id => (STORES.find(s => s.id === id) || {}).name || id;
+  const fmtDate     = d => new Date(d + 'T12:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
+  const fmtMonth    = m => new Date(m + '-15T12:00:00').toLocaleDateString(undefined,{month:'short'});
+
+  const TABS = [
+    { id:'board',   label:'Leaderboard',     icon:'star'  },
+    { id:'reviews', label:'Reviews',         icon:'comment', count: feedRv.length },
+    { id:'found',   label:'Found on Google', icon:'chart'  },
+    { id:'flags',   label:'Flags & praise',  icon:'warn',   count: issuesByStore.length + praise.length },
+  ];
 
   return (
     <div className="space-y-4">
@@ -16942,76 +17111,290 @@ function ReviewsPage({ isAdmin }) {
               <Button size="sm" variant="outline" onClick={runSetup} loading={settingUp}>
                 <Icon name="search"/> Set up store matches
               </Button>
-              <Button size="sm" onClick={runSync} loading={syncing}>
-                <Icon name="refresh"/> Sync now
+              <Button size="sm" variant="outline" onClick={runSync} loading={syncing}>
+                <Icon name="refresh"/> Sync ratings
+              </Button>
+              <Button size="sm" onClick={runFeedSync} loading={feeding}>
+                <Icon name="refresh"/> Sync review feed
               </Button>
             </>
           )}
         </div>
         <p className="lbl">
-          Each store's live Google rating, review count, and most recent reviews —
-          synced automatically once a day via Google's Places API, never scraped.
-          A friendly leaderboard everyone can see, not a full report: Google's API
-          only ever hands back a store's 5 most recent reviews, not its full
-          history.
+          Two sources, deliberately kept apart. The <strong>rating and review
+          count</strong> come from Google's Places API and cover each store's
+          whole history. Everything else — the review text, our replies, how
+          people found the store — comes from the Sueño reviews report, which
+          covers a rolling window rather than all time. Their averages will not
+          match, because they are not counting the same reviews.
         </p>
+        {sync && (
+          <p className="mono text-[10px] mt-2" style={{color: sync.ok ? 'var(--txt3)' : 'var(--red)'}}>
+            {sync.ok
+              ? 'Feed synced ' + new Date(sync.ran_at).toLocaleString() +
+                ' · source last built ' + (sync.source_checked_at ? new Date(sync.source_checked_at).toLocaleString() : 'unknown')
+              : 'Last feed sync FAILED ' + new Date(sync.ran_at).toLocaleString() + ' — ' + (sync.error || 'unknown error')}
+          </p>
+        )}
       </Card>
+
+      {/* Tabs */}
+      <div className="flex gap-1 flex-wrap" style={{borderBottom:'1px solid var(--line2)'}}>
+        {TABS.map(t => (
+          <button key={t.id} onClick={()=>setTab(t.id)}
+            className="px-4 py-2.5 text-sm font-semibold border-b-2 transition-colors flex items-center gap-2"
+            style={tab===t.id ? {borderColor:'var(--cy)', color:'var(--cy)'} : {borderColor:'transparent', color:'var(--txt2)'}}>
+            <Icon name={t.icon} size={14}/>{t.label}
+            {t.count ? <span className="mono text-[9.5px]" style={{color:'var(--txt3)'}}>{t.count}</span> : null}
+          </button>
+        ))}
+      </div>
 
       {loading ? (
         <Card><p className="lbl text-center py-10">Loading…</p></Card>
-      ) : !haveAnyData ? (
-        <Card>
-          <div className="text-center py-12">
-            <Icon name="star" size={36} style={{color:'var(--cy-dim)'}}/>
-            <p className="lbl mt-3">No data yet</p>
-            <p className="text-xs mt-2" style={{color:'var(--txt2)'}}>
-              {isAdmin ? 'Run "Set up store matches", then "Sync now" above.' : 'Ask an admin to run the first sync.'}
-            </p>
-          </div>
-        </Card>
-      ) : ranked.map((s, i) => (
-        <Card key={s.id}>
-          <div className="flex items-start justify-between gap-3 flex-wrap mb-2">
-            <div className="flex items-center gap-2.5">
-              <span className="text-base font-bold text-center" style={{color: i===0 ? 'var(--cy)' : 'var(--txt3)', minWidth:'1.6em'}}>
-                {i===0 && s.snap ? <Icon name="spark" size={18}/> : ('#'+(i+1))}
-              </span>
-              <div>
-                <span className="text-sm font-semibold" style={{color:'var(--txt)'}}>{s.name}</span>
-                {s.snap ? (
-                  <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                    <StarRow rating={s.snap.rating}/>
-                    <span className="text-sm font-bold" style={{color:'var(--cy)'}}>{Number(s.snap.rating).toFixed(1)}</span>
-                    <span className="lbl">· {s.snap.review_count} review{s.snap.review_count===1?'':'s'}</span>
+      ) : (
+        <>
+          {/* ── Leaderboard ─────────────────────────────────────────────── */}
+          {tab==='board' && (!haveAnyData ? (
+            <Card>
+              <div className="text-center py-12">
+                <Icon name="star" size={36} style={{color:'var(--cy-dim)'}}/>
+                <p className="lbl mt-3">No data yet</p>
+                <p className="text-xs mt-2" style={{color:'var(--txt2)'}}>
+                  {isAdmin ? 'Run "Set up store matches", then "Sync ratings" above.' : 'Ask an admin to run the first sync.'}
+                </p>
+              </div>
+            </Card>
+          ) : ranked.map((s, i) => {
+            const fs = feedStats[s.id];
+            return (
+            <Card key={s.id} className="mb-4">
+              <div className="flex items-start justify-between gap-3 flex-wrap mb-2">
+                <div className="flex items-center gap-2.5">
+                  <span className="text-base font-bold text-center" style={{color: i===0 ? 'var(--cy)' : 'var(--txt3)', minWidth:'1.6em'}}>
+                    {i===0 && s.snap ? <Icon name="spark" size={18}/> : ('#'+(i+1))}
+                  </span>
+                  <div>
+                    <span className="text-sm font-semibold" style={{color:'var(--txt)'}}>{s.name}</span>
+                    {s.snap ? (
+                      <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                        <StarRow rating={s.snap.rating}/>
+                        <span className="text-sm font-bold" style={{color:'var(--cy)'}}>{Number(s.snap.rating).toFixed(1)}</span>
+                        <span className="lbl">· {s.snap.review_count} review{s.snap.review_count===1?'':'s'} all time</span>
+                      </div>
+                    ) : (
+                      <p className="lbl mt-0.5">Not synced yet</p>
+                    )}
                   </div>
-                ) : (
-                  <p className="lbl mt-0.5">Not synced yet</p>
+                </div>
+                {s.snap && (
+                  <span className="lbl">Updated {new Date(s.snap.fetched_at).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</span>
                 )}
               </div>
-            </div>
-            {s.snap && (
-              <span className="lbl">Updated {new Date(s.snap.fetched_at).toLocaleDateString(undefined,{month:'short',day:'numeric'})}</span>
-            )}
-          </div>
-          {!!(recent[s.id] && recent[s.id].length) ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
-              {recent[s.id].slice(0,5).map(r => (
-                <div key={r.id} className="p-2.5" style={{border:'1px solid var(--line)'}}>
-                  <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
-                    <StarRow rating={r.rating} size={11}/>
-                    <span className="lbl">{r.author_name || 'Anonymous'} · {r.relative_time || ''}</span>
-                  </div>
-                  <p className="text-xs" style={{color:'var(--txt2)'}}>
-                    {r.review_text ? '"' + r.review_text + '"' : 'No written comment'}
-                  </p>
+
+              {/* The feed's own figures, labelled so they can't be mistaken for
+                  the all-time rating above. */}
+              {fs && (
+                <div className="flex items-center gap-4 flex-wrap mb-2 px-2.5 py-2"
+                     style={{border:'1px solid var(--line)', background:'var(--panel)'}}>
+                  <span className="mono text-[9.5px] uppercase tracking-[.14em]" style={{color:'var(--txt3)'}}>In the feed</span>
+                  <span className="text-xs" style={{color:'var(--txt2)'}}>
+                    <strong style={{color:'var(--txt)'}}>{fs.avg.toFixed(2)}</strong> avg over {fs.n}
+                  </span>
+                  <span className="text-xs" style={{color:'var(--txt2)'}}>{fs.text} written</span>
+                  {fs.unanswered > 0
+                    ? <Badge color="yellow">{fs.unanswered} awaiting reply</Badge>
+                    : <Badge color="green">all replied</Badge>}
+                  <span className="lbl">Newest {fmtDate(fs.newest)}</span>
                 </div>
-              ))}
+              )}
+
+              {!!(recent[s.id] && recent[s.id].length) ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-2">
+                  {recent[s.id].slice(0,5).map(r => (
+                    <div key={r.id} className="p-2.5" style={{border:'1px solid var(--line)'}}>
+                      <div className="flex items-center justify-between gap-2 mb-1 flex-wrap">
+                        <StarRow rating={r.rating} size={11}/>
+                        <span className="lbl">{r.author_name || 'Anonymous'} · {r.relative_time || ''}</span>
+                      </div>
+                      <p className="text-xs" style={{color:'var(--txt2)'}}>
+                        {r.review_text ? '"' + r.review_text + '"' : 'No written comment'}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              ) : s.snap && (
+                <p className="text-xs mt-1" style={{color:'var(--txt3)'}}>
+                  No recent review text from Places. The Reviews tab has the full written history.
+                </p>
+              )}
+            </Card>
+          );}))}
+
+          {/* ── Reviews ─────────────────────────────────────────────────── */}
+          {tab==='reviews' && (!haveFeed ? (
+            <Card>
+              <div className="text-center py-12">
+                <Icon name="comment" size={36} style={{color:'var(--cy-dim)'}}/>
+                <p className="lbl mt-3">No review feed yet</p>
+                <p className="text-xs mt-2" style={{color:'var(--txt2)'}}>
+                  {isAdmin ? 'Run "Sync review feed" above.' : 'Ask an admin to sync the review feed.'}
+                </p>
+              </div>
+            </Card>
+          ) : (
+            <Card>
+              <div className="flex items-center gap-3 flex-wrap mb-3">
+                <Select value={storeFilt} onChange={e=>setStoreFilt(e.target.value)} className="w-auto">
+                  <option value="all">All stores</option>
+                  {STORES.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </Select>
+                <label className="flex items-center gap-2 text-xs cursor-pointer" style={{color:'var(--txt2)'}}>
+                  <input type="checkbox" checked={unanswered} onChange={e=>setUnanswered(e.target.checked)}/>
+                  Awaiting a reply only
+                </label>
+                <span className="flex-1"/>
+                <span className="lbl">{shownReviews.length} shown</span>
+              </div>
+
+              {!shownReviews.length ? (
+                <p className="lbl text-center py-8">
+                  {unanswered ? 'Every review here has a reply.' : 'Nothing matches that filter.'}
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {shownReviews.map(r => (
+                    <div key={r.id} className="p-3" style={{border:'1px solid var(--line)'}}>
+                      <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                        <StarRow rating={r.rating} size={11}/>
+                        <span className="text-xs font-semibold" style={{color:'var(--txt)'}}>{r.author || 'Anonymous'}</span>
+                        <span className="lbl">{storeName(r.store_id)} · {fmtDate(r.review_date)}</span>
+                        {(themes[r.id] || []).map(t => (
+                          <Badge key={t.theme} color={t.sentiment==='positive' ? 'green' : t.sentiment==='negative' ? 'red' : 'gray'}>
+                            {t.theme}
+                          </Badge>
+                        ))}
+                        {!r.reply && <Badge color="yellow">no reply</Badge>}
+                      </div>
+                      <p className="text-xs" style={{color:'var(--txt2)'}}>
+                        {r.review_text ? '"' + r.review_text + '"' : <em style={{color:'var(--txt3)'}}>Rating only — no written comment</em>}
+                      </p>
+                      {r.reply && (
+                        <div className="mt-2 pl-3 text-xs" style={{borderLeft:'2px solid var(--cy-dim)', color:'var(--txt3)'}}>
+                          <span className="mono text-[9.5px] uppercase tracking-[.14em]">Our reply</span>
+                          <p className="mt-0.5" style={{color:'var(--txt2)'}}>{r.reply}</p>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
+          ))}
+
+          {/* ── Found on Google ────────────────────────────────────────── */}
+          {tab==='found' && (!vis.length ? (
+            <Card>
+              <div className="text-center py-12">
+                <Icon name="chart" size={36} style={{color:'var(--cy-dim)'}}/>
+                <p className="lbl mt-3">No visibility data yet</p>
+                <p className="text-xs mt-2" style={{color:'var(--txt2)'}}>
+                  {isAdmin ? 'Run "Sync review feed" above.' : 'Ask an admin to sync the review feed.'}
+                </p>
+              </div>
+            </Card>
+          ) : (
+            <Card>
+              <div className="flex items-center gap-3 flex-wrap mb-1">
+                <Select value={metric} onChange={e=>setMetric(e.target.value)} className="w-auto">
+                  {GOOGLE_METRICS.map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+                </Select>
+                <span className="lbl">{(GOOGLE_METRICS.find(m=>m.id===metric)||{}).hint}</span>
+              </div>
+              <p className="lbl mb-4">
+                All stores share one scale, so the bars compare sideways as well as
+                over time. Impressions are daily per-surface counts, not distinct
+                people — and a click or a direction request is not a visit or a sale.
+              </p>
+
+              {STORES.map(s => {
+                const row = visByStore[s.id];
+                if (!row) return null;
+                return (
+                  <div key={s.id} className="mb-5">
+                    <p className="text-sm font-semibold mb-1.5" style={{color:'var(--txt)'}}>{s.name}</p>
+                    <div className="space-y-1">
+                      {months.map(m => {
+                        const v = row[m];
+                        const short = v && v.days_returned != null && v.expected_days != null
+                                      && v.days_returned < v.expected_days;
+                        return (
+                          <MetricBar key={m} label={fmtMonth(m)}
+                            value={v ? v[metric] : null} max={metricMax} muted={!v}
+                            note={short ? 'Only ' + v.days_returned + ' of ' + v.expected_days + ' days returned — not comparable' : null}/>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </Card>
+          ))}
+
+          {/* ── Flags & praise ─────────────────────────────────────────── */}
+          {tab==='flags' && (
+            <div className="space-y-4">
+              <Card>
+                <span className="ttl"><Icon name="warn"/> Flagged in a review</span>
+                <p className="lbl mt-1 mb-3">
+                  Specific problems a customer named. These are customer accounts
+                  to look into, not established facts about the store.
+                </p>
+                {!issuesByStore.length ? (
+                  <p className="lbl text-center py-6">Nothing flagged in the current feed.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {issuesByStore.map((i, n) => (
+                      <div key={i.review_id + i.issue_code + n} className="p-3" style={{border:'1px solid var(--line)'}}>
+                        <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                          <Badge color="red">{i.description}</Badge>
+                          <StarRow rating={i.rating} size={11}/>
+                          <span className="lbl">{storeName(i.store_id)} · {fmtDate(i.review_date)}</span>
+                          {!i.reply && <Badge color="yellow">no reply</Badge>}
+                        </div>
+                        {i.review_text && (
+                          <p className="text-xs" style={{color:'var(--txt2)'}}>"{i.review_text}"</p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Card>
+
+              <Card>
+                <span className="ttl"><Icon name="heart"/> Named by a customer</span>
+                <p className="lbl mt-1 mb-3">
+                  Spellings are kept exactly as the customer wrote them, and only
+                  positive mentions appear here. These are nice things to pass on,
+                  not a performance record.
+                </p>
+                {!praise.length ? (
+                  <p className="lbl text-center py-6">No staff names in the current feed.</p>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                    {praise.map(p => (
+                      <div key={p.id} className="p-3" style={{border:'1px solid var(--line)'}}>
+                        <p className="text-sm font-semibold" style={{color:'var(--cy)'}}>{p.name}</p>
+                        {p.quote && <p className="text-xs mt-1" style={{color:'var(--txt2)'}}>"{p.quote}"</p>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Card>
             </div>
-          ) : s.snap && (
-            <p className="text-xs mt-1" style={{color:'var(--txt3)'}}>No recent review text on file.</p>
           )}
-        </Card>
-      ))}
+        </>
+      )}
     </div>
   );
 }

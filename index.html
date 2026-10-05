@@ -627,33 +627,37 @@ function useCreatives() {
     const url = sb.storage.from('creatives').getPublicUrl(path).data.publicUrl;
 
     // A rerun replaces last run's image for this feature+template rather than
-    // stacking another copy beside it.
-    let old = [];
+    // stacking another copy beside it. creatives_feature_template_unique
+    // allows only one row per pair, so the rerun updates that row in place.
+    let old = null;
     if (meta.featureId && meta.templateId) {
       const { data } = await sb.from('creatives')
         .select('id, storage_path, public_url')
-        .eq('feature_id', meta.featureId).eq('template_id', meta.templateId);
-      old = data || [];
+        .eq('feature_id', meta.featureId).eq('template_id', meta.templateId)
+        .maybeSingle();
+      old = data;
     }
 
-    const { error } = await sb.from('creatives').insert({
+    const row = {
       name: meta.name, campaign_id: meta.campaignId || null, store_id: meta.storeId || null,
       aspect: meta.aspect, storage_path: path, public_url: url,
       width: meta.width, height: meta.height, bytes: blob.size, mime: type,
       period: meta.period || null, feature_id: meta.featureId || null,
       template_id: meta.templateId || null, source: 'feature_batch',
       created_by: session.user.id,
-    });
+    };
+    const { error } = old
+      ? await sb.from('creatives').update({ ...row, created_at: new Date().toISOString() }).eq('id', old.id)
+      : await sb.from('creatives').insert(row);
     if (error) { await sb.storage.from('creatives').remove([path]); throw error; }
 
-    if (old.length) {
+    if (old) {
       // Scheduled posts hold the image URL itself, so deleting the old file
       // would leave them publishing a dead link. Move any post that hasn't
       // gone out yet onto the new image first, and keep the old file if that
       // move fails rather than break a post nobody is watching.
-      const moved = await repointScheduledPosts(sb, old.map(o=>o.public_url), url);
-      if (moved) await sb.storage.from('creatives').remove(old.map(o=>o.storage_path));
-      await sb.from('creatives').delete().in('id', old.map(o=>o.id));
+      const moved = await repointScheduledPosts(sb, [old.public_url], url);
+      if (moved) await sb.storage.from('creatives').remove([old.storage_path]);
     }
     return url;
   };

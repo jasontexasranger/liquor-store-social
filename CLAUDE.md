@@ -9,6 +9,8 @@ Social posting, Meta ads, monthly features, price creatives, shelf talkers, digi
 | brothers | Brothers Liquor Store & Tavern | 430 Main St, Sicamous |
 | cobblestone | Cobblestone Liquor Store | 1479 Fisher Rd, Cobble Hill (Village West ad account; separate OptiSigns key) |
 
+Business files (guides, sales spreadsheets, screenshots, the full Cowork history) are in `_private/`, which is git-ignored. Start with `_private/PROJECT_HISTORY.md` for what's been built, why, and what's open.
+
 ## The owner
 
 Jason is not a developer. Do every step yourself: git, SQL reads, verification. Hand him something only when he truly has to do it, and then give one copy-pasteable block that starts with `cd ~/Projects/lrs`. Make UI entry points obvious, never hover-only or ghost-styled; "I can't find where to…" has been the most common complaint.

@@ -1,0 +1,7 @@
+# Private business files: guides, sales data, screenshots, history.
+# Kept beside the code but never pushed, because the repo is public.
+_private/
+
+.DS_Store
+node_modules/
+supabase/.temp/

@@ -23,6 +23,9 @@
       --void:#04070e; --deep:#070c17; --panel:rgba(10,17,30,.82);
       --cy:#e3c565; --cy-dim:#9c7f2e; --cy-glow:rgba(212,175,55,.14);
       --amb:#f0a830; --red:#ff4d5e; --grn:#3ff08a; --vio:#a98cf5;
+      /* Per-store chart colours. Navy and burgundy are lifted on the dark
+         theme so they still read against near-black. */
+      --st-hideaway:#4a78c8; --st-downtown:#c0446a; --st-cobblestone:#9aa1ab; --st-brothers:#ff7a1f;
       --txt:#dbe9f2; --txt2:#7d93a8; --txt3:#48596b;
       --line:rgba(212,175,55,.18); --line2:rgba(212,175,55,.34);
       --menu:#0a121f; --headerbg:rgba(6,11,20,.9); --hudshadow:0 0 34px rgba(0,0,0,.5);
@@ -44,6 +47,7 @@
       --void:#f7f3ea; --deep:#efe7d3; --panel:rgba(255,255,255,.86);
       --cy:#a3781e; --cy-dim:#8a6a26; --cy-glow:rgba(163,120,30,.12);
       --amb:#b5761c; --red:#c23348; --grn:#1f9a5a; --vio:#7457c9;
+      --st-hideaway:#1f3a6e; --st-downtown:#8c1c3c; --st-cobblestone:#868c95; --st-brothers:#f26a12;
       --txt:#241d12; --txt2:#5c5140; --txt3:#948972;
       --line:rgba(60,45,15,.14); --line2:rgba(60,45,15,.26);
       --menu:#ffffff; --headerbg:rgba(255,255,255,.92);
@@ -9968,8 +9972,13 @@ function FeatureCsvImport({ products, onDone, onClose }) {
 // ─────────────────────────────────────────────
 // FEATURES DASHBOARD
 // ─────────────────────────────────────────────
-const STORE_COLORS = ['var(--cy)','var(--amb)','var(--grn)','var(--vio)'];
-const storeColor = id => STORE_COLORS[Math.max(0, STORES.findIndex(s=>s.id===id)) % 4];
+const STORE_COLORS = {
+  hideaway:    'var(--st-hideaway)',     // navy
+  downtown:    'var(--st-downtown)',     // burgundy
+  cobblestone: 'var(--st-cobblestone)',  // grey
+  brothers:    'var(--st-brothers)',     // bright orange
+};
+const storeColor = id => STORE_COLORS[id] || 'var(--cy)';
 
 const fmtMoney = v => '$' + Math.round(Number(v)||0).toLocaleString();
 const fmtCompact = v => {

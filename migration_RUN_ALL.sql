@@ -2760,9 +2760,21 @@ NOTIFY pgrst, 'reload schema';
 -- SELECT ran_at, ok, reviews_seen, visibility_rows, source_checked_at, error
 --   FROM public.sueno_review_sync ORDER BY ran_at DESC LIMIT 5;
 
--- ── Daily sync — set up once, after CRON_SECRET is confirmed set ──────────
+-- ── Daily sync — ALREADY SCHEDULED (job 'lrs-sueno-reviews-sync', jobid 7) ──
+-- Applied 2026-10-05 and verified by firing the job body by hand: a second run
+-- produced identical counts with no duplicate rows, so re-running is safe.
+--
 -- Deliberately 6:40am UTC: after google-reviews at 6:17 so the two don't
 -- contend, and the upstream site rebuilds well before then.
+--
+-- Kept here as the record of what was applied. Re-running cron.schedule with
+-- the same job name REPLACES the job rather than adding a second one, so this
+-- is safe to execute again on a rebuilt database.
+--
+-- The shared secret is inlined, matching all five pre-existing jobs. Note that
+-- this makes it readable to anyone who can read cron.job; moving every job to
+-- a Vault reference would be the fix, and is a change to make to all of them
+-- at once rather than inconsistently here.
 -- SELECT cron.schedule(
 --   'lrs-sueno-reviews-sync',
 --   '40 6 * * *',

@@ -234,6 +234,7 @@ const ICON_PATHS = {
   trash:'M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6',
   edit:'M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5z',
   save:'M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2zM17 21v-8H7v8M7 3v5h8',
+  download:'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3',
   cal:'M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z',
   clock:'M12 6v6l4 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z',
   chart:'M3 3v18h18M7 15l4-5 3 3 5-7',
@@ -1143,6 +1144,109 @@ async function downloadFile(url, filename) {
   a.click();
   a.remove();
   URL.revokeObjectURL(objectUrl);
+}
+
+// The template artwork with every field drawn on it, for whoever redesigns
+// the background: it shows exactly where the generator will put the price,
+// name and product photo, at the artwork's real pixel size.
+async function templateLayoutGuide(imageDataUrl, fields) {
+  const img = await new Promise(function(resolve, reject) {
+    const i = new Image();
+    i.onload = function(){ resolve(i); };
+    i.onerror = function(){ reject(new Error('Could not read the template artwork')); };
+    i.src = imageDataUrl;
+  });
+  const W = img.naturalWidth, H = img.naturalHeight;
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const g = canvas.getContext('2d');
+  g.drawImage(img, 0, 0, W, H);
+
+  // Boxes first, labels after, so no label is covered by a later box.
+  const labels = [];
+  (fields || []).forEach(function(f) {
+    const x = Number(f.x_pct)/100*W, y = Number(f.y_pct)/100*H;
+    const w = Number(f.w_pct)/100*W, h = Number(f.h_pct)/100*H;
+    if (!(w > 0 && h > 0)) return;
+    const isImage = f.field_type === 'product_image';
+    const col = isImage ? '255,40,160' : '0,150,255';
+
+    g.fillStyle = 'rgba(' + col + ',.16)';
+    g.fillRect(x, y, w, h);
+    g.setLineDash([Math.max(6, W/160), Math.max(4, W/240)]);
+    g.lineWidth = Math.max(2, W/500);
+    g.strokeStyle = 'rgb(' + col + ')';
+    g.strokeRect(x, y, w, h);
+    g.setLineDash([]);
+
+    // Label chip: what goes here, and its size. Sized from the artwork, not
+    // the box, so a thin price strip gets a label as readable as the rest;
+    // a box too short to hold the chip gets it just above (or below) instead.
+    labels.push(function() {
+    const name = String(f.label || f.field_key || (isImage ? 'Product image' : 'Text')).toUpperCase();
+    const dims = Math.round(w) + ' × ' + Math.round(h) + ' px';
+    const fs = Math.max(12, Math.min(30, Math.round(W / 55)));
+    g.font = 'bold ' + fs + 'px Arial,Helvetica,sans-serif';
+    const nameW = g.measureText(name).width;
+    g.font = Math.round(fs*0.75) + 'px Arial,Helvetica,sans-serif';
+    const dimsW = g.measureText(dims).width;
+    const pad = Math.round(fs*0.35);
+    const chipW = Math.max(nameW, dimsW) + pad*2;
+    const chipH = Math.round(fs*1.95) + pad;
+    const cx = Math.max(0, Math.min(x, W - chipW));
+    const cy = chipH <= h ? y : (y - chipH >= 0 ? y - chipH : Math.min(y + h, H - chipH));
+    g.fillStyle = 'rgb(' + col + ')';
+    g.fillRect(cx, cy, chipW, chipH);
+    g.fillStyle = '#ffffff';
+    g.textBaseline = 'top';
+    g.font = 'bold ' + fs + 'px Arial,Helvetica,sans-serif';
+    g.fillText(name, cx + pad, cy + pad);
+    g.font = Math.round(fs*0.75) + 'px Arial,Helvetica,sans-serif';
+    g.fillText(dims, cx + pad, cy + pad + Math.round(fs*1.1));
+    });
+  });
+  labels.forEach(function(draw){ draw(); });
+
+  return canvas.toDataURL('image/png');
+}
+
+const templateFileName = function(name, suffix) {
+  return String(name || 'template').replace(/[^a-z0-9\-_ ]/gi, '_').trim().slice(0, 70) + (suffix ? ' - ' + suffix : '');
+};
+
+// Two downloads per template: the artwork as uploaded, and the layout guide.
+// loadFields is only called for the guide, so the artwork download is instant.
+function TemplateDownloads({ name, dataUrl, sizeLabel, loadFields }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const base = templateFileName(name, sizeLabel);
+
+  const artwork = async function() {
+    try { await downloadFile(dataUrl, base); }
+    catch(e) { toast.error(e.message); }
+  };
+  const guide = async function() {
+    setBusy(true);
+    try {
+      const fields = await loadFields();
+      if (!fields.length) toast.info('No fields positioned yet — the guide is just the artwork');
+      await downloadFile(await templateLayoutGuide(dataUrl, fields), base + ' - layout guide.png');
+    } catch(e) { toast.error(e.message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className="flex gap-1.5">
+      <Button size="sm" variant="outline" className="flex-1 text-xs" onClick={artwork}
+              title="Download the background artwork exactly as uploaded">
+        <Icon name="download"/> Artwork
+      </Button>
+      <Button size="sm" variant="outline" className="flex-1 text-xs" onClick={guide} loading={busy}
+              title="Download the artwork with every text and image box outlined and labelled">
+        <Icon name="download"/> Layout guide
+      </Button>
+    </div>
+  );
 }
 
 // One campaign list is shared by creatives, features and posts. This bundles
@@ -15686,6 +15790,14 @@ function STAdminLibrary({ onEditTemplate }) {
                   <Button size="sm" variant="ghost" onClick={()=>toggleActive(tpl)} className="text-xs">{tpl.is_active?'Deactivate':'Activate'}</Button>
                   <Button size="sm" variant="danger" onClick={()=>deleteTemplate(tpl.id)} className="text-xs"><Icon name="trash"/></Button>
                 </div>
+                <TemplateDownloads name={tpl.name} dataUrl={tpl.file_data}
+                  sizeLabel={tpl.width_in + 'x' + tpl.height_in + 'in'}
+                  loadFields={async function() {
+                    const { data, error } = await getSB().from('shelf_talker_fields')
+                      .select('*').eq('template_id', tpl.id).order('field_order');
+                    if (error) throw error;
+                    return data || [];
+                  }}/>
               </div>
             </div>
           );
@@ -19675,6 +19787,15 @@ function TemplateManager({ storeId }) {
                             <Icon name="trash"/>
                           </Button>
                         </div>
+
+                        <TemplateDownloads name={t.name} dataUrl={t.data}
+                          sizeLabel={t.canvas_w + 'x' + t.canvas_h}
+                          loadFields={async function() {
+                            const { data, error } = await getSB().from('ad_template_fields')
+                              .select('*').eq('template_id', t.id).order('field_order');
+                            if (error) throw error;
+                            return data || [];
+                          }}/>
 
                         <div className="flex items-center gap-1.5">
                           <Icon name="tag" size={11} style={{color:'var(--cy-dim)', flex:'none'}}/>

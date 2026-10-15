@@ -1131,9 +1131,16 @@ async function zipCreatives(list, zipName, onProgress) {
 }
 
 async function downloadFile(url, filename) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error('Could not fetch file (' + res.status + ')');
-  const blob = await res.blob();
+  let blob;
+  // The CSP blocks fetch() on data: URLs ("Failed to fetch"), and template
+  // artwork is stored as one, so decode it in memory instead.
+  if (/^data:/i.test(url)) {
+    blob = dataUrlToBlob(url);
+  } else {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('Could not fetch file (' + res.status + ')');
+    blob = await res.blob();
+  }
   const ext = (blob.type.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
   const safeName = (filename || 'creative').replace(/[^a-z0-9\-_. ]/gi, '_');
   const objectUrl = URL.createObjectURL(blob);

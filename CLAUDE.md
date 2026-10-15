@@ -33,6 +33,7 @@ Jason is not a developer. Do every step yourself: git, SQL reads, verification. 
 - `scheduled_posts.image_url` / `image_urls` store the image URL itself. Never delete a creative's file without repointing unpublished posts (`repointScheduledPosts`).
 - `creatives` is unique on `(feature_id, template_id)`, so regenerating updates the row in place.
 - Template text: `ad_template_fields.font_size` pins the size. When it's null, every product auto-fits and short names render huge. Use "Fit to box" + "Check all products" in the template editor.
+- The CSP (`netlify.toml`) allows `data:` for images but not in `connect-src`, so `fetch(dataUrl)` fails with "Failed to fetch". Template artwork and many product images are data URLs; decode them with `dataUrlToBlob` / `srcToBlob`. To test browser code, run headless Chrome with the CSP from `netlify.toml` in a meta tag.
 - OptiSigns' API has no file-upload mutation, so signage uses links or the zip download.
 - Meta posting/ads use a personal long-lived user token (`META_USER_TOKEN`, about 60 days).
 

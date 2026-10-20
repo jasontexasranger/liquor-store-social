@@ -4644,6 +4644,11 @@ function QuickProductCreate({ seedName, seedSize, onCreated, onClose }) {
     r.readAsDataURL(f);
   };
 
+  const takeImage = useCallback(function(out) {
+    setPrev(out.dataUrl); setHosted(out.hostedUrl || null);
+  }, []);
+  const pasteBtn = usePasteButton(takeImage);
+
   const save = async function() {
     if (!name.trim()) { toast.error('Give the product a name'); return; }
     if (!prev && !hosted) { toast.error('Add a photo first'); return; }
@@ -4672,7 +4677,7 @@ function QuickProductCreate({ seedName, seedSize, onCreated, onClose }) {
 
         <ImageDropZone className="p-3 mb-3 flex items-center justify-center"
           style={{border:'1px dashed var(--line2)', background:'rgba(var(--sink-rgb),.4)', minHeight:'132px'}}
-          onImage={function(out){ setPrev(out.dataUrl); setHosted(out.hostedUrl || null); }}>
+          onImage={takeImage}>
           {prev
             ? <img src={prev} alt="" style={{maxHeight:'150px'}} className="object-contain"/>
             : <div className="text-center py-4">
@@ -4682,6 +4687,9 @@ function QuickProductCreate({ seedName, seedSize, onCreated, onClose }) {
         </ImageDropZone>
 
         <div className="flex gap-2 flex-wrap mb-4">
+          <Button size="sm" onClick={pasteBtn.paste} loading={pasteBtn.busy}>
+            <Icon name="image"/> Paste photo
+          </Button>
           <Button size="sm" variant="secondary" onClick={()=>fileRef.current?.click()}>
             <Icon name="cam"/> Upload
           </Button>
@@ -4772,6 +4780,7 @@ function ProductLink({ row, products, onLink, onCreated }) {
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  const fileRef = useRef();
   const linked = products.find(p => p.id === row.product_id);
 
   const suggestions = matchProducts(row.name, row.size, products).slice(0, 5);
@@ -4784,15 +4793,29 @@ function ProductLink({ row, products, onLink, onCreated }) {
   // overwriting the linked one. Products are global, so one bottle is shared by
   // every store's features; editing it in place to satisfy one row would
   // silently change the artwork everywhere else.
+  // Throws rather than toasting: both callers (the drop zone and the paste
+  // button) already report failures, and swallowing the error here made the
+  // button announce success after doing nothing.
   const dropImage = useCallback(async function(out) {
     const name = (row.name || '').trim();
-    if (!name) { toast.error('Type the product name first, then paste the photo'); return; }
+    if (!name) throw new Error('Type the product name first, then add the photo');
     const prod = await createLinkedProduct({
       name, size: row.size, dataUrl: out.dataUrl, hostedUrl: out.hostedUrl,
     });
     await onLink(row.id, prod.id);
+    setOpen(false);
     if (onCreated) onCreated();
   }, [row.id, row.name, row.size, onLink, onCreated]);
+
+  // The button, the drop target and the file picker all end up here.
+  const pasteBtn = usePasteButton(dropImage);
+
+  const pickFile = useCallback(function(f) {
+    const r = new FileReader();
+    r.onload  = () => dropImage({ dataUrl: r.result, file: f }).catch(e => toast.error(e.message));
+    r.onerror = () => toast.error('Could not read that image');
+    r.readAsDataURL(f);
+  }, [dropImage, toast]);
 
   if (linked) {
     return (
@@ -4825,13 +4848,36 @@ function ProductLink({ row, products, onLink, onCreated }) {
       </ImageDropZone>
       {open && (
         <div className="absolute z-30 left-0 mt-1 w-64 p-2" style={{background:'var(--menu)', border:'1px solid var(--line2)'}}>
+          {/* First thing in the menu, because adding a photo you already
+              copied is the common errand — the suggestions below only help
+              when the bottle is already in the library. */}
+          <button onClick={pasteBtn.paste} disabled={pasteBtn.busy}
+                  className="flex items-center gap-2 w-full p-2 mb-1"
+                  style={{color:'var(--cy)', border:'1px solid var(--cy-dim)',
+                          background:'rgba(212,175,55,.07)',
+                          opacity: pasteBtn.busy ? .6 : 1}}>
+            <Icon name="image" size={13}/>
+            <span className="text-xs font-semibold flex-1 text-left">
+              {pasteBtn.busy ? 'Adding photo…' : 'Paste photo from clipboard'}
+            </span>
+          </button>
+          <button onClick={()=>fileRef.current?.click()}
+                  className="flex items-center gap-2 w-full p-2 mb-1.5"
+                  style={{color:'var(--txt2)', border:'1px solid var(--line)'}}>
+            <Icon name="cam" size={13}/>
+            <span className="text-xs flex-1 text-left">Choose a file…</span>
+          </button>
+          <input ref={fileRef} type="file" accept="image/*" className="hidden"
+                 onChange={function(e){ const f = e.target.files && e.target.files[0]; e.target.value='';
+                                        if (f) pickFile(f); }}/>
+
           {row.size && (
-            <p className="lbl pb-1.5" style={{color:'var(--txt3)'}}>
+            <p className="lbl pb-1.5" style={{color:'var(--txt3)', borderTop:'1px solid var(--line)', paddingTop:'6px'}}>
               Feature size: <span style={{color:'var(--cy)'}}>{row.size}</span>
             </p>
           )}
           {suggestions.length === 0
-            ? <p className="lbl py-2 text-center">No close matches</p>
+            ? <p className="lbl py-2 text-center">No matching product in the library</p>
             : suggestions.map(function(s){
                 const p = s.p;
                 return (
@@ -8642,9 +8688,9 @@ function FeaturesPage({ isAdmin, myStores, editableIds, initialView, go }) {
               <p className="lbl mb-2.5 flex items-center gap-1.5" style={{color:'var(--txt3)'}}>
                 <Icon name="image" size={11} style={{color:'var(--cy-dim)'}}/>
                 Photos: right-click a bottle on BC Liquor → Copy image, then click the
-                row's <strong style={{color:'var(--cy)'}}>Photo</strong> cell and
-                press {APPLE ? '⌘V' : 'Ctrl+V'}. Dragging the image straight onto the cell
-                works too. The product gets made and linked for you.
+                row's <strong style={{color:'var(--cy)'}}>Photo</strong> cell
+                and <strong style={{color:'var(--cy)'}}>Paste photo from clipboard</strong>.
+                Dragging the image onto the cell works too. The product gets made and linked for you.
               </p>
             )}
             {/* A disabled fieldset switches off every input and button inside
@@ -10649,6 +10695,86 @@ async function resolvePastedImage({ file, url }) {
     return { dataUrl: r.image_url, hostedUrl: r.image_url };
   }
   throw new Error('No image found');
+}
+
+// Reads the image sitting on the clipboard, so a button can do what ⌘V does.
+//
+// Worth the trouble because the keyboard route has a real failure mode: the
+// paste lands on whatever the browser thinks is focused, and if that isn't the
+// photo cell, nothing happens and there is nothing to explain why. A button
+// removes the aiming problem entirely.
+//
+// Browser reality, which is why this reports its own failures carefully:
+//   • Chrome/Edge — works. Asks permission the first time, per site.
+//   • Safari      — works, but only directly inside a click, and it shows its
+//                   own small Paste confirmation. So this must be called from
+//                   the click handler, never after an await.
+//   • Firefox     — navigator.clipboard.read() does not do images. Callers
+//                   fall back to the keyboard, which still works there.
+function clipboardImageSupported() {
+  return !!(navigator.clipboard && navigator.clipboard.read);
+}
+
+async function readClipboardImage() {
+  if (!clipboardImageSupported()) {
+    throw new Error('This browser won’t let a button read the clipboard — press ' +
+                    (APPLE ? '⌘V' : 'Ctrl+V') + ' instead');
+  }
+  let items;
+  try {
+    items = await navigator.clipboard.read();
+  } catch (e) {
+    // Denied permission and an empty clipboard both land here, and they need
+    // different advice, so don't collapse them into one message.
+    const msg = String((e && e.name) || '');
+    if (msg === 'NotAllowedError') {
+      throw new Error('Clipboard access was blocked. Allow it for this site, or press ' +
+                      (APPLE ? '⌘V' : 'Ctrl+V') + ' over the cell instead');
+    }
+    throw new Error('Could not read the clipboard — press ' +
+                    (APPLE ? '⌘V' : 'Ctrl+V') + ' over the cell instead');
+  }
+
+  for (const item of (items || [])) {
+    const type = (item.types || []).find(t => String(t).startsWith('image/'));
+    if (!type) continue;
+    const blob = await item.getType(type);
+    return new File([blob], 'pasted.' + (String(type).split('/')[1] || 'png'), { type });
+  }
+
+  // No image on the clipboard. A copied image ADDRESS is still useful: the
+  // same server-side fetch the drop path uses can turn it into an image.
+  for (const item of (items || [])) {
+    if (!(item.types || []).includes('text/plain')) continue;
+    const text = (await (await item.getType('text/plain')).text()).trim();
+    const first = text.split(/\s+/).find(Boolean) || '';
+    if (IMAGE_URL_RE.test(first)) return { url: first };
+  }
+
+  throw new Error('No image on the clipboard — right-click the picture first and choose Copy image');
+}
+
+// Powers a "Paste photo" button. Same onImage contract as ImageDropZone, so a
+// button and a drop target can sit side by side over one handler.
+function usePasteButton(onImage) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+
+  const paste = useCallback(async function() {
+    setBusy(true);
+    try {
+      // Called first, before any other await, so Safari still counts this as
+      // happening inside the click that triggered it.
+      const got = await readClipboardImage();
+      const out = await resolvePastedImage(got.url ? { url: got.url } : { file: got });
+      await onImage(out);
+      toast.success(got.url ? 'Image copied from the web' : 'Photo added');
+    } catch (e) {
+      toast.error(e.message);
+    } finally { setBusy(false); }
+  }, [onImage]);
+
+  return { paste, busy, supported: clipboardImageSupported() };
 }
 
 // Wraps any area so it accepts pasted and dropped images.
@@ -14596,6 +14722,16 @@ function ProductLibrary() {
     finally { setSaving(false); }
   };
 
+  // A transparent PNG arrives already cut out, so pin bg_mode to 'keep' rather
+  // than letting the edge flood fill run over it again.
+  const formTakeImage = useCallback(function(out) {
+    setFormPrev(out.dataUrl);
+    setFormImg(out.file || null);
+    if (out.hostedUrl) setImportedUrl(out.hostedUrl);
+    imageHasAlpha(out.dataUrl).then(function(a){ if (a) setFormBg('keep'); });
+  }, []);
+  const formPasteBtn = usePasteButton(formTakeImage);
+
   const deleteProduct = async (id) => {
     setDeleting(id);
     try { await remove(id); toast.success('Removed.'); }
@@ -14642,20 +14778,16 @@ function ProductLibrary() {
               <Label>{editId ? 'Product Photo — leave as-is to keep current' : 'Product Photo'}</Label>
               <ImageDropZone className="p-3 mb-2"
                 style={{border:'1px dashed var(--line2)', background:'rgba(var(--sink-rgb),.35)'}}
-                onImage={function(out){
-                  setFormPrev(out.dataUrl);
-                  setFormImg(out.file || null);
-                  if (out.hostedUrl) setImportedUrl(out.hostedUrl);
-                  imageHasAlpha(out.dataUrl).then(function(a){ if (a) setFormBg('keep'); });
-                }}>
+                onImage={formTakeImage}>
                 <p className="lbl text-center">
-                  Paste an image here (or drag one in from a browser tab)
+                  Drag an image in, or use the Paste photo button below
                 </p>
                 <p className="lbl text-center mt-1" style={{color:'var(--txt3)', fontSize:'8.5px'}}>
-                  Right-click the image on a website → Copy image, then click here and press {APPLE ? '⌘V' : 'Ctrl+V'}
+                  Right-click the image on a website → Copy image. Pressing {APPLE ? '⌘V' : 'Ctrl+V'} here works too.
                 </p>
               </ImageDropZone>
               <div className="flex items-center gap-3 flex-wrap">
+                <Button size="sm" onClick={formPasteBtn.paste} loading={formPasteBtn.busy}><Icon name="image"/> Paste photo</Button>
                 <Button variant="secondary" size="sm" onClick={()=>fileRef.current?.click()}><Icon name="cam"/> Choose Image</Button>
                 {formImg && <span className="text-xs text-gray-500 truncate max-w-xs">{formImg.name}</span>}
                 {formImg && <button onClick={()=>{setFormImg(null);setFormPrev(null);}} className="text-xs text-red-500 hover:underline">Remove</button>}

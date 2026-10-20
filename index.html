@@ -4810,6 +4810,51 @@ function ProductLink({ row, products, onLink, onCreated }) {
   // The button, the drop target and the file picker all end up here.
   const pasteBtn = usePasteButton(dropImage);
 
+  // The menu is rendered through a Portal at fixed coordinates rather than as
+  // an absolutely-positioned child.
+  //
+  // The features table lives in a .overflow-x-auto wrapper, and overflow-x:auto
+  // forces overflow-y to a clipping value too — so an absolutely-positioned
+  // menu inside it gets cut off at the container's edge. On the last row of a
+  // short month the menu had nowhere to appear at all: it opened, was clipped
+  // away entirely, and clicking the cell looked like it did nothing.
+  const btnRef = useRef();
+  const [menuPos, setMenuPos] = useState(null);
+
+  const openMenu = useCallback(function() {
+    const el = btnRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const MENU_W = 256, MENU_H = 320;
+    // Flip above the cell when there isn't room below, and keep it on screen
+    // horizontally for the rightmost columns.
+    const below = window.innerHeight - r.bottom;
+    setMenuPos({
+      left: Math.max(8, Math.min(r.left, window.innerWidth - MENU_W - 8)),
+      top:  below < MENU_H && r.top > below ? null : r.bottom + 4,
+      bottom: below < MENU_H && r.top > below ? (window.innerHeight - r.top + 4) : null,
+    });
+    setOpen(true);
+  }, []);
+
+  // Clicking anywhere else, or pressing Escape, closes it. Without this a
+  // fixed-position menu would hang around over the rest of the page.
+  useEffect(function(){
+    if (!open) return;
+    const onDown = function(e){
+      if (btnRef.current && btnRef.current.contains(e.target)) return;
+      if (e.target.closest && e.target.closest('[data-product-menu]')) return;
+      setOpen(false);
+    };
+    const onKey = e => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return function(){
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
   const pickFile = useCallback(function(f) {
     const r = new FileReader();
     r.onload  = () => dropImage({ dataUrl: r.result, file: f }).catch(e => toast.error(e.message));
@@ -4835,7 +4880,7 @@ function ProductLink({ row, products, onLink, onCreated }) {
           header, with its only explanation in a hover tooltip. Nobody could
           tell it was the place photos go. */}
       <ImageDropZone onImage={dropImage}>
-        <button onClick={()=>setOpen(v=>!v)}
+        <button ref={btnRef} onClick={()=>{ open ? setOpen(false) : openMenu(); }}
                 title="Add a product photo — click to pick one, or paste an image here"
                 className="flex items-center gap-1 px-1.5 py-1 w-full"
                 style={{border:'1px dashed ' + (suggestions.length ? 'var(--cy-dim)' : 'var(--line2)'),
@@ -4846,8 +4891,14 @@ function ProductLink({ row, products, onLink, onCreated }) {
           </span>
         </button>
       </ImageDropZone>
-      {open && (
-        <div className="absolute z-30 left-0 mt-1 w-64 p-2" style={{background:'var(--menu)', border:'1px solid var(--line2)'}}>
+      {open && menuPos && (
+        <Portal>
+        <div data-product-menu className="w-64 p-2"
+             style={{position:'fixed', left:menuPos.left + 'px',
+                     top: menuPos.top != null ? menuPos.top + 'px' : undefined,
+                     bottom: menuPos.bottom != null ? menuPos.bottom + 'px' : undefined,
+                     zIndex:220, background:'var(--menu)', border:'1px solid var(--line2)',
+                     maxHeight:'70vh', overflowY:'auto'}}>
           {/* First thing in the menu, because adding a photo you already
               copied is the common errand — the suggestions below only help
               when the bottle is already in the library. */}
@@ -4900,6 +4951,7 @@ function ProductLink({ row, products, onLink, onCreated }) {
           </button>
           <button onClick={()=>setOpen(false)} className="lbl w-full text-center pt-1">Close</button>
         </div>
+        </Portal>
       )}
 
       {creating && (
@@ -8684,13 +8736,16 @@ function FeaturesPage({ isAdmin, myStores, editableIds, initialView, go }) {
             {/* Says out loud how photos get added. The paste target used to be
                 discoverable only by hovering an unlabelled 28px square, which
                 is why people asked where photos go. */}
+            {/* The paragraph below is deliberately NOT a flex container: flex
+                makes every text node and <strong> its own column, which broke
+                this sentence into scattered boxes instead of a line of prose. */}
             {canEdit && (
-              <p className="lbl mb-2.5 flex items-center gap-1.5" style={{color:'var(--txt3)'}}>
-                <Icon name="image" size={11} style={{color:'var(--cy-dim)'}}/>
+              <p className="lbl mb-2.5" style={{color:'var(--txt3)', lineHeight:1.7}}>
+                <Icon name="image" size={11} style={{color:'var(--cy-dim)', display:'inline', verticalAlign:'-1px', marginRight:'4px'}}/>
                 Photos: right-click a bottle on BC Liquor → Copy image, then click the
                 row's <strong style={{color:'var(--cy)'}}>Photo</strong> cell
                 and <strong style={{color:'var(--cy)'}}>Paste photo from clipboard</strong>.
-                Dragging the image onto the cell works too. The product gets made and linked for you.
+                Dragging the image onto the cell works too — the product gets made and linked for you.
               </p>
             )}
             {/* A disabled fieldset switches off every input and button inside

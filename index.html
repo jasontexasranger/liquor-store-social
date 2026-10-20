@@ -399,6 +399,12 @@ const ls = {
 // ─────────────────────────────────────────────
 // SUPABASE CLIENT (hardcoded credentials)
 // ─────────────────────────────────────────────
+// Which modifier key to name in paste hints. Telling a Mac user "Ctrl+V"
+// (or a Windows user "⌘V") is the kind of small wrongness that makes people
+// assume the feature doesn't work.
+const APPLE = typeof navigator !== 'undefined' &&
+  /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent || '');
+
 const SUPABASE_URL = 'https://yyveikxfomxmedlxsulh.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inl5dmVpa3hmb214bWVkbHhzdWxoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2MTk0MDksImV4cCI6MjA5OTE5NTQwOX0.bBuyIp-LS9X2mPiY0fbgjS5urw0Ke-YZbE56SgYgpt4';
 
@@ -4580,10 +4586,48 @@ function FeaturePasteBox({ products, onImport, onClose }) {
 // only buys you the product photo downstream.
 // Creates a library product without leaving the features grid. Prefilled from
 // the feature row, so the common case is: pick an image, save.
+// Create a library product and hand back the inserted row, so the caller can
+// link a feature to it immediately.
+//
+// useBrandImageLibrary's `add` can't be used here: it doesn't return the row it
+// inserted, and linking needs the new id. Shared by the quick-create modal and
+// by pasting straight onto a feature row's photo cell, so the NOT NULL rules
+// below only have to be right in one place.
+async function createLinkedProduct({ name, size, category, dataUrl, hostedUrl }) {
+  if (!name || !name.trim()) throw new Error('Give the product a name');
+  if (!dataUrl && !hostedUrl) throw new Error('Add a photo first');
+  const sb = getSB();
+
+  // Empty strings, not nulls — several of these columns are NOT NULL, and the
+  // main Product Library form has always written '' for blanks.
+  const row = {
+    store_id: null,
+    product_name: name.trim(),
+    size: (size || '').trim(),
+    category: category || '',
+    notes: '',
+    // A hosted image already lives in Storage; an uploaded one gets compressed
+    // into the base64 column like the rest of the library.
+    image_url: hostedUrl || null,
+    data: hostedUrl ? null : await compressImage(dataUrl, 800, 0.8),
+  };
+
+  // A transparent PNG is already cut out. Leaving bg_mode on 'auto' would run
+  // the flood fill over it again, which is what ate the white-label bottles —
+  // see migration_product_bg_mode.sql. The Product Library form does this; the
+  // quick path used to skip it, so pasted cutouts came out mangled.
+  if (!hostedUrl && dataUrl) {
+    try { if (await imageHasAlpha(dataUrl)) row.bg_mode = 'keep'; } catch (e) {}
+  }
+
+  const { data, error } = await sb.from('brand_images').insert(row).select().single();
+  if (error) throw error;
+  return data;
+}
+
 function QuickProductCreate({ seedName, seedSize, onCreated, onClose }) {
   const dragPanel = useDragPanel();
   const toast = useToast();
-  const { add } = useBrandImageLibrary();
   const [name, setName]   = useState(seedName || '');
   const [size, setSize]   = useState(seedSize || '');
   const [cat,  setCat]    = useState('');
@@ -4605,22 +4649,9 @@ function QuickProductCreate({ seedName, seedSize, onCreated, onClose }) {
     if (!prev && !hosted) { toast.error('Add a photo first'); return; }
     setBusy(true);
     try {
-      const sb = getSB();
-      // Empty strings, not nulls — several of these columns are NOT NULL, and
-      // the main Product Library form has always written '' for blanks.
-      const row = {
-        store_id: null,
-        product_name: name.trim(),
-        size: size.trim(),
-        category: cat || '',
-        notes: '',
-        // A hosted image already lives in Storage; an uploaded one gets
-        // compressed into the base64 column like the rest of the library.
-        image_url: hosted || null,
-        data: hosted ? null : await compressImage(prev, 800, 0.8),
-      };
-      const { data, error } = await sb.from('brand_images').insert(row).select().single();
-      if (error) throw error;
+      const data = await createLinkedProduct({
+        name, size, category: cat, dataUrl: prev, hostedUrl: hosted,
+      });
       toast.success('Product created and linked');
       onCreated(data);
       onClose();
@@ -4738,28 +4769,60 @@ function autoMatchProductId(name, size, products) {
 }
 
 function ProductLink({ row, products, onLink, onCreated }) {
+  const toast = useToast();
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const linked = products.find(p => p.id === row.product_id);
 
   const suggestions = matchProducts(row.name, row.size, products).slice(0, 5);
 
+  // Pasting or dropping an image onto the cell creates the product from the
+  // row's own name and size and links it — one gesture instead of opening the
+  // picker, scrolling past the suggestions and finding "Create…".
+  //
+  // On a row that already has a photo this makes a NEW product rather than
+  // overwriting the linked one. Products are global, so one bottle is shared by
+  // every store's features; editing it in place to satisfy one row would
+  // silently change the artwork everywhere else.
+  const dropImage = useCallback(async function(out) {
+    const name = (row.name || '').trim();
+    if (!name) { toast.error('Type the product name first, then paste the photo'); return; }
+    const prod = await createLinkedProduct({
+      name, size: row.size, dataUrl: out.dataUrl, hostedUrl: out.hostedUrl,
+    });
+    await onLink(row.id, prod.id);
+    if (onCreated) onCreated();
+  }, [row.id, row.name, row.size, onLink, onCreated]);
+
   if (linked) {
     return (
-      <button onClick={()=>onLink(row.id, null)}
-              title={'Linked to ' + linked.product_name + (linked.size ? ' (' + linked.size + ')' : '') + ' — click to unlink'}
-              className="flex items-center gap-1.5">
-        <img src={prodSrc(linked)} alt="" className="w-7 h-7 object-cover" style={{border:'1px solid var(--cy)'}}/>
-      </button>
+      <ImageDropZone onImage={dropImage}>
+        <button onClick={()=>onLink(row.id, null)}
+                title={'Linked to ' + linked.product_name + (linked.size ? ' (' + linked.size + ')' : '')
+                       + ' — click to unlink, or paste an image to replace it'}
+                className="flex items-center gap-1.5">
+          <img src={prodSrc(linked)} alt="" className="w-7 h-7 object-cover" style={{border:'1px solid var(--cy)'}}/>
+        </button>
+      </ImageDropZone>
     );
   }
   return (
     <div className="relative">
-      <button onClick={()=>setOpen(v=>!v)} title="Link a product photo"
-              className="w-7 h-7 flex items-center justify-center"
-              style={{border:'1px dashed var(--line2)', color: suggestions.length ? 'var(--cy)' : 'var(--txt3)'}}>
-        <Icon name="image" size={12}/>
-      </button>
+      {/* Was a 28px dashed square holding a 12px icon, under a blank column
+          header, with its only explanation in a hover tooltip. Nobody could
+          tell it was the place photos go. */}
+      <ImageDropZone onImage={dropImage}>
+        <button onClick={()=>setOpen(v=>!v)}
+                title="Add a product photo — click to pick one, or paste an image here"
+                className="flex items-center gap-1 px-1.5 py-1 w-full"
+                style={{border:'1px dashed ' + (suggestions.length ? 'var(--cy-dim)' : 'var(--line2)'),
+                        color: suggestions.length ? 'var(--cy)' : 'var(--txt3)'}}>
+          <Icon name="image" size={12}/>
+          <span className="mono text-[9px] uppercase tracking-[.1em] whitespace-nowrap">
+            {suggestions.length ? 'Match' : 'Photo'}
+          </span>
+        </button>
+      </ImageDropZone>
       {open && (
         <div className="absolute z-30 left-0 mt-1 w-64 p-2" style={{background:'var(--menu)', border:'1px solid var(--line2)'}}>
           {row.size && (
@@ -8572,6 +8635,18 @@ function FeaturesPage({ isAdmin, myStores, editableIds, initialView, go }) {
           </div>
         ) : (
           <div className="overflow-x-auto">
+            {/* Says out loud how photos get added. The paste target used to be
+                discoverable only by hovering an unlabelled 28px square, which
+                is why people asked where photos go. */}
+            {canEdit && (
+              <p className="lbl mb-2.5 flex items-center gap-1.5" style={{color:'var(--txt3)'}}>
+                <Icon name="image" size={11} style={{color:'var(--cy-dim)'}}/>
+                Photos: right-click a bottle on BC Liquor → Copy image, then click the
+                row's <strong style={{color:'var(--cy)'}}>Photo</strong> cell and
+                press {APPLE ? '⌘V' : 'Ctrl+V'}. Dragging the image straight onto the cell
+                works too. The product gets made and linked for you.
+              </p>
+            )}
             {/* A disabled fieldset switches off every input and button inside
                 it at once — the cleanest way to make a whole table read-only.
                 The database refuses foreign-store writes anyway; this stops
@@ -8580,7 +8655,7 @@ function FeaturesPage({ isAdmin, myStores, editableIds, initialView, go }) {
             <table style={{width:'100%', minWidth:'760px', borderCollapse:'collapse'}}>
               <thead>
                 <tr style={{borderBottom:'1px solid var(--line2)'}}>
-                  {['','Name','Size','Reg','Sale','Save'].map(h=>(
+                  {['Photo','Name','Size','Reg','Sale','Save'].map(h=>(
                     <th key={h} className="lbl" style={{textAlign:'left', padding:'0 5px 8px'}}>{h}</th>
                   ))}
                   {mode==='plan' && ['BCL','Campaign','Notes',''].map(h=>(
@@ -10598,15 +10673,22 @@ function ImageDropZone({ onImage, children, className='', style={} }) {
     return true;
   }, [onImage]);
 
-  // Paste only counts while the pointer is over this zone, so two zones on one
-  // screen don't both grab the same paste.
+  // Paste counts for this zone when the pointer is over it OR the focus is
+  // inside it, so two zones on one screen don't both grab the same paste.
+  //
+  // Focus matters as much as hover now that these zones are table cells. Aiming
+  // the mouse at a small cell and holding it still while reaching for ⌘V is
+  // fiddly, and the pointer drifting off meant the paste silently went nowhere.
+  // Clicking the cell and then pasting is the more natural gesture, and it is
+  // the one people try first.
   useEffect(function(){
     const el = ref.current; if (!el) return;
     let inside = false;
     const enter = () => { inside = true; };
     const leave = () => { inside = false; };
     const onPaste = function(e){
-      if (!inside) return;
+      const focused = document.activeElement && el.contains(document.activeElement);
+      if (!inside && !focused) return;
       if (handle(e.clipboardData)) e.preventDefault();
     };
     el.addEventListener('mouseenter', enter);
@@ -14570,7 +14652,7 @@ function ProductLibrary() {
                   Paste an image here (or drag one in from a browser tab)
                 </p>
                 <p className="lbl text-center mt-1" style={{color:'var(--txt3)', fontSize:'8.5px'}}>
-                  Right-click the image on a website → Copy image, then click here and press ⌘V
+                  Right-click the image on a website → Copy image, then click here and press {APPLE ? '⌘V' : 'Ctrl+V'}
                 </p>
               </ImageDropZone>
               <div className="flex items-center gap-3 flex-wrap">

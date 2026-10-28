@@ -637,17 +637,50 @@ function useCreatives() {
     if (up.error) throw new Error(up.error.message);
     const url = sb.storage.from('creatives').getPublicUrl(path).data.publicUrl;
 
-    // A rerun replaces last run's image for this feature+template rather than
-    // stacking another copy beside it. creatives_feature_template_unique
-    // allows only one row per pair, so the rerun updates that row in place.
-    let old = null;
+    // A rerun replaces what's already there for the same thing at the same
+    // size, whichever template made it, instead of stacking another copy:
+    //  - a feature: anything for that feature at this aspect, plus older
+    //    graphics saved before creatives were linked to features (same store,
+    //    month, aspect and name — the name format hasn't changed);
+    //  - EDLP (replaceByName): same store, aspect and name, no month.
+    // A batch passes the same `thisRun` Set to every call; anything made
+    // earlier in this run is skipped, so two templates of the same size in
+    // one run don't overwrite each other. (Tracked by URL, not timestamps:
+    // the browser's clock and the database's needn't agree.)
+    // creatives_feature_template_unique allows one row per feature+template,
+    // so the row for that exact pair is the one updated in place.
+    const cols = 'id, storage_path, public_url, template_id, feature_id';
+    const thisRun = meta.thisRun || null;
+    const lookups = [];
     if (meta.featureId && meta.templateId) {
-      const { data } = await sb.from('creatives')
-        .select('id, storage_path, public_url')
-        .eq('feature_id', meta.featureId).eq('template_id', meta.templateId)
-        .maybeSingle();
-      old = data;
+      lookups.push(sb.from('creatives').select(cols)
+        .eq('feature_id', meta.featureId).eq('template_id', meta.templateId));
+      if (meta.aspect) {
+        lookups.push(sb.from('creatives').select(cols)
+          .eq('feature_id', meta.featureId).eq('aspect', meta.aspect));
+        if (meta.storeId && meta.period && meta.name) {
+          lookups.push(sb.from('creatives').select(cols).is('feature_id', null)
+            .eq('source', 'feature_batch').eq('store_id', meta.storeId)
+            .eq('period', meta.period).eq('aspect', meta.aspect).eq('name', meta.name));
+        }
+      }
+    } else if (meta.replaceByName && meta.storeId && meta.aspect && meta.name) {
+      lookups.push(sb.from('creatives').select(cols).is('feature_id', null).is('period', null)
+        .eq('source', 'feature_batch').eq('store_id', meta.storeId)
+        .eq('aspect', meta.aspect).eq('name', meta.name));
     }
+    const found = {};
+    for (const res of await Promise.all(lookups)) {
+      if (res.error) throw new Error('Could not check for existing graphics: ' + res.error.message);
+      (res.data || []).forEach(function(c){ found[c.id] = c; });
+    }
+    const exact = Object.values(found).find(function(c) {
+      return meta.featureId && c.feature_id === meta.featureId && c.template_id === meta.templateId;
+    }) || null;
+    const replaced = Object.values(found).filter(function(c) {
+      return c === exact || !thisRun || !thisRun.has(c.public_url);
+    });
+    const old = exact || replaced[0] || null;
 
     const row = {
       name: meta.name, campaign_id: meta.campaignId || null, store_id: meta.storeId || null,
@@ -662,14 +695,19 @@ function useCreatives() {
       : await sb.from('creatives').insert(row);
     if (error) { await sb.storage.from('creatives').remove([path]); throw error; }
 
-    if (old) {
-      // Scheduled posts hold the image URL itself, so deleting the old file
+    if (replaced.length) {
+      // Scheduled posts hold the image URL itself, so deleting the old files
       // would leave them publishing a dead link. Move any post that hasn't
-      // gone out yet onto the new image first, and keep the old file if that
-      // move fails rather than break a post nobody is watching.
-      const moved = await repointScheduledPosts(sb, [old.public_url], url);
-      if (moved) await sb.storage.from('creatives').remove([old.storage_path]);
+      // gone out yet onto the new image first, and keep the old files if
+      // that move fails rather than break a post nobody is watching.
+      const moved = await repointScheduledPosts(sb, replaced.map(c => c.public_url), url);
+      const extras = replaced.filter(c => c.id !== old.id);
+      if (moved) {
+        await sb.storage.from('creatives').remove(replaced.map(c => c.storage_path).filter(Boolean));
+        if (extras.length) await sb.from('creatives').delete().in('id', extras.map(c => c.id));
+      }
     }
+    if (thisRun) thisRun.add(url);
     return url;
   };
 
@@ -7179,6 +7217,8 @@ function FeatureCreativeBatch({ storeId, storeName, period, rows, products, camp
 
   const run = async function() {
     if (!total) return;
+    // Graphics this run makes, so it replaces only what was there before.
+    const thisRun = new Set();
     setRunning(true);
     setDone(null);
     const made = [];
@@ -7231,7 +7271,7 @@ function FeatureCreativeBatch({ storeId, storeName, period, rows, products, camp
             name: monthLabel(period) + ' · ' + (row.name || 'Feature') + ' · ' + aspect,
             storeId, aspect, period,
             campaignId: campaign || null,
-            featureId: row.id, templateId: tpl.id,
+            featureId: row.id, templateId: tpl.id, thisRun,
             width: tpl.canvas_w, height: tpl.canvas_h,
           });
 
@@ -7462,6 +7502,8 @@ function EDLPCreativeBatch({ storeId, storeName, rows, campaigns, onClose }) {
 
   const run = async function() {
     if (!total) return;
+    // Graphics this run makes, so it replaces only what was there before.
+    const thisRun = new Set();
     setRunning(true);
     setDone(null);
     setPushed(null);
@@ -7523,7 +7565,7 @@ function EDLPCreativeBatch({ storeId, storeName, rows, campaigns, onClose }) {
             name: 'EDLP · ' + (row.name || 'Item') + ' · ' + aspect,
             storeId, aspect,
             campaignId: campaign || null,
-            templateId: tpl.id,
+            templateId: tpl.id, replaceByName: true, thisRun,
             width: tpl.canvas_w, height: tpl.canvas_h,
           });
 
